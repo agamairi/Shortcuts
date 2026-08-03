@@ -101,7 +101,7 @@ class AiBuilderViewModel(
     suspend fun performInference(promptText: String) {
         try {
             val jsonResponse = inferenceService?.generateAutomationJson(promptText)
-            if (jsonResponse != null) {
+            if (!jsonResponse.isNullOrBlank()) {
                 val automation = parseAutomationJson(jsonResponse, promptText)
                 if (automation != null) {
                     currentData = currentData.copy(
@@ -110,7 +110,7 @@ class AiBuilderViewModel(
                     )
                     _uiState.value = UiState.Success(currentData)
                 } else {
-                    _uiState.value = UiState.Error("AI generation failed: Unable to parse generated JSON flow")
+                    _uiState.value = UiState.Error("Failed to parse automation JSON from AI output")
                 }
             } else {
                 // Fallback default output for mock or when inference service returns null in test/stub mode
@@ -126,23 +126,92 @@ class AiBuilderViewModel(
         }
     }
 
-    fun parseAutomationJson(json: String, fallbackName: String): Automation? {
+    fun parseAutomationJson(json: String, fallbackName: String = ""): Automation? {
         return try {
             val trimmed = json.trim()
+            if (trimmed.isEmpty()) return null
+
             if (trimmed.startsWith("{")) {
-                val jsonObject = gson.fromJson(trimmed, Map::class.java)
-                val name = jsonObject["automation_name"] as? String ?: "AI Shortcut: $fallbackName"
-                val actionsList = jsonObject["actions"]
-                val actionsJsonStr = gson.toJson(actionsList)
-                Automation(name = name, actionsJson = actionsJsonStr, triggerType = "AI_GENERATED")
+                val jsonObject = gson.fromJson(trimmed, Map::class.java) ?: return null
+                val name = (jsonObject["automation_name"] as? String)
+                    ?: (jsonObject["name"] as? String)
+                    ?: if (fallbackName.isNotBlank()) "AI Shortcut: $fallbackName" else "AI Shortcut"
+
+                val rawActions = jsonObject["actions"] as? List<*> ?: return null
+                if (rawActions.isEmpty()) return null
+
+                val normalizedActions = rawActions.mapNotNull { item ->
+                    if (item is Map<*, *>) normalizeActionMap(item) else null
+                }
+                if (normalizedActions.size != rawActions.size) return null
+
+                val actionsJsonStr = gson.toJson(normalizedActions)
+                if (actionsJsonStr == "null" || actionsJsonStr.isBlank() || actionsJsonStr == "[]") {
+                    return null
+                }
+
+                val parsedActions = ActionConverter().toActionList(actionsJsonStr)
+                if (parsedActions.isNullOrEmpty() || parsedActions.any { (it.actionType as ActionType?) == null }) {
+                    return null
+                }
+
+                Automation(
+                    name = name,
+                    actionsJson = actionsJsonStr,
+                    triggerType = "AI_GENERATED"
+                )
             } else if (trimmed.startsWith("[")) {
-                Automation(name = "AI Shortcut: $fallbackName", actionsJson = trimmed, triggerType = "AI_GENERATED")
+                if (trimmed == "[]") return null
+                val rawList = gson.fromJson(trimmed, List::class.java) ?: return null
+                if (rawList.isEmpty()) return null
+
+                val normalizedActions = rawList.mapNotNull { item ->
+                    if (item is Map<*, *>) normalizeActionMap(item) else null
+                }
+                if (normalizedActions.size != rawList.size) return null
+
+                val actionsJsonStr = gson.toJson(normalizedActions)
+                val parsedActions = ActionConverter().toActionList(actionsJsonStr)
+                if (parsedActions.isNullOrEmpty() || parsedActions.any { (it.actionType as ActionType?) == null }) {
+                    return null
+                }
+
+                val name = if (fallbackName.isNotBlank()) "AI Shortcut: $fallbackName" else "AI Shortcut"
+                Automation(
+                    name = name,
+                    actionsJson = actionsJsonStr,
+                    triggerType = "AI_GENERATED"
+                )
             } else {
-                createFallbackAutomation(fallbackName)
+                android.util.Log.e("AiBuilderViewModel", "Invalid JSON format: $trimmed")
+                null
             }
         } catch (e: Exception) {
+            android.util.Log.e("AiBuilderViewModel", "Failed to parse automation JSON: ${e.message}", e)
             null
         }
+    }
+
+    private fun normalizeActionMap(map: Map<*, *>): Map<String, Any?> {
+        val normalized = mutableMapOf<String, Any?>()
+        for ((key, value) in map) {
+            if (key is String) {
+                val camelKey = when (key) {
+                    "action_type" -> "actionType"
+                    "package_name" -> "packageName"
+                    "intent_action" -> "intentAction"
+                    "target_node_id" -> "targetNodeId"
+                    "text_input" -> "textInput"
+                    "ui_action_type" -> "uiActionType"
+                    "global_action" -> "globalAction"
+                    "scroll_direction" -> "scrollDirection"
+                    "target_text" -> "targetText"
+                    else -> key
+                }
+                normalized[camelKey] = value
+            }
+        }
+        return normalized
     }
 
     private fun createFallbackAutomation(promptText: String): Automation {
