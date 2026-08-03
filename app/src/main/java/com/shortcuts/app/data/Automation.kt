@@ -10,7 +10,9 @@ import com.google.gson.reflect.TypeToken
 data class Automation(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
     val name: String,
-    val actionsJson: String // Serialized array of Actions
+    val actionsJson: String, // Serialized array of Actions
+    val isActive: Boolean = true,
+    val triggerType: String = "MANUAL"
 )
 
 data class Action(
