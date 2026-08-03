@@ -11,4 +11,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `Agents.md` guidelines for AI agents.
 - Open Knowledge Format (OKF) setup.
 - `ModelDownloaderService` foreground service for downloading AI models with status notification and state management.
+- `AutomationAccessibilityService` UI automation execution engine with gesture, input, navigation, and robust error handling.
+
 
