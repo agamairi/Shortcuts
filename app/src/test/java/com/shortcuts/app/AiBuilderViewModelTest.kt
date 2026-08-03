@@ -127,7 +127,33 @@ class AiBuilderViewModelTest {
     }
 
     @Test
+    fun `downloadModelAndGenerate with null or empty inference output produces Error`() = runTest {
+        coEvery { inferenceService.generateAutomationJson("Unknown prompt") } returns null
+
+        val viewModel = AiBuilderViewModel(repository, inferenceService, downloadStateFlow)
+        viewModel.updatePrompt("Unknown prompt")
+        viewModel.downloadModelAndGenerate()
+
+        downloadStateFlow.value = DownloadState.Completed(mockk())
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        val state = viewModel.uiState.value
+        assertTrue(state is UiState.Error)
+        assertEquals("AI model inference returned no valid output", (state as UiState.Error).message)
+    }
+
+    @Test
     fun `saveGeneratedAutomation inserts to repository and sets isSaved`() = runTest {
+        val jsonOutput = """
+            {
+              "automation_name": "Toggle WiFi",
+              "actions": [
+                { "action_type": "SYSTEM_TOGGLE", "target": "WIFI", "state": "ON" }
+              ]
+            }
+        """.trimIndent()
+        coEvery { inferenceService.generateAutomationJson("Toggle WiFi") } returns jsonOutput
+
         val viewModel = AiBuilderViewModel(repository, inferenceService, downloadStateFlow)
         viewModel.updatePrompt("Toggle WiFi")
         

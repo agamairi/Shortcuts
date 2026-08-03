@@ -82,6 +82,14 @@ class Milestone3EmpiricalStressTest {
     @Test
     fun `verify repository exception in saveGeneratedAutomation sets Error state`() = runTest {
         coEvery { repository.insert(any()) } throws RuntimeException("SQLite Full Exception")
+        coEvery { inferenceService.generateAutomationJson("Open Spotify") } returns """
+            {
+              "automation_name": "Spotify Routine",
+              "actions": [
+                { "action_type": "APP_INTENT", "package_name": "com.spotify.music" }
+              ]
+            }
+        """.trimIndent()
 
         val viewModel = AiBuilderViewModel(repository, inferenceService, downloadStateFlow)
         viewModel.updatePrompt("Open Spotify")

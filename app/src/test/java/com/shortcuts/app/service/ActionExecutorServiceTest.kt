@@ -1,5 +1,6 @@
 package com.shortcuts.app.service
 
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -9,6 +10,7 @@ import io.mockk.clearAllMocks
 import io.mockk.every
 import io.mockk.mockk
 import io.mockk.verify
+import java.net.HttpURLConnection
 import org.junit.After
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -48,6 +50,20 @@ class ActionExecutorServiceTest {
 
         val result = actionExecutorService.executeAction(action)
         assertTrue(result)
+        verify { mockContext.startActivity(any()) }
+    }
+
+    @Test
+    fun `executeAction handles SYSTEM_TOGGLE failure when activity fails`() {
+        every { mockContext.startActivity(any()) } throws ActivityNotFoundException("Activity not found")
+        val action = Action(
+            actionType = ActionType.SYSTEM_TOGGLE,
+            target = "WIFI",
+            state = "ON"
+        )
+
+        val result = actionExecutorService.executeAction(action)
+        assertFalse(result)
     }
 
     @Test
@@ -79,15 +95,36 @@ class ActionExecutorServiceTest {
     }
 
     @Test
-    fun `executeAction handles HTTP_REQUEST action`() {
+    fun `executeAction handleHttpRequest returns true when response code is 200`() {
+        val mockConnection = mockk<HttpURLConnection>(relaxed = true)
+        every { mockConnection.responseCode } returns 200
+
+        val service = ActionExecutorService(mockContext, mockAccessibilityService, urlConnectionFactory = { mockConnection })
         val action = Action(
             actionType = ActionType.HTTP_REQUEST,
             url = "https://api.example.com/status",
             method = "GET"
         )
 
-        val result = actionExecutorService.executeAction(action)
+        val result = service.executeAction(action)
         assertTrue(result)
+    }
+
+    @Test
+    fun `executeAction handleHttpRequest returns false when response code is 500`() {
+        val mockConnection = mockk<HttpURLConnection>(relaxed = true)
+        every { mockConnection.responseCode } returns 500
+
+        val service = ActionExecutorService(mockContext, mockAccessibilityService, urlConnectionFactory = { mockConnection })
+        val action = Action(
+            actionType = ActionType.HTTP_REQUEST,
+            url = "https://api.example.com/status",
+            method = "POST",
+            textInput = "{\"data\": 123}"
+        )
+
+        val result = service.executeAction(action)
+        assertFalse(result)
     }
 
     @Test
@@ -122,13 +159,18 @@ class ActionExecutorServiceTest {
 
     @Test
     fun `executeActions executes list of actions sequentially`() {
+        val mockConnection = mockk<HttpURLConnection>(relaxed = true)
+        every { mockConnection.responseCode } returns 200
+
+        val executor = ActionExecutorService(mockContext, mockAccessibilityService, urlConnectionFactory = { mockConnection })
+
         val action1 = Action(actionType = ActionType.SYSTEM_TOGGLE, target = "WIFI", state = "ON")
         val action2 = Action(actionType = ActionType.HTTP_REQUEST, url = "http://example.com", method = "GET")
         val action3 = Action(actionType = ActionType.UI_AUTOMATION, targetNodeId = "id/btn")
 
         every { mockAccessibilityService.executeAction(action3) } returns true
 
-        val result = actionExecutorService.executeActions(listOf(action1, action2, action3))
+        val result = executor.executeActions(listOf(action1, action2, action3))
         assertTrue(result)
         verify { mockAccessibilityService.executeAction(action3) }
     }

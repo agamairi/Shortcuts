@@ -113,13 +113,7 @@ class AiBuilderViewModel(
                     _uiState.value = UiState.Error("Failed to parse automation JSON from AI output")
                 }
             } else {
-                // Fallback default output for mock or when inference service returns null in test/stub mode
-                val defaultAutomation = createFallbackAutomation(promptText)
-                currentData = currentData.copy(
-                    isGenerating = false,
-                    generatedAutomation = defaultAutomation
-                )
-                _uiState.value = UiState.Success(currentData)
+                _uiState.value = UiState.Error("AI model inference returned no valid output")
             }
         } catch (e: Exception) {
             _uiState.value = UiState.Error(e.localizedMessage ?: "AI generation failed due to internal error", e)
@@ -214,18 +208,7 @@ class AiBuilderViewModel(
         return normalized
     }
 
-    private fun createFallbackAutomation(promptText: String): Automation {
-        val action = Action(
-            actionType = ActionType.SYSTEM_TOGGLE,
-            target = "WIFI",
-            state = "ON"
-        )
-        return Automation(
-            name = "AI Shortcut: $promptText",
-            actionsJson = ActionConverter().fromActionList(listOf(action)),
-            triggerType = "AI_GENERATED"
-        )
-    }
+
 
     fun saveGeneratedAutomation() {
         val automation = currentData.generatedAutomation ?: return

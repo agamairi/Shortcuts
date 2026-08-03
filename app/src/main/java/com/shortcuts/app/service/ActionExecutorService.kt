@@ -2,14 +2,18 @@ package com.shortcuts.app.service
 
 import android.content.Context
 import android.content.Intent
-import android.net.wifi.WifiManager
+import android.os.Build
+import android.provider.Settings
 import android.util.Log
 import com.shortcuts.app.data.Action
 import com.shortcuts.app.data.ActionType
+import java.net.HttpURLConnection
+import java.net.URL
 
 class ActionExecutorService(
     private val context: Context,
-    private val accessibilityService: AutomationAccessibilityService? = null
+    private val accessibilityService: AutomationAccessibilityService? = null,
+    var urlConnectionFactory: ((String) -> HttpURLConnection)? = null
 ) {
 
     fun executeActions(actions: List<Action>): Boolean {
@@ -33,12 +37,24 @@ class ActionExecutorService(
     }
 
     private fun handleSystemToggle(action: Action): Boolean {
-        if (action.target == "WIFI") {
-            val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
-            Log.d("ActionExecutor", "Toggling WIFI to ${action.state}, wifiManager: $wifiManager")
-            return true
+        return try {
+            val intent = if (action.target == "WIFI") {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                    Intent(Settings.Panel.ACTION_WIFI)
+                } else {
+                    Intent(Settings.ACTION_WIFI_SETTINGS)
+                }
+            } else {
+                Intent(Settings.ACTION_SETTINGS)
+            }
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            context.startActivity(intent)
+            Log.d("ActionExecutor", "Dispatched settings intent for target ${action.target}")
+            true
+        } catch (e: Exception) {
+            Log.e("ActionExecutor", "Failed to start settings activity for target ${action.target}", e)
+            false
         }
-        return true
     }
 
     private fun handleAppIntent(action: Action): Boolean {
@@ -55,9 +71,31 @@ class ActionExecutorService(
     }
 
     private fun handleHttpRequest(action: Action): Boolean {
-        // Use Retrofit or OkHttp to make the request
-        Log.d("ActionExecutor", "Making HTTP ${action.method} request to ${action.url}")
-        return true
+        val urlString = action.url ?: return false
+        return try {
+            val connection = urlConnectionFactory?.invoke(urlString)
+                ?: (URL(urlString).openConnection() as HttpURLConnection)
+            connection.connectTimeout = 5000
+            connection.readTimeout = 5000
+            val method = action.method?.uppercase() ?: "GET"
+            connection.requestMethod = method
+
+            if ((method == "POST" || method == "PUT") && !action.textInput.isNullOrEmpty()) {
+                connection.doOutput = true
+                connection.outputStream.use { os ->
+                    os.write(action.textInput.toByteArray(Charsets.UTF_8))
+                    os.flush()
+                }
+            }
+
+            val responseCode = connection.responseCode
+            Log.d("ActionExecutor", "HTTP $method request to $urlString returned code $responseCode")
+            connection.disconnect()
+            responseCode in 200..299
+        } catch (e: Exception) {
+            Log.e("ActionExecutor", "HTTP request to $urlString failed", e)
+            false
+        }
     }
 
     private fun handleUiAutomation(action: Action): Boolean {
@@ -71,3 +109,4 @@ class ActionExecutorService(
         }
     }
 }
+
