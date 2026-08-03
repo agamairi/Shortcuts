@@ -22,8 +22,8 @@ import org.junit.Assert.assertEquals
 class AutomationViewModelTest {
 
     private val testDispatcher = StandardTestDispatcher()
-    private lateinit val repository: AutomationRepository
-    private lateinit val viewModel: AutomationViewModel
+    private lateinit var repository: AutomationRepository
+    private lateinit var viewModel: AutomationViewModel
 
     @Before
     fun setup() {
