@@ -21,7 +21,12 @@ data class Action(
     val intentAction: String? = null,
     val url: String? = null,
     val method: String? = null,
-    val targetNodeId: String? = null
+    val targetNodeId: String? = null,
+    val textInput: String? = null,
+    val uiActionType: String? = null,
+    val globalAction: String? = null,
+    val scrollDirection: String? = null,
+    val targetText: String? = null
 )
 
 enum class ActionType {
