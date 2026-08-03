@@ -74,4 +74,16 @@ class ManualBuilderScreenTest {
         assertEquals(ActionType.SYSTEM_TOGGLE, deserialized[0].actionType)
         assertEquals("BLUETOOTH", deserialized[0].target)
     }
+
+    @Test
+    fun `action property modification`() {
+        val originalAction = Action(actionType = ActionType.UI_AUTOMATION, target = "Submit Button", textInput = "Old Text")
+        val updatedAction = originalAction.copy(textInput = "New Text", target = "Save Button")
+
+        assertEquals("New Text", updatedAction.textInput)
+        assertEquals("Save Button", updatedAction.target)
+        assertEquals(ActionType.UI_AUTOMATION, updatedAction.actionType)
+    }
 }
+
+

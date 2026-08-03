@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-03
+### Added
+- End-to-End (E2E) testing framework and test suite readiness documentation (`TEST_READY.md`) covering Tier 1-4 test scenarios.
+- Expanded unit & integration test coverage to 74 test cases across 11 test suites (100% pass rate).
+- Open Knowledge Format (OKF) documentation system in `okf-docs/` with YAML frontmatter (`architecture.md`, `automation-schema.md`, `services.md`, `viewmodel-uistate.md`).
+- Documented `ModelDownloaderService`, `AutomationAccessibilityService`, ViewModel/UiState architecture, Room DB schema, and action execution pipeline.
+- Process integration and Git branch merging strategy.
+
 ## [0.3.0] - 2026-08-03
 ### Added
 - Material You (M3 Expressive UI) design implementation including dynamic color scheme, M3 components, and responsive layouts.
