@@ -266,4 +266,132 @@ class AutomationAccessibilityServiceTest {
         val result = service.executeAction(action)
         assertFalse(result)
     }
+
+    @Test
+    fun `executeAction rejects invalid globalAction string without defaulting to BACK`() {
+        val action = Action(
+            actionType = ActionType.UI_AUTOMATION,
+            globalAction = "INVALID_GLOBAL_KEY"
+        )
+        val result = service.executeAction(action)
+        assertFalse(result)
+        verify(exactly = 0) { service.performGlobalAction(any()) }
+    }
+
+    @Test
+    fun `executeAction maps extra global actions correctly`() {
+        every { service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS) } returns true
+        val action = Action(
+            actionType = ActionType.UI_AUTOMATION,
+            globalAction = "NOTIFICATIONS"
+        )
+        val result = service.executeAction(action)
+        assertTrue(result)
+        verify { service.performGlobalAction(AccessibilityService.GLOBAL_ACTION_NOTIFICATIONS) }
+    }
+
+    @Test
+    fun `executeAction treats UI click action with target BACK as click action`() {
+        val targetNode = mockk<AccessibilityNodeInfo>(relaxed = true)
+        every { targetNode.isClickable } returns true
+        every { targetNode.performAction(AccessibilityNodeInfo.ACTION_CLICK) } returns true
+        every { mockRootNode.findAccessibilityNodeInfosByText("BACK") } returns listOf(targetNode)
+
+        val action = Action(
+            actionType = ActionType.UI_AUTOMATION,
+            uiActionType = "CLICK",
+            targetText = "BACK"
+        )
+
+        val result = service.executeAction(action)
+        assertTrue(result)
+        verify { targetNode.performAction(AccessibilityNodeInfo.ACTION_CLICK) }
+        verify(exactly = 0) { service.performGlobalAction(any()) }
+    }
+
+    @Test
+    fun `executeAction returns false for unknown or unsupported uiActionType`() {
+        val action = Action(
+            actionType = ActionType.UI_AUTOMATION,
+            uiActionType = "UNKNOWN_UNSUPPORTED_ACTION"
+        )
+
+        val result = service.executeAction(action)
+        assertFalse(result)
+    }
+
+    @Test
+    fun `executeAction handles parent cycle without infinite loop`() {
+        val nodeA = mockk<AccessibilityNodeInfo>(relaxed = true)
+        val nodeB = mockk<AccessibilityNodeInfo>(relaxed = true)
+
+        every { nodeA.isClickable } returns false
+        every { nodeB.isClickable } returns false
+
+        every { nodeA.parent } returns nodeB
+        every { nodeB.parent } returns nodeA
+        every { nodeA.performAction(AccessibilityNodeInfo.ACTION_CLICK) } returns true
+
+        every { mockRootNode.findAccessibilityNodeInfosByViewId("com.app:id/cyclic_btn") } returns listOf(nodeA)
+
+        val action = Action(
+            actionType = ActionType.UI_AUTOMATION,
+            uiActionType = "CLICK",
+            targetNodeId = "com.app:id/cyclic_btn"
+        )
+
+        val result = service.executeAction(action)
+        assertTrue(result)
+        verify { nodeA.performAction(AccessibilityNodeInfo.ACTION_CLICK) }
+    }
+
+    @Test
+    fun `executeAction handles deep parent hierarchy exceeding maxParentDepth`() {
+        val nodes = List(30) { mockk<AccessibilityNodeInfo>(relaxed = true) }
+        for (i in 0 until 29) {
+            every { nodes[i].isClickable } returns false
+            every { nodes[i].parent } returns nodes[i + 1]
+        }
+        every { nodes[29].isClickable } returns false
+        every { nodes[0].performAction(AccessibilityNodeInfo.ACTION_CLICK) } returns true
+
+        every { mockRootNode.findAccessibilityNodeInfosByViewId("com.app:id/deep_btn") } returns listOf(nodes[0])
+
+        val action = Action(
+            actionType = ActionType.UI_AUTOMATION,
+            uiActionType = "CLICK",
+            targetNodeId = "com.app:id/deep_btn"
+        )
+
+        val result = service.executeAction(action)
+        assertTrue(result)
+        verify { nodes[0].performAction(AccessibilityNodeInfo.ACTION_CLICK) }
+    }
+
+    @Test
+    fun `findNodeByTraversal stops searching when depth exceeds maxDepth`() {
+        val deepChild = mockk<AccessibilityNodeInfo>(relaxed = true)
+        every { deepChild.text } returns "Deep Target"
+
+        val found = service.findNodeByTraversal(deepChild, "Deep Target", depth = 21, maxDepth = 20)
+        org.junit.Assert.assertNull(found)
+    }
+
+    @Test
+    fun `findEditableNode stops searching when depth exceeds maxDepth`() {
+        val node = mockk<AccessibilityNodeInfo>(relaxed = true)
+        every { node.isEditable } returns true
+
+        val found = service.findEditableNode(node, depth = 21, maxDepth = 20)
+        org.junit.Assert.assertNull(found)
+    }
+
+    @Test
+    fun `findScrollableNode stops searching when depth exceeds maxDepth`() {
+        val node = mockk<AccessibilityNodeInfo>(relaxed = true)
+        every { node.isScrollable } returns true
+
+        val found = service.findScrollableNode(node, depth = 21, maxDepth = 20)
+        org.junit.Assert.assertNull(found)
+    }
 }

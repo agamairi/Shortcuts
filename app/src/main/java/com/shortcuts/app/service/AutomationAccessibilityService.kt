@@ -57,38 +57,73 @@ open class AutomationAccessibilityService : AccessibilityService() {
             isGlobalNavigationAction(action) -> handleGlobalNavigation(action)
             isTextEntryAction(action) -> handleTextEntry(action)
             isScrollAction(action) -> handleScroll(action)
-            else -> handleClickNode(action)
+            isClickAction(action) -> handleClickNode(action)
+            else -> {
+                Log.e(TAG, "Unknown or unsupported uiActionType: '${action.uiActionType}'")
+                false
+            }
         }
     }
 
     private fun isGlobalNavigationAction(action: Action): Boolean {
-        val uiType = action.uiActionType?.uppercase()
-        val global = action.globalAction?.uppercase()
-        val target = action.target?.uppercase()
-        val intent = action.intentAction?.uppercase()
+        val global = action.globalAction?.trim()
+        if (!global.isNullOrEmpty()) {
+            return true
+        }
 
-        val globalKeywords = setOf("BACK", "HOME", "RECENTS", "GLOBAL_ACTION", "GLOBAL_ACTION_BACK", "GLOBAL_ACTION_HOME", "GLOBAL_ACTION_RECENTS")
-        return (uiType != null && uiType in globalKeywords) ||
-                global != null ||
-                (target != null && target in globalKeywords) ||
-                (intent != null && intent in globalKeywords)
+        val uiType = action.uiActionType?.trim()?.uppercase()
+        if (uiType != null) {
+            val validGlobalUiTypes = setOf(
+                "GLOBAL_ACTION", "GLOBAL_NAVIGATION", "GLOBAL", "SYSTEM_NAV",
+                "GLOBAL_ACTION_BACK", "GLOBAL_ACTION_HOME", "GLOBAL_ACTION_RECENTS",
+                "GLOBAL_ACTION_NOTIFICATIONS", "GLOBAL_ACTION_QUICK_SETTINGS",
+                "GLOBAL_ACTION_POWER_DIALOG", "GLOBAL_ACTION_LOCK_SCREEN", "GLOBAL_ACTION_TAKE_SCREENSHOT"
+            )
+            if (uiType in validGlobalUiTypes || uiType.startsWith("GLOBAL_ACTION_")) {
+                return true
+            }
+        }
+
+        val target = action.target?.trim()?.uppercase()
+        if (target != null && target.startsWith("GLOBAL_ACTION_")) {
+            return true
+        }
+
+        val intent = action.intentAction?.trim()?.uppercase()
+        if (intent != null && intent.startsWith("GLOBAL_ACTION_")) {
+            return true
+        }
+
+        return false
+    }
+
+    private fun parseGlobalActionId(key: String?): Int? {
+        if (key.isNullOrBlank()) return null
+        val upperKey = key.trim().uppercase()
+        return when {
+            upperKey == "BACK" || upperKey == "GLOBAL_ACTION_BACK" || upperKey == "1" -> GLOBAL_ACTION_BACK
+            upperKey == "HOME" || upperKey == "GLOBAL_ACTION_HOME" || upperKey == "2" -> GLOBAL_ACTION_HOME
+            upperKey == "RECENTS" || upperKey == "GLOBAL_ACTION_RECENTS" || upperKey == "3" -> GLOBAL_ACTION_RECENTS
+            upperKey == "NOTIFICATIONS" || upperKey == "GLOBAL_ACTION_NOTIFICATIONS" || upperKey == "4" -> GLOBAL_ACTION_NOTIFICATIONS
+            upperKey == "QUICK_SETTINGS" || upperKey == "GLOBAL_ACTION_QUICK_SETTINGS" || upperKey == "5" -> GLOBAL_ACTION_QUICK_SETTINGS
+            upperKey == "POWER_DIALOG" || upperKey == "GLOBAL_ACTION_POWER_DIALOG" || upperKey == "6" -> GLOBAL_ACTION_POWER_DIALOG
+            upperKey == "LOCK_SCREEN" || upperKey == "GLOBAL_ACTION_LOCK_SCREEN" || upperKey == "8" -> GLOBAL_ACTION_LOCK_SCREEN
+            upperKey == "TAKE_SCREENSHOT" || upperKey == "GLOBAL_ACTION_TAKE_SCREENSHOT" || upperKey == "9" -> GLOBAL_ACTION_TAKE_SCREENSHOT
+            else -> null
+        }
     }
 
     private fun handleGlobalNavigation(action: Action): Boolean {
-        val key = action.globalAction?.uppercase()
-            ?: action.uiActionType?.uppercase()
-            ?: action.target?.uppercase()
-            ?: action.intentAction?.uppercase()
+        val key = action.globalAction
+            ?: action.uiActionType
+            ?: action.target
+            ?: action.intentAction
             ?: ""
 
-        val actionId = when {
-            key.contains("HOME") -> GLOBAL_ACTION_HOME
-            key.contains("RECENTS") -> GLOBAL_ACTION_RECENTS
-            key.contains("BACK") -> GLOBAL_ACTION_BACK
-            key == "1" -> GLOBAL_ACTION_BACK
-            key == "2" -> GLOBAL_ACTION_HOME
-            key == "3" -> GLOBAL_ACTION_RECENTS
-            else -> GLOBAL_ACTION_BACK
+        val actionId = parseGlobalActionId(key)
+        if (actionId == null) {
+            Log.w(TAG, "Unrecognized or invalid global navigation action key: '$key'")
+            return false
         }
 
         Log.d(TAG, "Executing performGlobalAction with actionId: $actionId for key: $key")
@@ -96,8 +131,9 @@ open class AutomationAccessibilityService : AccessibilityService() {
     }
 
     private fun isTextEntryAction(action: Action): Boolean {
-        val uiType = action.uiActionType?.uppercase()
-        return action.textInput != null || uiType == "SET_TEXT" || uiType == "TEXT_ENTRY" || uiType == "TYPE"
+        val uiType = action.uiActionType?.trim()?.uppercase()
+        val textEntryTypes = setOf("TYPE_TEXT", "SET_TEXT", "TEXT_ENTRY", "TYPE", "INPUT_TEXT")
+        return action.textInput != null || (uiType != null && uiType in textEntryTypes)
     }
 
     private fun handleTextEntry(action: Action): Boolean {
@@ -119,11 +155,12 @@ open class AutomationAccessibilityService : AccessibilityService() {
     }
 
     private fun isScrollAction(action: Action): Boolean {
-        val uiType = action.uiActionType?.uppercase()
-        val target = action.target?.uppercase()
-        return (uiType != null && (uiType == "SCROLL" || uiType == "SCROLL_FORWARD" || uiType == "SCROLL_BACKWARD")) ||
+        val uiType = action.uiActionType?.trim()?.uppercase()
+        val target = action.target?.trim()?.uppercase()
+        val scrollTypes = setOf("SCROLL", "SCROLL_FORWARD", "SCROLL_BACKWARD")
+        return (uiType != null && uiType in scrollTypes) ||
                 action.scrollDirection != null ||
-                (target != null && (target == "SCROLL_FORWARD" || target == "SCROLL_BACKWARD" || target == "SCROLL"))
+                (target != null && target in scrollTypes)
     }
 
     private fun handleScroll(action: Action): Boolean {
@@ -152,6 +189,20 @@ open class AutomationAccessibilityService : AccessibilityService() {
         return targetNode.performAction(scrollActionId)
     }
 
+    private fun isClickAction(action: Action): Boolean {
+        val uiType = action.uiActionType?.trim()?.uppercase()
+        val clickTypes = setOf("CLICK", "TAP", "PRESS")
+        if (uiType != null && uiType in clickTypes) {
+            return true
+        }
+        if (uiType.isNullOrEmpty()) {
+            return !action.targetNodeId.isNullOrEmpty() ||
+                    !action.targetText.isNullOrEmpty() ||
+                    !action.target.isNullOrEmpty()
+        }
+        return false
+    }
+
     private fun handleClickNode(action: Action): Boolean {
         val targetNode = findTargetNode(action)
         if (targetNode == null) {
@@ -159,13 +210,22 @@ open class AutomationAccessibilityService : AccessibilityService() {
             return false
         }
 
-        // Find clickable node (either target node or closest clickable parent)
+        // Find clickable node (either target node or closest clickable parent up to maxParentDepth)
         var clickableNode: AccessibilityNodeInfo? = targetNode
-        while (clickableNode != null && !clickableNode.isClickable) {
+        var depth = 0
+        val maxParentDepth = 25
+        val visited = mutableSetOf<AccessibilityNodeInfo>()
+
+        while (clickableNode != null && !clickableNode.isClickable && depth < maxParentDepth) {
+            if (!visited.add(clickableNode)) {
+                Log.w(TAG, "Cycle detected in parent hierarchy at depth $depth")
+                break
+            }
             clickableNode = clickableNode.parent
+            depth++
         }
 
-        val nodeToClick = clickableNode ?: targetNode
+        val nodeToClick = if (clickableNode != null && clickableNode.isClickable) clickableNode else targetNode
         Log.d(TAG, "Executing ACTION_CLICK on node: ${nodeToClick.viewIdResourceName}")
         return nodeToClick.performAction(AccessibilityNodeInfo.ACTION_CLICK)
     }
@@ -209,7 +269,16 @@ open class AutomationAccessibilityService : AccessibilityService() {
         return null
     }
 
-    private fun findNodeByTraversal(node: AccessibilityNodeInfo, searchTerm: String): AccessibilityNodeInfo? {
+    internal fun findNodeByTraversal(
+        node: AccessibilityNodeInfo,
+        searchTerm: String,
+        depth: Int = 0,
+        maxDepth: Int = 20
+    ): AccessibilityNodeInfo? {
+        if (depth > maxDepth) {
+            return null
+        }
+
         val termLower = searchTerm.lowercase()
 
         val viewIdMatch = node.viewIdResourceName?.lowercase()?.contains(termLower) == true
@@ -222,7 +291,7 @@ open class AutomationAccessibilityService : AccessibilityService() {
 
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            val result = findNodeByTraversal(child, searchTerm)
+            val result = findNodeByTraversal(child, searchTerm, depth + 1, maxDepth)
             if (result != null) {
                 return result
             }
@@ -231,27 +300,47 @@ open class AutomationAccessibilityService : AccessibilityService() {
         return null
     }
 
-    private fun findEditableNode(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
-        if (node == null) return null
-        if (node.isEditable || node.isFocusable) return node
+    internal fun findEditableNode(
+        node: AccessibilityNodeInfo?,
+        depth: Int = 0,
+        maxDepth: Int = 20
+    ): AccessibilityNodeInfo? {
+        if (node == null || depth > maxDepth) {
+            return null
+        }
+        if (node.isEditable || node.isFocusable) {
+            return node
+        }
 
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            val result = findEditableNode(child)
-            if (result != null) return result
+            val result = findEditableNode(child, depth + 1, maxDepth)
+            if (result != null) {
+                return result
+            }
         }
 
         return null
     }
 
-    private fun findScrollableNode(node: AccessibilityNodeInfo?): AccessibilityNodeInfo? {
-        if (node == null) return null
-        if (node.isScrollable) return node
+    internal fun findScrollableNode(
+        node: AccessibilityNodeInfo?,
+        depth: Int = 0,
+        maxDepth: Int = 20
+    ): AccessibilityNodeInfo? {
+        if (node == null || depth > maxDepth) {
+            return null
+        }
+        if (node.isScrollable) {
+            return node
+        }
 
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            val result = findScrollableNode(child)
-            if (result != null) return result
+            val result = findScrollableNode(child, depth + 1, maxDepth)
+            if (result != null) {
+                return result
+            }
         }
 
         return null
@@ -271,3 +360,4 @@ open class AutomationAccessibilityService : AccessibilityService() {
         }
     }
 }
+
