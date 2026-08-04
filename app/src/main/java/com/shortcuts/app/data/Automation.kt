@@ -10,7 +10,9 @@ import com.google.gson.reflect.TypeToken
 data class Automation(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
     val name: String,
-    val actionsJson: String // Serialized array of Actions
+    val actionsJson: String, // Serialized array of Actions
+    val isActive: Boolean = true,
+    val triggerType: String = "MANUAL"
 )
 
 data class Action(
@@ -21,7 +23,12 @@ data class Action(
     val intentAction: String? = null,
     val url: String? = null,
     val method: String? = null,
-    val targetNodeId: String? = null
+    val targetNodeId: String? = null,
+    val textInput: String? = null,
+    val uiActionType: String? = null,
+    val globalAction: String? = null,
+    val scrollDirection: String? = null,
+    val targetText: String? = null
 )
 
 enum class ActionType {
