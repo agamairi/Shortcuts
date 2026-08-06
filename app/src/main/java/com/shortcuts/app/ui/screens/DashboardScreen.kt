@@ -1,7 +1,18 @@
 package com.shortcuts.app.ui.screens
 
-import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.layout.*
+import android.appwidget.AppWidgetManager
+import android.content.ComponentName
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
@@ -9,33 +20,106 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FlashOn
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ElevatedCard
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
+import androidx.compose.material3.SnackbarHost
+import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.shortcuts.app.data.Automation
 import com.shortcuts.app.ui.state.UiState
 import com.shortcuts.app.viewmodel.AutomationViewModel
+import com.shortcuts.app.widget.AutomationWidgetReceiver
+import com.shortcuts.app.widget.GreetingWidgetReceiver
+import com.shortcuts.app.widget.GridWidgetReceiver
+import com.shortcuts.app.widget.ShortcutsListWidgetReceiver
 
 @Composable
 fun DashboardScreen(
     viewModel: AutomationViewModel,
     onNavigateToManualBuilder: () -> Unit,
-    onNavigateToAiBuilder: () -> Unit
+    onNavigateToAiBuilder: () -> Unit,
+    onNavigateToCreateWidget: () -> Unit = {},
+    onPinListWidget: (() -> Unit)? = null,
+    onPinGridWidget: (() -> Unit)? = null,
+    onPinGreetingWidget: (() -> Unit)? = null
 ) {
     val uiState by viewModel.uiState.collectAsState()
     val errorState by viewModel.errorState.collectAsState()
+    val context = LocalContext.current
+
+    val pinListAction = onPinListWidget ?: {
+        val appWidgetManager = AppWidgetManager.getInstance(context)
+        val provider = ComponentName(context, ShortcutsListWidgetReceiver::class.java)
+        if (appWidgetManager.isRequestPinAppWidgetSupported) {
+            appWidgetManager.requestPinAppWidget(provider, null, null)
+        }
+    }
+
+    val pinGridAction = onPinGridWidget ?: {
+        val appWidgetManager = AppWidgetManager.getInstance(context)
+        val provider = ComponentName(context, GridWidgetReceiver::class.java)
+        if (appWidgetManager.isRequestPinAppWidgetSupported) {
+            appWidgetManager.requestPinAppWidget(provider, null, null)
+        }
+    }
+
+    val pinGreetingAction = onPinGreetingWidget ?: {
+        val appWidgetManager = AppWidgetManager.getInstance(context)
+        val provider = ComponentName(context, GreetingWidgetReceiver::class.java)
+        if (appWidgetManager.isRequestPinAppWidgetSupported) {
+            appWidgetManager.requestPinAppWidget(provider, null, null)
+        }
+    }
 
     DashboardScreenContent(
         uiState = uiState,
         errorState = errorState,
         onNavigateToManualBuilder = onNavigateToManualBuilder,
         onNavigateToAiBuilder = onNavigateToAiBuilder,
+        onNavigateToCreateWidget = onNavigateToCreateWidget,
+        onPinListWidget = pinListAction,
+        onPinGridWidget = pinGridAction,
+        onPinGreetingWidget = pinGreetingAction,
         onToggleActive = { viewModel.toggleActive(it) },
         onDelete = { viewModel.delete(it) },
-        onClearError = { viewModel.clearError() }
+        onClearError = { viewModel.clearError() },
+        onPinToHomeScreen = {
+            val appWidgetManager = AppWidgetManager.getInstance(context)
+            val provider = ComponentName(context, AutomationWidgetReceiver::class.java)
+            if (appWidgetManager.isRequestPinAppWidgetSupported) {
+                appWidgetManager.requestPinAppWidget(provider, null, null)
+            }
+        }
     )
 }
 
@@ -46,9 +130,14 @@ fun DashboardScreenContent(
     errorState: String? = null,
     onNavigateToManualBuilder: () -> Unit,
     onNavigateToAiBuilder: () -> Unit,
+    onNavigateToCreateWidget: () -> Unit = {},
+    onPinListWidget: () -> Unit = {},
+    onPinGridWidget: () -> Unit = {},
+    onPinGreetingWidget: () -> Unit = {},
     onToggleActive: (Automation) -> Unit = {},
     onDelete: (Automation) -> Unit = {},
-    onClearError: () -> Unit = {}
+    onClearError: () -> Unit = {},
+    onPinToHomeScreen: () -> Unit = {}
 ) {
     val snackbarHostState = remember { SnackbarHostState() }
 
@@ -67,6 +156,7 @@ fun DashboardScreenContent(
     Scaffold(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
+            var menuExpanded by remember { mutableStateOf(false) }
             TopAppBar(
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -79,6 +169,44 @@ fun DashboardScreenContent(
                         Text(
                             text = "Shortcuts Dashboard",
                             style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+                        )
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { menuExpanded = true }) {
+                        Icon(Icons.Filled.MoreVert, contentDescription = "More options")
+                    }
+                    DropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { menuExpanded = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Create Your Own Widget") },
+                            onClick = {
+                                menuExpanded = false
+                                onNavigateToCreateWidget()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Pin Shortcuts List Widget") },
+                            onClick = {
+                                menuExpanded = false
+                                onPinListWidget()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Pin Shortcuts Grid Widget") },
+                            onClick = {
+                                menuExpanded = false
+                                onPinGridWidget()
+                            }
+                        )
+                        DropdownMenuItem(
+                            text = { Text("Pin Greeting Widget") },
+                            onClick = {
+                                menuExpanded = false
+                                onPinGreetingWidget()
+                            }
                         )
                     }
                 },
@@ -176,7 +304,8 @@ fun DashboardScreenContent(
                                 AutomationItemCard(
                                     automation = automation,
                                     onToggleActive = { onToggleActive(automation) },
-                                    onDelete = { onDelete(automation) }
+                                    onDelete = { onDelete(automation) },
+                                    onPinToHomeScreen = onPinToHomeScreen
                                 )
                             }
                         }
@@ -214,7 +343,8 @@ fun DashboardScreenContent(
 fun AutomationItemCard(
     automation: Automation,
     onToggleActive: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onPinToHomeScreen: () -> Unit = {}
 ) {
     ElevatedCard(
         modifier = Modifier.fillMaxWidth(),
@@ -256,6 +386,14 @@ fun AutomationItemCard(
                     )
                 )
                 Spacer(modifier = Modifier.width(8.dp))
+                IconButton(onClick = onPinToHomeScreen) {
+                    Icon(
+                        imageVector = Icons.Default.PushPin,
+                        contentDescription = "Pin to Home Screen",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Spacer(modifier = Modifier.width(4.dp))
                 IconButton(onClick = onDelete) {
                     Icon(
                         imageVector = Icons.Default.Delete,
