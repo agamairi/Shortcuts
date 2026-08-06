@@ -77,11 +77,13 @@ class DashboardScreenTest {
         }
 
         composeTestRule.onNodeWithContentDescription("More options").performClick()
-        composeTestRule.onNodeWithText("Create Your Own Widget").performClick()
+        composeTestRule.onNodeWithText("Add Widget to Home Screen").performClick()
+        composeTestRule.onAllNodesWithText("Create Your Own Widget")[0].performClick()
         assertTrue(createWidgetClicked)
 
         composeTestRule.onNodeWithContentDescription("More options").performClick()
-        composeTestRule.onNodeWithText("Pin Shortcuts List Widget").performClick()
+        composeTestRule.onNodeWithText("Add Widget to Home Screen").performClick()
+        composeTestRule.onAllNodesWithText("Pin to Home Screen")[1].performClick()
         assertTrue(pinListWidgetClicked)
     }
 }

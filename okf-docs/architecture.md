@@ -81,9 +81,9 @@ The **Shortcuts** Android application is an automated widget and workflow engine
 ---
 
 ## 5. Room Database Schema
-- **Schema Version**: Version 5 with real, non-destructive migration objects (`MIGRATION_1_2`, `MIGRATION_2_3`, `MIGRATION_3_4`, and `MIGRATION_4_5`) and exported KSP schema JSON files in `app/schemas/`.
+- **Schema Version**: Version 6 with real, non-destructive migration objects (`MIGRATION_1_2`, `MIGRATION_2_3`, `MIGRATION_3_4`, `MIGRATION_4_5`, and `MIGRATION_5_6`) and exported KSP schema JSON files in `app/schemas/`.
 - **Entities**:
-  - `Automation`: `id` (Int, PK, autoGenerate), `name` (String), `actionsJson` (String), `isActive` (Boolean), `triggerType` (String).
+  - `Automation`: `id` (Int, PK, autoGenerate), `name` (String), `actionsJson` (String), `isActive` (Boolean), `triggerType` (String), `colorKey` (String?, default null), `iconKey` (String?, default null).
   - `WidgetBinding`: `widgetId` (Int, PK), `automationId` (Int).
   - `WidgetListBinding`: `widgetId` (Int, PK), `automationIdsJson` (String).
   - `CustomWidgetTemplate`: `id` (Int, PK, autoGenerate), `label` (String), `colorKey` (String), `iconKey` (String), `automationId` (Int).
@@ -128,3 +128,20 @@ The **Shortcuts** Android application is an automated widget and workflow engine
 - **Layout & Interactivity**: Outer rounded card displaying non-clickable greeting text (bold, larger), containing an inner tappable shortcut row bound to `RunAutomationCallback` via `AutomationIdParamKey`.
 - **Persistence**: `GreetingWidgetBinding` entity storing `widgetId`, `userName`, `colorKey`, and `automationId`, persisted via `GreetingWidgetBindingDao` and migrated to Room DB v5 via `MIGRATION_4_5`.
 - **Configuration**: `GreetingWidgetConfigActivity` allows setting a custom name, selecting a background color swatch, and choosing a bound shortcut.
+
+---
+
+## 7. Settings & Help Architecture
+
+### 7.1 Settings Screen (`SettingsScreen` & `SettingsViewModel`)
+- **AI Model Management**: Leverages `ModelDownloaderService.downloadState` to observe real-time download status, initiate downloads via `ModelDownloaderService.startDownload(context)`, or delete the local model file (`deleteModel(context)` targeting `File(context.filesDir, "functiongemma.litertlm")`) with confirmation prompt.
+- **Accessibility Service Status**: Evaluates `ENABLED_ACCESSIBILITY_SERVICES` from `Settings.Secure` using pure component parsing helper `SettingsViewModel.isAccessibilityServiceEnabledFromSettingString`, providing direct navigation to Android system settings via `Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)`.
+- **App Meta & Onboarding**: Exposes dynamic package version inspection (`versionName`) and navigation link to the Help screen.
+
+### 7.2 Help Screen (`HelpScreen`)
+- **Documentation Engine**: Scrollable user reference breaking down:
+  1. What a Shortcut/automation is in this engine.
+  2. The 4 supported action types (`APP_INTENT`, `UI_ACTION`, `SYSTEM_TOGGLE`, `WEB_REQUEST`) with concrete examples.
+  3. Overview of all 5 home-screen Glance widget types.
+  4. Step-by-step walkthrough explaining multi-app action chaining (e.g. launching App A, tapping UI target, launching App B, tapping UI target) within a single shortcut execution pipeline.
+

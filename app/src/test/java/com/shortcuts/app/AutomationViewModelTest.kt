@@ -23,6 +23,9 @@ import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
+import com.shortcuts.app.widget.WidgetColorKey
+import com.shortcuts.app.widget.WidgetIconKey
+
 @OptIn(ExperimentalCoroutinesApi::class)
 class AutomationViewModelTest {
 
@@ -92,6 +95,19 @@ class AutomationViewModelTest {
         testDispatcher.scheduler.advanceUntilIdle()
 
         coVerify(exactly = 1) { repository.toggleActive(automation) }
+    }
+
+    @Test
+    fun `updateAppearance calls repository update with copied automation`() = runTest {
+        val vm = AutomationViewModel(repository)
+        val automation = Automation(id = 1, name = "Test Appearance", actionsJson = "[]", isActive = true)
+        coEvery { repository.update(any()) } returns Unit
+
+        vm.updateAppearance(automation, WidgetColorKey.PURPLE, WidgetIconKey.STAR)
+        testDispatcher.scheduler.advanceUntilIdle()
+
+        val expected = automation.copy(colorKey = WidgetColorKey.PURPLE.name, iconKey = WidgetIconKey.STAR.name)
+        coVerify(exactly = 1) { repository.update(expected) }
     }
 
     @Test
