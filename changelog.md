@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 ### Added
+- Per-shortcut appearance customization and Grid/List view mode with sorting in `DashboardScreen` matching Apple Shortcuts' documented behavior:
+  - **Manual Per-Shortcut Color and Icon Customization**: Added nullable `colorKey` and `iconKey` fields to `Automation` backed by Room DB migration `MIGRATION_5_6`. Tapping an automation's colored icon box opens a sheet displaying the 6-color swatch row and 6-icon grid from `CreateWidgetScreen`, calling `AutomationViewModel.updateAppearance` to persist custom styling while falling back to deterministic `AutomationVisuals` defaults if uncustomized.
+  - **Grid / List View Mode Toggle**: Added a top-app-bar view mode toggle button switching between a 2-column `LazyVerticalGrid` (defaulting to grid view matching iOS) and `LazyColumn` list view.
+  - **List View Sorting**: Added interactive `FilterChip` controls in list view supporting sorting by None (creation order), Name (A-Z), and Action Count, with toggleable ascending/descending order on re-selection. Pure sort logic extracted to `AutomationSorter`.
+- Unit tests in `AutomationViewModelTest` for `updateAppearance` and new unit test suite `AutomationSorterTest` testing all 3 sort modes in both directions.
 - Visual polish and visual widget-pinning gallery in `DashboardScreen`:
   - **Automation Item Visual Identity**: Redesigned `AutomationItemCard` to feature a deterministic colored rounded-square icon (`WidgetColorKey` and `WidgetIconKey`) based on automation ID, aligning with the visual language of the widget system while preserving all existing card controls.
   - **Visual Widget Gallery**: Replaced the plain-text overflow menu pinning items with a unified "Add Widget to Home Screen" entry point opening a visual `WidgetGalleryBottomSheet` displaying all 5 widget types (Quick Shortcut Tile, Shortcuts List, Custom Widget, Shortcuts Grid, Greeting Widget) with illustrative preview tiles, one-line descriptions from architecture documentation, direct pin actions, and secondary "Create Your Own Widget" links.

@@ -4,6 +4,7 @@ import android.appwidget.AppWidgetManager
 import android.content.ComponentName
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -17,6 +18,9 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -24,12 +28,17 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.ArrowDownward
+import androidx.compose.material.icons.filled.ArrowUpward
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.FlashOn
+import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.ViewList
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.CardDefaults
@@ -39,6 +48,7 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -67,11 +77,14 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.shortcuts.app.data.Automation
 import com.shortcuts.app.ui.state.UiState
+import com.shortcuts.app.util.AutomationSorter
 import com.shortcuts.app.util.AutomationVisuals
+import com.shortcuts.app.util.SortMode
 import com.shortcuts.app.viewmodel.AutomationViewModel
 import com.shortcuts.app.widget.AutomationWidgetReceiver
 import com.shortcuts.app.widget.CustomWidgetReceiver
@@ -141,6 +154,7 @@ fun DashboardScreen(
         onPinCustomWidget = pinCustomAction,
         onToggleActive = { viewModel.toggleActive(it) },
         onDelete = { viewModel.delete(it) },
+        onUpdateAppearance = { auto, colorKey, iconKey -> viewModel.updateAppearance(auto, colorKey, iconKey) },
         onClearError = { viewModel.clearError() },
         onPinToHomeScreen = {
             val appWidgetManager = AppWidgetManager.getInstance(context)
@@ -167,11 +181,16 @@ fun DashboardScreenContent(
     onPinCustomWidget: () -> Unit = {},
     onToggleActive: (Automation) -> Unit = {},
     onDelete: (Automation) -> Unit = {},
+    onUpdateAppearance: (Automation, WidgetColorKey, WidgetIconKey) -> Unit = { _, _, _ -> },
     onClearError: () -> Unit = {},
     onPinToHomeScreen: () -> Unit = {}
 ) {
     val snackbarHostState = remember { SnackbarHostState() }
     var showWidgetGallerySheet by remember { mutableStateOf(false) }
+    var isGridView by remember { mutableStateOf(true) }
+    var sortMode by remember { mutableStateOf(SortMode.NONE) }
+    var sortAscending by remember { mutableStateOf(true) }
+    var appearanceTargetAutomation by remember { mutableStateOf<Automation?>(null) }
 
     LaunchedEffect(errorState, uiState) {
         val errorMessage = errorState ?: (uiState as? UiState.Error)?.message
@@ -205,6 +224,12 @@ fun DashboardScreenContent(
                     }
                 },
                 actions = {
+                    IconButton(onClick = { isGridView = !isGridView }) {
+                        Icon(
+                            imageVector = if (isGridView) Icons.Filled.ViewList else Icons.Filled.GridView,
+                            contentDescription = if (isGridView) "Switch to List View" else "Switch to Grid View"
+                        )
+                    }
                     IconButton(onClick = onNavigateToSettings) {
                         Icon(Icons.Filled.Settings, contentDescription = "Settings")
                     }
@@ -310,17 +335,91 @@ fun DashboardScreenContent(
                             }
                         }
                     } else {
-                        LazyColumn(
-                            verticalArrangement = Arrangement.spacedBy(12.dp),
-                            modifier = Modifier.fillMaxSize()
-                        ) {
-                            items(automations, key = { it.id }) { automation ->
-                                AutomationItemCard(
-                                    automation = automation,
-                                    onToggleActive = { onToggleActive(automation) },
-                                    onDelete = { onDelete(automation) },
-                                    onPinToHomeScreen = onPinToHomeScreen
-                                )
+                        val displayAutomations = remember(automations, sortMode, sortAscending, isGridView) {
+                            if (isGridView) {
+                                automations
+                            } else {
+                                AutomationSorter.sortAutomations(automations, sortMode, sortAscending)
+                            }
+                        }
+
+                        Column(modifier = Modifier.fillMaxSize()) {
+                            if (!isGridView) {
+                                Row(
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(bottom = 12.dp)
+                                ) {
+                                    Text(
+                                        text = "Sort:",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                    listOf(
+                                        SortMode.NONE to "None",
+                                        SortMode.NAME to "Name",
+                                        SortMode.ACTION_COUNT to "Action Count"
+                                    ).forEach { (mode, label) ->
+                                        val isSelected = sortMode == mode
+                                        FilterChip(
+                                            selected = isSelected,
+                                            onClick = {
+                                                if (isSelected) {
+                                                    sortAscending = !sortAscending
+                                                } else {
+                                                    sortMode = mode
+                                                    sortAscending = true
+                                                }
+                                            },
+                                            label = { Text(label, style = MaterialTheme.typography.labelSmall) },
+                                            trailingIcon = if (isSelected) {
+                                                {
+                                                    Icon(
+                                                        imageVector = if (sortAscending) Icons.Filled.ArrowUpward else Icons.Filled.ArrowDownward,
+                                                        contentDescription = if (sortAscending) "Ascending" else "Descending",
+                                                        modifier = Modifier.size(14.dp)
+                                                    )
+                                                }
+                                            } else null
+                                        )
+                                    }
+                                }
+                            }
+
+                            if (isGridView) {
+                                LazyVerticalGrid(
+                                    columns = GridCells.Fixed(2),
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                                    modifier = Modifier.fillMaxSize()
+                                ) {
+                                    items(displayAutomations, key = { it.id }) { automation ->
+                                        AutomationGridItemCard(
+                                            automation = automation,
+                                            onToggleActive = { onToggleActive(automation) },
+                                            onDelete = { onDelete(automation) },
+                                            onPinToHomeScreen = onPinToHomeScreen,
+                                            onOpenAppearancePicker = { appearanceTargetAutomation = automation }
+                                        )
+                                    }
+                                }
+                            } else {
+                                LazyColumn(
+                                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                                    modifier = Modifier.fillMaxSize()
+                                ) {
+                                    items(displayAutomations, key = { it.id }) { automation ->
+                                        AutomationItemCard(
+                                            automation = automation,
+                                            onToggleActive = { onToggleActive(automation) },
+                                            onDelete = { onDelete(automation) },
+                                            onPinToHomeScreen = onPinToHomeScreen,
+                                            onOpenAppearancePicker = { appearanceTargetAutomation = automation }
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
@@ -363,6 +462,16 @@ fun DashboardScreenContent(
             onPinGreetingWidget = onPinGreetingWidget
         )
     }
+
+    appearanceTargetAutomation?.let { target ->
+        AutomationAppearancePickerSheet(
+            automation = target,
+            onDismiss = { appearanceTargetAutomation = null },
+            onSaveAppearance = { colorKey, iconKey ->
+                onUpdateAppearance(target, colorKey, iconKey)
+            }
+        )
+    }
 }
 
 @Composable
@@ -370,10 +479,13 @@ fun AutomationItemCard(
     automation: Automation,
     onToggleActive: () -> Unit,
     onDelete: () -> Unit,
-    onPinToHomeScreen: () -> Unit = {}
+    onPinToHomeScreen: () -> Unit = {},
+    onOpenAppearancePicker: () -> Unit = {}
 ) {
-    val colorKey = AutomationVisuals.colorForAutomation(automation.id)
-    val iconKey = AutomationVisuals.iconForAutomation(automation.id)
+    val colorKey = automation.colorKey?.let { runCatching { WidgetColorKey.valueOf(it) }.getOrNull() }
+        ?: AutomationVisuals.colorForAutomation(automation.id)
+    val iconKey = automation.iconKey?.let { runCatching { WidgetIconKey.valueOf(it) }.getOrNull() }
+        ?: AutomationVisuals.iconForAutomation(automation.id)
 
     ElevatedCard(
         modifier = Modifier.fillMaxWidth(),
@@ -391,12 +503,13 @@ fun AutomationItemCard(
                 modifier = Modifier
                     .size(44.dp)
                     .clip(RoundedCornerShape(12.dp))
-                    .background(colorKey.composeColor),
+                    .background(colorKey.composeColor)
+                    .clickable { onOpenAppearancePicker() },
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
                     imageVector = iconKey.composeIcon,
-                    contentDescription = null,
+                    contentDescription = "Customize appearance",
                     tint = Color.White,
                     modifier = Modifier.size(24.dp)
                 )
@@ -448,6 +561,238 @@ fun AutomationItemCard(
                     )
                 }
             }
+        }
+    }
+}
+
+@Composable
+fun AutomationGridItemCard(
+    automation: Automation,
+    onToggleActive: () -> Unit,
+    onDelete: () -> Unit,
+    onPinToHomeScreen: () -> Unit = {},
+    onOpenAppearancePicker: () -> Unit = {}
+) {
+    val colorKey = automation.colorKey?.let { runCatching { WidgetColorKey.valueOf(it) }.getOrNull() }
+        ?: AutomationVisuals.colorForAutomation(automation.id)
+    val iconKey = automation.iconKey?.let { runCatching { WidgetIconKey.valueOf(it) }.getOrNull() }
+        ?: AutomationVisuals.iconForAutomation(automation.id)
+
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.elevatedCardColors(
+            containerColor = MaterialTheme.colorScheme.surface
+        )
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(colorKey.composeColor)
+                        .clickable { onOpenAppearancePicker() },
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        imageVector = iconKey.composeIcon,
+                        contentDescription = "Customize appearance",
+                        tint = Color.White,
+                        modifier = Modifier.size(22.dp)
+                    )
+                }
+
+                Switch(
+                    checked = automation.isActive,
+                    onCheckedChange = { onToggleActive() },
+                    colors = SwitchDefaults.colors(
+                        checkedThumbColor = MaterialTheme.colorScheme.primary,
+                        checkedTrackColor = MaterialTheme.colorScheme.primaryContainer
+                    )
+                )
+            }
+
+            Spacer(modifier = Modifier.height(10.dp))
+
+            Text(
+                text = automation.name,
+                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
+                color = MaterialTheme.colorScheme.onSurface,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+
+            Spacer(modifier = Modifier.height(4.dp))
+
+            Text(
+                text = "Trigger: ${automation.triggerType}",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End
+            ) {
+                IconButton(
+                    onClick = onPinToHomeScreen,
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.PushPin,
+                        contentDescription = "Pin to Home Screen",
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+                IconButton(
+                    onClick = onDelete,
+                    modifier = Modifier.size(32.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "Delete Shortcut",
+                        tint = MaterialTheme.colorScheme.error,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun AutomationAppearancePickerSheet(
+    automation: Automation,
+    onDismiss: () -> Unit,
+    onSaveAppearance: (WidgetColorKey, WidgetIconKey) -> Unit
+) {
+    val initialColor = automation.colorKey?.let { runCatching { WidgetColorKey.valueOf(it) }.getOrNull() }
+        ?: AutomationVisuals.colorForAutomation(automation.id)
+    val initialIcon = automation.iconKey?.let { runCatching { WidgetIconKey.valueOf(it) }.getOrNull() }
+        ?: AutomationVisuals.iconForAutomation(automation.id)
+
+    var selectedColor by remember { mutableStateOf(initialColor) }
+    var selectedIcon by remember { mutableStateOf(initialIcon) }
+
+    ModalBottomSheet(onDismissRequest = onDismiss) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 20.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Text(
+                text = "Customize Appearance",
+                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
+            )
+
+            Text(
+                text = "Icon & Color for \"${automation.name}\"",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+
+            // Color Swatches
+            Column {
+                Text(
+                    text = "Color",
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    WidgetColorKey.entries.forEach { colorKey ->
+                        val isSelected = selectedColor == colorKey
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .clip(CircleShape)
+                                .background(colorKey.composeColor)
+                                .border(
+                                    width = if (isSelected) 3.dp else 0.dp,
+                                    color = if (isSelected) MaterialTheme.colorScheme.onSurface else Color.Transparent,
+                                    shape = CircleShape
+                                )
+                                .clickable { selectedColor = colorKey },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            if (isSelected) {
+                                Icon(
+                                    imageVector = Icons.Filled.Check,
+                                    contentDescription = "Selected",
+                                    tint = Color.White,
+                                    modifier = Modifier.size(20.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Icon Swatches
+            Column {
+                Text(
+                    text = "Icon",
+                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Row(
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    WidgetIconKey.entries.forEach { iconKey ->
+                        val isSelected = selectedIcon == iconKey
+                        IconButton(
+                            onClick = { selectedIcon = iconKey },
+                            modifier = Modifier
+                                .size(44.dp)
+                                .background(
+                                    color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                                    shape = RoundedCornerShape(8.dp)
+                                )
+                                .border(
+                                    width = if (isSelected) 2.dp else 0.dp,
+                                    color = if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent,
+                                    shape = RoundedCornerShape(8.dp)
+                                )
+                        ) {
+                            Icon(
+                                imageVector = iconKey.composeIcon,
+                                contentDescription = iconKey.displayLabel,
+                                tint = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(8.dp))
+
+            Button(
+                onClick = {
+                    onSaveAppearance(selectedColor, selectedIcon)
+                    onDismiss()
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Save")
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
         }
     }
 }

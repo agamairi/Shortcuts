@@ -81,9 +81,9 @@ The **Shortcuts** Android application is an automated widget and workflow engine
 ---
 
 ## 5. Room Database Schema
-- **Schema Version**: Version 5 with real, non-destructive migration objects (`MIGRATION_1_2`, `MIGRATION_2_3`, `MIGRATION_3_4`, and `MIGRATION_4_5`) and exported KSP schema JSON files in `app/schemas/`.
+- **Schema Version**: Version 6 with real, non-destructive migration objects (`MIGRATION_1_2`, `MIGRATION_2_3`, `MIGRATION_3_4`, `MIGRATION_4_5`, and `MIGRATION_5_6`) and exported KSP schema JSON files in `app/schemas/`.
 - **Entities**:
-  - `Automation`: `id` (Int, PK, autoGenerate), `name` (String), `actionsJson` (String), `isActive` (Boolean), `triggerType` (String).
+  - `Automation`: `id` (Int, PK, autoGenerate), `name` (String), `actionsJson` (String), `isActive` (Boolean), `triggerType` (String), `colorKey` (String?, default null), `iconKey` (String?, default null).
   - `WidgetBinding`: `widgetId` (Int, PK), `automationId` (Int).
   - `WidgetListBinding`: `widgetId` (Int, PK), `automationIdsJson` (String).
   - `CustomWidgetTemplate`: `id` (Int, PK, autoGenerate), `label` (String), `colorKey` (String), `iconKey` (String), `automationId` (Int).

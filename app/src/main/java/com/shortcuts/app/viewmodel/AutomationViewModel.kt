@@ -14,6 +14,9 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
+import com.shortcuts.app.widget.WidgetColorKey
+import com.shortcuts.app.widget.WidgetIconKey
+
 class AutomationViewModel(private val repository: AutomationRepository) : ViewModel() {
 
     private val _errorState = MutableStateFlow<String?>(null)
@@ -58,6 +61,17 @@ class AutomationViewModel(private val repository: AutomationRepository) : ViewMo
                 repository.toggleActive(automation)
             } catch (e: Exception) {
                 _errorState.value = e.localizedMessage ?: "Failed to toggle active state"
+            }
+        }
+    }
+
+    fun updateAppearance(automation: Automation, colorKey: WidgetColorKey, iconKey: WidgetIconKey) {
+        viewModelScope.launch {
+            try {
+                val updated = automation.copy(colorKey = colorKey.name, iconKey = iconKey.name)
+                repository.update(updated)
+            } catch (e: Exception) {
+                _errorState.value = e.localizedMessage ?: "Failed to update automation appearance"
             }
         }
     }
