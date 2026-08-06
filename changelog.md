@@ -6,6 +6,27 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Added
+- Visual polish and visual widget-pinning gallery in `DashboardScreen`:
+  - **Automation Item Visual Identity**: Redesigned `AutomationItemCard` to feature a deterministic colored rounded-square icon (`WidgetColorKey` and `WidgetIconKey`) based on automation ID, aligning with the visual language of the widget system while preserving all existing card controls.
+  - **Visual Widget Gallery**: Replaced the plain-text overflow menu pinning items with a unified "Add Widget to Home Screen" entry point opening a visual `WidgetGalleryBottomSheet` displaying all 5 widget types (Quick Shortcut Tile, Shortcuts List, Custom Widget, Shortcuts Grid, Greeting Widget) with illustrative preview tiles, one-line descriptions from architecture documentation, direct pin actions, and secondary "Create Your Own Widget" links.
+- Unit tests in `AutomationVisualsTest` verifying deterministic color/icon mapping and palette distribution, and updated `DashboardScreenTest` for the new gallery bottom sheet flow.
+- New Settings screen (`SettingsScreen` + `SettingsViewModel`) reachable via a dedicated top-app-bar gear icon on the Dashboard:
+  - **AI Model Management**: View model download state, start download, or delete model on disk (`deleteModel(context)`) with a confirmation dialog.
+  - **Accessibility Service Status**: Live status check for `AutomationAccessibilityService` with single-tap navigation to Android Accessibility Settings.
+  - **About & Documentation**: App version inspection and direct link to the new Help screen.
+- New Help screen (`HelpScreen`) providing clear user documentation:
+  - Definition of Shortcuts and automations.
+  - Overview of all 4 action types ("Open an App", "Tap or Type on Screen", "Toggle a Setting", "Web Request") with one-line examples.
+  - Explanation of all 5 home-screen widget types.
+  - Concrete step-by-step example showing how a single Shortcut can chain actions across multiple apps (e.g. Alexa + Hue) in sequence using Accessibility.
+- Redesigned action-adding UX in `ManualBuilderScreen`:
+  - **Action Selection Bottom Sheet**: Replaced hardcoded default action creation with a `ModalBottomSheet` displaying friendly cards for all 4 action types ("Open an App", "Tap or Type on Screen", "Toggle a Setting", "Web Request") with icons and plain-language descriptions.
+  - **App Picker**: Replaced raw package name text fields for `APP_INTENT` actions with an installed app picker (`AppPickerDialog`) querying launchable apps via `PackageManager`, displaying app icons and labels with real-time search filtering.
+  - **Human-Readable Action Summaries**: Replaced raw `ActionType` enum names with one-line human-readable summaries (e.g. "Open Alexa", "Tap 'Living Room'") and expandable action cards.
+  - **Accessibility Warning Banner**: Added a top-of-screen warning banner navigating directly to Settings if the Accessibility Service is disabled.
+  - **Accessibility Utility**: Extracted Accessibility Service status checking logic into `AccessibilityStatusChecker` shared by `SettingsViewModel` and `ManualBuilderScreen`.
+- Unit tests for `ManualBuilderScreenTest` covering app filtering/sorting, app label resolution, action summary formatting, and action type metadata.
 
 ## [0.5.0] - 2026-08-06
 ### Added

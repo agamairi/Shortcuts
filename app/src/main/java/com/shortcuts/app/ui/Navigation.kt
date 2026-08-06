@@ -12,10 +12,13 @@ import com.shortcuts.app.service.OnDeviceInferenceService
 import com.shortcuts.app.ui.screens.AiBuilderScreen
 import com.shortcuts.app.ui.screens.CreateWidgetScreen
 import com.shortcuts.app.ui.screens.DashboardScreen
+import com.shortcuts.app.ui.screens.HelpScreen
 import com.shortcuts.app.ui.screens.ManualBuilderScreen
+import com.shortcuts.app.ui.screens.SettingsScreen
 import com.shortcuts.app.viewmodel.AiBuilderViewModel
 import com.shortcuts.app.viewmodel.AutomationViewModel
 import com.shortcuts.app.viewmodel.CustomWidgetViewModel
+import com.shortcuts.app.viewmodel.SettingsViewModel
 
 @Composable
 fun ShortcutsNavigation() {
@@ -47,19 +50,25 @@ fun ShortcutsNavigation() {
         CustomWidgetViewModel(repository = repository, templateDao = templateDao, inferenceService = inferenceService)
     }
 
+    val settingsViewModel = remember {
+        SettingsViewModel()
+    }
+
     NavHost(navController = navController, startDestination = "dashboard") {
         composable("dashboard") {
             DashboardScreen(
                 viewModel = automationViewModel,
                 onNavigateToManualBuilder = { navController.navigate("manual_builder") },
                 onNavigateToAiBuilder = { navController.navigate("ai_builder") },
-                onNavigateToCreateWidget = { navController.navigate("create_widget") }
+                onNavigateToCreateWidget = { navController.navigate("create_widget") },
+                onNavigateToSettings = { navController.navigate("settings") }
             )
         }
         composable("manual_builder") {
             ManualBuilderScreen(
                 viewModel = automationViewModel,
-                onNavigateBack = { navController.popBackStack() }
+                onNavigateBack = { navController.popBackStack() },
+                onNavigateToSettings = { navController.navigate("settings") }
             )
         }
         composable("ai_builder") {
@@ -73,6 +82,18 @@ fun ShortcutsNavigation() {
                 viewModel = customWidgetViewModel,
                 onNavigateBack = { navController.popBackStack() },
                 onNavigateToAiBuilder = { navController.navigate("ai_builder") }
+            )
+        }
+        composable("settings") {
+            SettingsScreen(
+                viewModel = settingsViewModel,
+                onNavigateBack = { navController.popBackStack() },
+                onNavigateToHelp = { navController.navigate("help") }
+            )
+        }
+        composable("help") {
+            HelpScreen(
+                onNavigateBack = { navController.popBackStack() }
             )
         }
     }
