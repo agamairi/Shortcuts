@@ -52,6 +52,22 @@ class OnDeviceInferenceService(private val context: Context) {
             return@withContext null
         }
     }
+
+    suspend fun generateWidgetSpecJson(prompt: String): String? = withContext(Dispatchers.IO) {
+        if (!isInitialized) {
+            val success = initializeModel()
+            if (!success) return@withContext null
+        }
+
+        try {
+            val fullPrompt = "Describe a shortcut widget design. Output ONLY strict JSON with format {\"label\": \"...\", \"color\": \"blue|purple|green|orange|red|teal\", \"icon\": \"wifi|bluetooth|home|bolt|star|bell\", \"automation_name\": \"...\"} for prompt: $prompt"
+            val response = llmInference?.generateResponse(fullPrompt)
+            return@withContext response
+        } catch (e: Exception) {
+            Log.e("InferenceService", "Error during widget spec inference", e)
+            return@withContext null
+        }
+    }
     
     fun close() {
         llmInference?.close()
