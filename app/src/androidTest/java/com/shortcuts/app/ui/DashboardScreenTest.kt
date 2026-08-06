@@ -6,6 +6,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.shortcuts.app.data.Automation
 import com.shortcuts.app.ui.screens.DashboardScreenContent
 import com.shortcuts.app.ui.state.UiState
+import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -58,5 +59,29 @@ class DashboardScreenTest {
 
         composeTestRule.onNodeWithText("WiFi Auto").assertIsDisplayed()
         composeTestRule.onNodeWithText("Trigger: MANUAL").assertIsDisplayed()
+    }
+
+    @Test
+    fun dashboardScreen_overflowMenuTriggersCallbacks() {
+        var createWidgetClicked = false
+        var pinListWidgetClicked = false
+
+        composeTestRule.setContent {
+            DashboardScreenContent(
+                uiState = UiState.Success(emptyList()),
+                onNavigateToManualBuilder = {},
+                onNavigateToAiBuilder = {},
+                onNavigateToCreateWidget = { createWidgetClicked = true },
+                onPinListWidget = { pinListWidgetClicked = true }
+            )
+        }
+
+        composeTestRule.onNodeWithContentDescription("More options").performClick()
+        composeTestRule.onNodeWithText("Create Your Own Widget").performClick()
+        assertTrue(createWidgetClicked)
+
+        composeTestRule.onNodeWithContentDescription("More options").performClick()
+        composeTestRule.onNodeWithText("Pin Shortcuts List Widget").performClick()
+        assertTrue(pinListWidgetClicked)
     }
 }

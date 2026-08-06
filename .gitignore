@@ -9,9 +9,11 @@
 /.idea/assetWizardSettings.xml
 .DS_Store
 /build
+app/build/
 /captures
 .externalNativeBuild
 .cxx
 local.properties
 .agents/
 .gradle_home/
+mcp/agy-connector/node_modules/
