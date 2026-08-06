@@ -58,6 +58,13 @@ class ModelDownloaderService : Service() {
             }
             context.startService(intent)
         }
+
+        fun deleteModel(context: Context): Boolean {
+            val file = File(context.filesDir, "functiongemma.litertlm")
+            val deleted = if (file.exists()) file.delete() else false
+            updateDownloadState(DownloadState.Idle)
+            return deleted
+        }
     }
 
     override fun onCreate() {

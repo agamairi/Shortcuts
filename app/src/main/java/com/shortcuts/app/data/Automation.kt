@@ -12,7 +12,9 @@ data class Automation(
     val name: String,
     val actionsJson: String, // Serialized array of Actions
     val isActive: Boolean = true,
-    val triggerType: String = "MANUAL"
+    val triggerType: String = "MANUAL",
+    val colorKey: String? = null,
+    val iconKey: String? = null
 )
 
 data class Action(
