@@ -4,4 +4,6 @@
     android:minHeight="180dp"
     android:resizeMode="horizontal|vertical"
     android:configure="com.shortcuts.app.widget.ShortcutsListWidgetConfigActivity"
-    android:widgetCategory="home_screen" />
+    android:description="@string/legacy_widget_description"
+    android:widgetCategory="home_screen"
+    android:widgetFeatures="hide_from_picker" />

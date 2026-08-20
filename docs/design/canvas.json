@@ -1,0 +1,16 @@
+{
+  "artboards": [
+    { "file": "Main.dc.html", "x": 0, "y": 0, "w": 400, "h": 860, "title": "Dashboard" },
+    { "file": "Builder.dc.html", "x": 470, "y": 0, "w": 400, "h": 860, "title": "AI builder" },
+    { "file": "Describe.dc.html", "x": 940, "y": 0, "w": 400, "h": 860, "title": "Describe it" },
+    { "file": "Editor.dc.html", "x": 1410, "y": 0, "w": 400, "h": 860, "title": "Review steps" },
+    { "file": "ManualBuilder.dc.html", "x": 1880, "y": 0, "w": 400, "h": 860, "title": "Manual builder" },
+    { "file": "WidgetPicker.dc.html", "x": 2350, "y": 0, "w": 400, "h": 860, "title": "Add widget" }
+  ],
+  "annotations": [
+    { "id": "note-tint", "x": 470, "y": -170, "w": 400, "text": "The background is RANDOMISED per shortcut from the six tile colours — the same palette the dashboard tiles use. The colour you get here is the colour the tile and widget will be.\n\nUse the swatch tweak above the artboard to see the other five." },
+    { "id": "note-describe", "x": 940, "y": -170, "w": 400, "text": "Free text lives behind the \"Describe the widget\" button, not a separate link. Same coloured ground, so it reads as one flow.\n\nThe examples are there because a blank box is the hardest thing to answer." },
+    { "id": "note-manual", "x": 1880, "y": -170, "w": 400, "text": "Manual creation uses the same sentence-with-slots language as the AI builder — the only difference is that YOU pick every slot instead of the model proposing them.\n\nThe swatch row sets the shortcut's colour, which is why this screen shows it and the AI one doesn't." }
+  ],
+  "launch": { "view": "canvas" }
+}

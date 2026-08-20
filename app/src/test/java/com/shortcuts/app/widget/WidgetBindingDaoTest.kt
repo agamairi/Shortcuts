@@ -132,10 +132,13 @@ class WidgetBindingDaoTest {
         assertEquals("com.example.app", actions[1].packageName)
 
         // 6. Execute actions via ActionExecutorService
-        every { mockExecutorService.executeActions(actions) } returns true
+        every { mockExecutorService.executeActions(actions) } returns com.shortcuts.app.service.RunResult(
+            shortcutName = "Test Shortcut",
+            steps = listOf(com.shortcuts.app.service.StepResult.Success)
+        )
         val result = mockExecutorService.executeActions(actions)
 
-        assertTrue(result)
+        assertTrue(result.allSucceeded)
         verify { mockExecutorService.executeActions(actions) }
     }
 

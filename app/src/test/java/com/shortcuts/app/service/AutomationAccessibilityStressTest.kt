@@ -166,7 +166,7 @@ class AutomationAccessibilityStressTest {
             executor.submit {
                 try {
                     val res = actionExecutor.executeAction(action)
-                    if (res) successCount.incrementAndGet()
+                    if (res is StepResult.Success) successCount.incrementAndGet()
                 } catch (t: Throwable) {
                     errorCount.incrementAndGet()
                     t.printStackTrace()

@@ -1,20 +1,32 @@
 package com.shortcuts.app.ui.screens
 
+import android.Manifest
 import android.content.Intent
+import android.os.Build
 import android.provider.Settings
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.HelpOutline
@@ -46,10 +58,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.shortcuts.app.service.DownloadState
+import com.shortcuts.app.ui.theme.LocalShortcutsPalette
+import com.shortcuts.app.ui.theme.ThemeMode
 import com.shortcuts.app.viewmodel.SettingsViewModel
 import java.io.File
 
@@ -61,10 +76,22 @@ fun SettingsScreen(
     viewModel: SettingsViewModel? = null
 ) {
     val context = LocalContext.current
+    var showAccessibilityDisclosure by remember { mutableStateOf(false) }
+    if (showAccessibilityDisclosure) {
+        AccessibilityDisclosureScreen(onNavigateBack = { showAccessibilityDisclosure = false })
+        return
+    }
     val vm = viewModel ?: remember { SettingsViewModel() }
+    val palette = LocalShortcutsPalette.current
 
     val downloadState by vm.downloadState.collectAsState()
     val isAccessibilityEnabled by vm.isAccessibilityServiceEnabled.collectAsState()
+
+    remember(context) { vm.getThemePreferences(context) }
+    val themeMode by vm.themeMode.collectAsState()
+    val notificationsPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* The app remains usable; execution falls back to in-app results if denied. */ }
 
     var showDeleteDialog by remember { mutableStateOf(false) }
 
@@ -87,6 +114,7 @@ fun SettingsScreen(
     }
 
     Scaffold(
+        contentWindowInsets = WindowInsets.safeDrawing,
         topBar = {
             TopAppBar(
                 title = { Text("Settings", style = MaterialTheme.typography.titleLarge) },
@@ -109,6 +137,59 @@ fun SettingsScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            ElevatedCard(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.elevatedCardColors(containerColor = palette.surface)
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp)
+                ) {
+                    Text(
+                        text = "Appearance",
+                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                        color = palette.ink
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        text = "Choose how Shortcuts follows your device display.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = palette.inkMuted
+                    )
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        ThemeMode.entries.forEach { mode ->
+                            val selected = themeMode == mode
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(44.dp)
+                                    .clip(androidx.compose.foundation.shape.RoundedCornerShape(18.dp))
+                                    .background(if (selected) palette.ink else palette.surface)
+                                    .then(
+                                        if (selected) Modifier else Modifier.border(
+                                            width = 1.dp,
+                                            color = palette.outline,
+                                            shape = androidx.compose.foundation.shape.RoundedCornerShape(18.dp)
+                                        )
+                                    )
+                                    .clickable { vm.updateThemeMode(context, mode) },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = mode.label,
+                                    style = MaterialTheme.typography.labelMedium,
+                                    color = if (selected) palette.ground else palette.inkMuted
+                                )
+                            }
+                        }
+                    }
+                }
+            }
             // Section 1: AI Model
             ElevatedCard(
                 modifier = Modifier.fillMaxWidth(),
@@ -125,7 +206,7 @@ fun SettingsScreen(
                         Icon(
                             imageVector = Icons.Filled.Psychology,
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary
+                            tint = palette.ink
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
@@ -146,7 +227,7 @@ fun SettingsScreen(
                             LinearProgressIndicator(
                                 progress = (state.progress / 100f).coerceIn(0f, 1f),
                                 modifier = Modifier.fillMaxWidth(),
-                                color = MaterialTheme.colorScheme.primary
+                                color = palette.ink
                             )
                         }
                         is DownloadState.Failed -> {
@@ -161,7 +242,7 @@ fun SettingsScreen(
                                 Text(
                                     text = if (fileSizeText.isNotBlank()) "Ready ($fileSizeText)" else "Ready",
                                     style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.primary,
+                                    color = palette.ink,
                                     fontWeight = FontWeight.SemiBold
                                 )
                             } else {
@@ -217,7 +298,7 @@ fun SettingsScreen(
                         Icon(
                             imageVector = Icons.Filled.SettingsAccessibility,
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary
+                            tint = palette.ink
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
@@ -230,7 +311,7 @@ fun SettingsScreen(
                         text = if (isAccessibilityEnabled) "Status: Enabled" else "Status: Not enabled",
                         style = MaterialTheme.typography.bodyMedium,
                         fontWeight = FontWeight.SemiBold,
-                        color = if (isAccessibilityEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                        color = if (isAccessibilityEnabled) palette.ink else palette.danger
                     )
                     Spacer(modifier = Modifier.height(4.dp))
                     Text(
@@ -240,13 +321,38 @@ fun SettingsScreen(
                     )
                     Spacer(modifier = Modifier.height(16.dp))
                     Button(
-                        onClick = {
-                            val intent = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
-                            context.startActivity(intent)
-                        },
-                        modifier = Modifier.fillMaxWidth()
+                        onClick = { showAccessibilityDisclosure = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = palette.ink,
+                            contentColor = palette.ground
+                        )
                     ) {
-                        Text("Open Accessibility Settings")
+                        Text("Review disclosure")
+                    }
+                }
+            }
+
+            // Section 3: About
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                ElevatedCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.surface)
+                ) {
+                    Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
+                        Text("Shortcut result notifications", style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold))
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            "Allow notifications so widget-run shortcuts can tell you when a step needs attention. You can continue using shortcuts if you decline.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Spacer(modifier = Modifier.height(12.dp))
+                        OutlinedButton(
+                            onClick = { notificationsPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.outlinedButtonColors(contentColor = palette.ink)
+                        ) { Text("Allow notifications", color = palette.ink) }
                     }
                 }
             }
@@ -267,7 +373,7 @@ fun SettingsScreen(
                         Icon(
                             imageVector = Icons.Filled.Info,
                             contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary
+                            tint = palette.ink
                         )
                         Spacer(modifier = Modifier.width(8.dp))
                         Text(
