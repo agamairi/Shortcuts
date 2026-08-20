@@ -4,8 +4,13 @@ import android.content.Context
 import androidx.room.Database
 import androidx.room.Room
 import androidx.room.RoomDatabase
+import androidx.room.InvalidationTracker
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.shortcuts.app.widget.ShortcutWidgetUpdater
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 
 @Database(
     entities = [
@@ -15,9 +20,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         CustomWidgetTemplate::class,
         CustomWidgetBinding::class,
         GridWidgetBinding::class,
-        GreetingWidgetBinding::class
+        GreetingWidgetBinding::class,
+        WidgetConfig::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -28,6 +34,17 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun customWidgetBindingDao(): CustomWidgetBindingDao
     abstract fun gridWidgetBindingDao(): GridWidgetBindingDao
     abstract fun greetingWidgetBindingDao(): GreetingWidgetBindingDao
+    abstract fun widgetConfigDao(): WidgetConfigDao
+
+    private fun installWidgetRefreshObserver(context: Context) {
+        invalidationTracker.addObserver(object : InvalidationTracker.Observer("automations") {
+            override fun onInvalidated(tables: Set<String>) {
+                CoroutineScope(Dispatchers.IO).launch {
+                    ShortcutWidgetUpdater.refreshAll(context)
+                }
+            }
+        })
+    }
 
     companion object {
         @Volatile
@@ -66,6 +83,60 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        /**
+         * Add the consolidated representation without touching the old tables. Keeping the
+         * originals makes this migration recoverable and preserves a downgrade path.
+         */
+        val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    "CREATE TABLE IF NOT EXISTS `widget_configs` (" +
+                        "`widgetId` INTEGER NOT NULL, " +
+                        "`sourceType` TEXT NOT NULL, " +
+                        "`automationIdsJson` TEXT NOT NULL, " +
+                        "`templateIdsJson` TEXT, " +
+                        "`templateId` INTEGER, " +
+                        "`label` TEXT, " +
+                        "`colorKey` TEXT, " +
+                        "`iconKey` TEXT, " +
+                        "`userName` TEXT, " +
+                        "PRIMARY KEY(`widgetId`, `sourceType`))"
+                )
+                db.execSQL(
+                    "INSERT OR REPLACE INTO widget_configs " +
+                        "(widgetId, sourceType, automationIdsJson) " +
+                        "SELECT widgetId, 'AUTOMATION', '[' || automationId || ']' FROM widget_bindings"
+                )
+                db.execSQL(
+                    "INSERT OR REPLACE INTO widget_configs " +
+                        "(widgetId, sourceType, automationIdsJson) " +
+                        "SELECT widgetId, 'LIST', automationIdsJson FROM widget_list_bindings"
+                )
+                // A left join intentionally retains a binding even if an old template was
+                // already missing; its templateId remains recoverable and renders as setup.
+                db.execSQL(
+                    "INSERT OR REPLACE INTO widget_configs " +
+                        "(widgetId, sourceType, automationIdsJson, templateId, label, colorKey, iconKey) " +
+                        "SELECT b.widgetId, 'CUSTOM', " +
+                        "CASE WHEN t.automationId IS NULL THEN '[]' ELSE '[' || t.automationId || ']' END, " +
+                        "b.templateId, t.label, t.colorKey, t.iconKey " +
+                        "FROM custom_widget_bindings b " +
+                        "LEFT JOIN custom_widget_templates t ON t.id = b.templateId"
+                )
+                db.execSQL(
+                    "INSERT OR REPLACE INTO widget_configs " +
+                        "(widgetId, sourceType, automationIdsJson, templateIdsJson) " +
+                        "SELECT widgetId, 'GRID', '[]', templateIdsJson FROM grid_widget_bindings"
+                )
+                db.execSQL(
+                    "INSERT OR REPLACE INTO widget_configs " +
+                        "(widgetId, sourceType, automationIdsJson, colorKey, userName) " +
+                        "SELECT widgetId, 'GREETING', '[' || automationId || ']', colorKey, userName " +
+                        "FROM greeting_widget_bindings"
+                )
+            }
+        }
+
         fun getDatabase(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
                 val instance = Room.databaseBuilder(
@@ -73,8 +144,16 @@ abstract class AppDatabase : RoomDatabase() {
                     AppDatabase::class.java,
                     "automation_database"
                 )
-                    .addMigrations(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5, MIGRATION_5_6)
+                    .addMigrations(
+                        MIGRATION_1_2,
+                        MIGRATION_2_3,
+                        MIGRATION_3_4,
+                        MIGRATION_4_5,
+                        MIGRATION_5_6,
+                        MIGRATION_6_7
+                    )
                     .build()
+                instance.installWidgetRefreshObserver(context.applicationContext)
                 INSTANCE = instance
                 instance
             }

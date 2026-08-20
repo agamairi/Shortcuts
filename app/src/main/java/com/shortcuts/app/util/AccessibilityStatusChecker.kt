@@ -32,4 +32,12 @@ object AccessibilityStatusChecker {
         }
         return isAccessibilityServiceEnabledFromSettingString(enabledServices, context.packageName)
     }
+
+    /**
+     * Settings is the durable signal that the user enabled this component. A null service
+     * instance can be a normal, momentary framework recycle and is not evidence of disablement.
+     */
+    fun isAccessibilityServiceActive(context: Context): Boolean {
+        return isAccessibilityEnabled(context)
+    }
 }

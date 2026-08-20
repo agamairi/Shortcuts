@@ -6,9 +6,8 @@ import androidx.glance.GlanceId
 import androidx.glance.action.ActionParameters
 import androidx.glance.appwidget.GlanceAppWidgetManager
 import androidx.glance.appwidget.action.ActionCallback
-import com.shortcuts.app.data.ActionConverter
 import com.shortcuts.app.data.AppDatabase
-import com.shortcuts.app.service.ActionExecutorService
+import com.shortcuts.app.service.AutomationExecutionService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -45,13 +44,8 @@ class RunAutomationCallback : ActionCallback {
                     return@withContext
                 }
 
-                val converter = ActionConverter()
-                val actions = converter.toActionList(automation.actionsJson)
-
-                val executor = ActionExecutorService(context)
-                executor.executeActions(actions)
-
-                Log.d("WidgetCallback", "Executed automation '${automation.name}' with ${actions.size} actions")
+                AutomationExecutionService.start(context, automation.id)
+                Log.d("WidgetCallback", "Started foreground execution for '${automation.name}'")
             } catch (e: Exception) {
                 Log.e("WidgetCallback", "Failed to execute widget automation", e)
             }

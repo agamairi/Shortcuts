@@ -7,6 +7,72 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-20
+### Fixed — execution correctness (the app's worst bugs)
+- **Device toggles never toggled anything.** `ActionExecutorService.handleSystemToggle` compared the
+  target to `"WIFI"` in uppercase while the AI emits lowercase, so EVERY toggle — including WiFi —
+  fell through to a catch-all that opened the generic Settings app. The on/off `state` was parsed,
+  stored, and then never read. Targets are now matched case-insensitively, `state` is honoured, and
+  flashlight / Do Not Disturb / volume / ring mode perform real toggles. Verified on-device: a
+  lowercase `wifi` shortcut now resolves to `SettingsPanelActivity`, not `SettingsHomepageActivity`.
+- Where Android forbids a toggle (WiFi and Bluetooth since API 29/33, Airplane mode entirely), the
+  app now says so in plain language instead of silently opening the wrong screen. An unrecognised
+  target is an explicit failure rather than a catch-all.
+- Widget taps discarded the execution result entirely. Execution now returns a per-step `StepResult`
+  (Success / Failed / NeedsPermission / Skipped), runs in a foreground service so multi-step chains
+  survive the tap, and reports which step failed and why.
+- `AutomationWidget` ignored the user's chosen `colorKey`/`iconKey` and always drew a bolt.
+
+### Fixed — the on-device AI pipeline
+- The ~271 MB model was **closed and fully reloaded before every generation**, once per clause, so a
+  three-clause prompt reloaded it three times. Now one long-lived `LlmInference` engine with a fresh
+  `LlmInferenceSession` per generation, serialised behind a Mutex.
+- Replaced the regex prompt splitter with a quote- and speech-verb-aware `PromptSegmenter`:
+  "Text mom and tell her I'm running late" is one step again, "Play Simon and Garfunkel" is one step,
+  "Turn on wifi and open Spotify" is two.
+- Every clause now yields exactly one `DraftStep`; a clause the model cannot handle surfaces as
+  `Unresolved` instead of being silently dropped (a 3-step request could previously save as 1).
+- App references are grounded against the REAL installed-app list via `PackageManager` instead of the
+  model recalling package names; ambiguous matches return null rather than launching the wrong app.
+- `ClauseAligner` maps batched model output back to clauses by evidence, refusing to pair an action
+  with a clause it has no evidence for.
+
+### Added
+- **Shortcut recorder.** Record taps and typing in other apps via the accessibility service, review
+  the captured steps, and save them as a normal shortcut. Labels are derived from the node tree
+  (view id → own text → descendants → ancestors), because the node that fires a click is usually an
+  unlabelled container; unidentifiable taps appear as `UNRESOLVED` rather than vanishing.
+- Slot-based ("madlib") AI builder and a matching manual builder — the template fixes the action
+  type, so the model never chooses the function, which is the step it most often got wrong.
+- Review-before-save editor with per-step plain-language descriptions, reordering, and Test Run.
+- Messaging and calling via `ACTION_SENDTO` / `ACTION_DIAL` — no Play-restricted permissions.
+- System / Light / Dark theme setting, applied immediately and persisted.
+
+### Changed
+- New visual design across the app: bundled Schibsted Grotesk (SIL OFL), a warm palette, and
+  colour-coded shortcut tiles.
+- Tile palette expanded from 6 to 14 colours and icons from 6 to 17, every colour verified at
+  >= 3.0:1 contrast against white content. Orange was corrected from a FAILING 2.70:1 to 3.08:1.
+  `WidgetColorKey` is now the single source of truth so app tiles and widgets cannot drift apart.
+- Five widget types consolidated into one adaptive widget, with an additive Room migration 6→7 that
+  keeps legacy tables intact; verified with an instrumented `MigrationTestHelper` test.
+- Edge-to-edge insets handled app-wide (required by targetSdk 35 on Android 15+).
+- `compileSdk` 36, `targetSdk` 35, release build minified with keep rules.
+- Accessibility features gated behind an explicit opt-in and disclosure.
+
+### Removed
+- The `AppThemeAccent` accent-colour system, which clashed with the new palette.
+
+### Known issues
+- The Android 16 promoted-ongoing status bar chip does not render; the generated bitmap badge showing
+  the live step count is used instead. `setShortCriticalText` alone does not promote a notification —
+  `FLAG_PROMOTED_ONGOING` is set by the system — and the qualifying characteristics are unresolved.
+- The recording notification is not re-posted when the app restarts with a session already active,
+  so the Stop action is lost until recording is stopped from inside the app.
+- Android revokes this app's accessibility service on force-stop, and ADB cannot re-grant it once the
+  app is flagged under restricted settings; it must be granted from Settings.
+- Test Run for UI-automation steps depends on the target app's layout and may not replay reliably.
+
 ## [0.6.0] - 2026-08-06
 ### Added
 - Per-shortcut appearance customization and Grid/List view mode with sorting in `DashboardScreen` matching Apple Shortcuts' documented behavior (verified against support.apple.com/guide/shortcuts, not assumption):

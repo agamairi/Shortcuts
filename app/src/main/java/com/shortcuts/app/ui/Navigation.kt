@@ -14,6 +14,7 @@ import com.shortcuts.app.ui.screens.CreateWidgetScreen
 import com.shortcuts.app.ui.screens.DashboardScreen
 import com.shortcuts.app.ui.screens.HelpScreen
 import com.shortcuts.app.ui.screens.ManualBuilderScreen
+import com.shortcuts.app.ui.screens.RecorderScreen
 import com.shortcuts.app.ui.screens.SettingsScreen
 import com.shortcuts.app.viewmodel.AiBuilderViewModel
 import com.shortcuts.app.viewmodel.AutomationViewModel
@@ -21,14 +22,15 @@ import com.shortcuts.app.viewmodel.CustomWidgetViewModel
 import com.shortcuts.app.viewmodel.SettingsViewModel
 
 @Composable
-fun ShortcutsNavigation() {
+fun ShortcutsNavigation(startDestination: String = "dashboard") {
     val navController = rememberNavController()
     val context = LocalContext.current
 
     val repository = remember(context) {
-        val dao = AppDatabase.getDatabase(context).automationDao()
-        AutomationRepository(dao)
+        val db = AppDatabase.getDatabase(context)
+        AutomationRepository(db.automationDao(), db.widgetConfigDao())
     }
+
 
     val templateDao = remember(context) {
         AppDatabase.getDatabase(context).customWidgetTemplateDao()
@@ -54,13 +56,13 @@ fun ShortcutsNavigation() {
         SettingsViewModel()
     }
 
-    NavHost(navController = navController, startDestination = "dashboard") {
+    NavHost(navController = navController, startDestination = startDestination) {
         composable("dashboard") {
             DashboardScreen(
                 viewModel = automationViewModel,
                 onNavigateToManualBuilder = { navController.navigate("manual_builder") },
+                onNavigateToRecorder = { navController.navigate(recordButtonDestination()) },
                 onNavigateToAiBuilder = { navController.navigate("ai_builder") },
-                onNavigateToCreateWidget = { navController.navigate("create_widget") },
                 onNavigateToSettings = { navController.navigate("settings") }
             )
         }
@@ -93,6 +95,12 @@ fun ShortcutsNavigation() {
         }
         composable("help") {
             HelpScreen(
+                onNavigateBack = { navController.popBackStack() }
+            )
+        }
+        composable(RECORDER_ROUTE) {
+            RecorderScreen(
+                viewModel = automationViewModel,
                 onNavigateBack = { navController.popBackStack() }
             )
         }

@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Shortcuts</string>
+    <!-- Shown in the homescreen widget picker under the widget's name. -->
+    <string name="shortcut_widget_label">Shortcuts</string>
+    <string name="shortcut_widget_description">Run your shortcuts from the homescreen. Resize for a single tile, a grid, or a list.</string>
+    <string name="legacy_automation_widget_label">Single Shortcut (Legacy — do not use)</string>
+    <string name="legacy_shortcuts_list_widget_label">Shortcuts List (Legacy — do not use)</string>
+    <string name="legacy_custom_widget_label">Custom Shortcut (Legacy — do not use)</string>
+    <string name="legacy_grid_widget_label">Shortcut Grid (Legacy — do not use)</string>
+    <string name="legacy_greeting_widget_label">Greeting Shortcut (Legacy — do not use)</string>
+    <string name="legacy_widget_description">For compatibility with widgets already on your homescreen. Use “Shortcuts” instead; this entry now opens the same setup.</string>
+    <string name="shortcut_widget_picker_title">Add to homescreen</string>
+    <string name="shortcut_widget_picker_explanation">One widget, four sizes. Resize it on your homescreen and it changes shape.</string>
+    <string name="shortcut_widget_place">Place widget</string>
+    <string name="accessibility_disclosure_title">Automation accessibility disclosure</string>
+    <string name="accessibility_disclosure_acknowledge">I understand and want to enable UI automation actions</string>
+    <string name="accessibility_disclosure_heading">Tap or Type on Screen</string>
+    <string name="accessibility_disclosure_access">This optional feature lets a shortcut you created interact with the app currently on screen. It can read visible text, labels, and view identifiers in the active window so it can find the button or field you selected.</string>
+    <string name="accessibility_disclosure_use">It is used only for automations that you create and trigger yourself. It is not needed for messages, calls, web requests, widgets, or other shortcuts. You can leave it off and those features will still work.</string>
+    <string name="accessibility_disclosure_settings">After you acknowledge this disclosure, Android will show its own Accessibility settings screen. You can turn the service off at any time in Android settings.</string>
+    <string name="accessibility_disclosure_open_settings">Open Android Accessibility Settings</string>
+
+    <!-- Delete confirmation dialog (R-WIDGET-6) -->
+    <string name="delete_shortcut_dialog_title">Delete \"%1$s\"?</string>
+    <string name="delete_shortcut_dialog_body_one">This shortcut is used by 1 homescreen widget. Deleting it will stop that widget from working.</string>
+    <string name="delete_shortcut_dialog_body_other">This shortcut is used by %1$d homescreen widgets. Deleting it will stop those widgets from working.</string>
+    <string name="delete_shortcut_dialog_confirm">Delete anyway</string>
+    <string name="delete_shortcut_dialog_cancel">Cancel</string>
+
+    <!-- Standing notice shown above the AI prompt input in AiBuilderScreen. -->
+    <!-- Not dismissible — it reflects the ongoing experimental state of on-device AI generation. -->
+    <string name="ai_builder_experimental_notice_title">AI generation is experimental</string>
+    <string name="ai_builder_experimental_notice_body">The on-device model often picks the wrong action or misses steps entirely. Review every generated step carefully before saving.</string>
+
+    <!-- Review-steps screen (Editor.dc.html) -->
+    <string name="review_steps_title">Review steps</string>
+    <string name="review_steps_sub_line">From \u201c%1$s\u201d \u00b7 check each step</string>
+    <string name="review_steps_save">Save</string>
+    <string name="review_steps_test_run">Test run</string>
+    <string name="review_steps_add_step">Add a step</string>
+    <string name="review_steps_couldnt_resolve">Couldn\u2019t work this out</string>
+    <string name="review_steps_choose_app">Choose an app</string>
+    <string name="manual_builder_add_step">Add a step</string>
+    <string name="manual_builder_test_run">Test run</string>
+    <string name="manual_builder_choose_state">Choose a state</string>
+    <string name="manual_builder_choose_control">Choose a device control</string>
+
+    <!-- Madlib builder (Builder.dc.html) — "Inspire me" removed; pill now reads "Describe the widget" -->
+    <!-- These legacy strings are kept so existing string-reference tooling doesn't break, but -->
+    <!-- they are no longer shown in the UI. -->
+    <string name="madlib_inspire_me">Inspire me</string>
+    <string name="madlib_describe_instead">Describe it instead</string>
+
+    <!-- "Describe the widget" pill on the builder and title on the Describe screen -->
+    <string name="describe_widget_pill">Describe the widget</string>
+    <string name="describe_screen_title">Describe the widget</string>
+    <!-- Main heading on the Describe screen (Describe.dc.html) -->
+    <string name="describe_heading">What should this shortcut do?</string>
+    <!-- Supporting line below the heading -->
+    <string name="describe_subheading">Write it the way you\'d say it out loud.</string>
+    <!-- Placeholder text inside the translucent input area -->
+    <string name="describe_input_placeholder">e.g., Turn on the flashlight and open the camera</string>
+    <!-- "Try one of these" label above the example prompts -->
+    <string name="describe_examples_label">Try one of these</string>
+    <!-- Three realistic example prompts the user can tap to fill the input -->
+    <string name="describe_example_1">Mute my phone and open Calendar</string>
+    <string name="describe_example_2">Text Mum that I\'m running late</string>
+    <string name="describe_example_3">Turn on Do Not Disturb</string>
+    <!-- Primary action button label -->
+    <string name="describe_build_steps">Build the steps</string>
+</resources>

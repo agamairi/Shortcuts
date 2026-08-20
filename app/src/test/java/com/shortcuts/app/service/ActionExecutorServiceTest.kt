@@ -1,24 +1,30 @@
 package com.shortcuts.app.service
 
-import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.provider.Settings
+import android.os.Build
 import android.content.pm.PackageManager
+import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraManager
 import com.shortcuts.app.data.Action
 import com.shortcuts.app.data.ActionType
 import io.mockk.clearAllMocks
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.slot
 import io.mockk.verify
-import java.net.HttpURLConnection
+import okhttp3.Call
+import okhttp3.Response
 import org.junit.After
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
 
 class ActionExecutorServiceTest {
-
     private lateinit var mockContext: Context
     private lateinit var mockPackageManager: PackageManager
     private lateinit var mockAccessibilityService: AutomationAccessibilityService
@@ -29,149 +35,197 @@ class ActionExecutorServiceTest {
         mockContext = mockk(relaxed = true)
         mockPackageManager = mockk(relaxed = true)
         mockAccessibilityService = mockk(relaxed = true)
-
         every { mockContext.packageManager } returns mockPackageManager
-
         actionExecutorService = ActionExecutorService(mockContext, mockAccessibilityService)
     }
 
     @After
-    fun tearDown() {
-        clearAllMocks()
-    }
+    fun tearDown() = clearAllMocks()
 
     @Test
-    fun `executeAction handles SYSTEM_TOGGLE action`() {
-        val action = Action(
-            actionType = ActionType.SYSTEM_TOGGLE,
-            target = "WIFI",
-            state = "ON"
+    fun `lowercase wifi opens the wifi panel and never generic settings`() {
+        // The original bug: handleSystemToggle compared target to "WIFI" while the model emits
+        // "wifi", so every toggle fell through to the generic Settings catch-all.
+        val result = actionExecutorService.executeAction(
+            Action(ActionType.SYSTEM_TOGGLE, target = "wifi", state = "on")
         )
 
-        val result = actionExecutorService.executeAction(action)
-        assertTrue(result)
-        verify { mockContext.startActivity(any()) }
+        assertTrue(result is StepResult.Failed)
+        val failure = result as StepResult.Failed
+        // PLATFORM_RESTRICTION (not UNSUPPORTED_TARGET) proves "wifi" was recognized, not dropped.
+        assertEquals(FailureReason.PLATFORM_RESTRICTION, failure.reason)
+        assertTrue(failure.userMessage.contains("WiFi"))
+        verify(exactly = 1) { mockContext.startActivity(any()) }
     }
 
     @Test
-    fun `executeAction handles SYSTEM_TOGGLE failure when activity fails`() {
-        every { mockContext.startActivity(any()) } throws ActivityNotFoundException("Activity not found")
-        val action = Action(
-            actionType = ActionType.SYSTEM_TOGGLE,
-            target = "WIFI",
-            state = "ON"
+    fun `wifi resolves to a wifi-specific settings action on every supported sdk`() {
+        // Asserted against the pure mapping because android.jar is stubbed in JVM unit tests:
+        // Intent.getAction() would return null here regardless of what we passed in.
+        val onQPlus = ActionExecutorService.wifiSettingsAction(Build.VERSION_CODES.Q)
+        val onLegacy = ActionExecutorService.wifiSettingsAction(Build.VERSION_CODES.O)
+
+        assertEquals(Settings.Panel.ACTION_WIFI, onQPlus)
+        assertEquals(Settings.ACTION_WIFI_SETTINGS, onLegacy)
+        assertTrue(onQPlus != Settings.ACTION_SETTINGS)
+        assertTrue(onLegacy != Settings.ACTION_SETTINGS)
+    }
+
+    @Test
+    fun `flashlight state on and off call torch mode in both directions`() {
+        val cameraManager = mockk<CameraManager>(relaxed = true)
+        val characteristics = mockk<CameraCharacteristics>()
+        every { mockContext.getSystemService(Context.CAMERA_SERVICE) } returns cameraManager
+        every { cameraManager.cameraIdList } returns arrayOf("back")
+        every { cameraManager.getCameraCharacteristics("back") } returns characteristics
+        every { characteristics.get(CameraCharacteristics.FLASH_INFO_AVAILABLE) } returns true
+
+        assertEquals(
+            StepResult.Success,
+            actionExecutorService.executeAction(Action(ActionType.SYSTEM_TOGGLE, target = "flashlight", state = "on"))
+        )
+        assertEquals(
+            StepResult.Success,
+            actionExecutorService.executeAction(Action(ActionType.SYSTEM_TOGGLE, target = "flashlight", state = "off"))
         )
 
-        val result = actionExecutorService.executeAction(action)
-        assertFalse(result)
+        verify { cameraManager.setTorchMode("back", true) }
+        verify { cameraManager.setTorchMode("back", false) }
     }
 
     @Test
-    fun `executeAction handles APP_INTENT action when launch intent exists`() {
+    fun `unknown system toggle is an explicit failure and does not open settings`() {
+        val result = actionExecutorService.executeAction(
+            Action(ActionType.SYSTEM_TOGGLE, target = "teleport", state = "on")
+        )
+
+        assertTrue(result is StepResult.Failed)
+        assertEquals(FailureReason.UNSUPPORTED_TARGET, (result as StepResult.Failed).reason)
+        verify(exactly = 0) { mockContext.startActivity(any()) }
+    }
+
+    @Test
+    fun `app intent succeeds when launch intent exists`() {
         val launchIntent = mockk<Intent>(relaxed = true)
         every { mockPackageManager.getLaunchIntentForPackage("com.example.app") } returns launchIntent
 
-        val action = Action(
-            actionType = ActionType.APP_INTENT,
-            packageName = "com.example.app"
+        assertEquals(
+            StepResult.Success,
+            actionExecutorService.executeAction(Action(ActionType.APP_INTENT, packageName = "com.example.app"))
         )
-
-        val result = actionExecutorService.executeAction(action)
-        assertTrue(result)
         verify { mockContext.startActivity(launchIntent) }
     }
 
     @Test
-    fun `executeAction handles APP_INTENT action when package not found`() {
+    fun `app intent identifies an app that is not installed`() {
         every { mockPackageManager.getLaunchIntentForPackage(any()) } returns null
 
-        val action = Action(
-            actionType = ActionType.APP_INTENT,
-            packageName = "com.nonexistent.app"
-        )
+        val result = actionExecutorService.executeAction(Action(ActionType.APP_INTENT, packageName = "com.missing"))
 
-        val result = actionExecutorService.executeAction(action)
-        assertFalse(result)
+        assertEquals(FailureReason.APP_NOT_FOUND, (result as StepResult.Failed).reason)
     }
 
     @Test
-    fun `executeAction handleHttpRequest returns true when response code is 200`() {
-        val mockConnection = mockk<HttpURLConnection>(relaxed = true)
-        every { mockConnection.responseCode } returns 200
+    fun `http request reports success only for a successful response`() {
+        val callFactory = mockk<Call.Factory>()
+        val call = mockk<Call>()
+        val response = mockk<Response>(relaxed = true)
+        every { callFactory.newCall(any()) } returns call
+        every { call.execute() } returns response
+        every { response.isSuccessful } returns true
+        val service = ActionExecutorService(mockContext, mockAccessibilityService, callFactory)
 
-        val service = ActionExecutorService(mockContext, mockAccessibilityService, urlConnectionFactory = { mockConnection })
-        val action = Action(
-            actionType = ActionType.HTTP_REQUEST,
-            url = "https://api.example.com/status",
-            method = "GET"
+        assertEquals(
+            StepResult.Success,
+            service.executeAction(Action(ActionType.HTTP_REQUEST, url = "https://api.example.com", method = "GET"))
         )
-
-        val result = service.executeAction(action)
-        assertTrue(result)
     }
 
     @Test
-    fun `executeAction handleHttpRequest returns false when response code is 500`() {
-        val mockConnection = mockk<HttpURLConnection>(relaxed = true)
-        every { mockConnection.responseCode } returns 500
-
-        val service = ActionExecutorService(mockContext, mockAccessibilityService, urlConnectionFactory = { mockConnection })
-        val action = Action(
-            actionType = ActionType.HTTP_REQUEST,
-            url = "https://api.example.com/status",
-            method = "POST",
-            textInput = "{\"data\": 123}"
+    fun `chain stops on a failed step and marks following actions skipped`() {
+        val result = actionExecutorService.executeActions(
+            listOf(
+                Action(ActionType.SYSTEM_TOGGLE, target = "unknown", state = "on"),
+                Action(ActionType.APP_INTENT, packageName = "com.example.app")
+            ),
+            shortcutName = "Test chain"
         )
 
-        val result = service.executeAction(action)
-        assertFalse(result)
+        assertFalse(result.allSucceeded)
+        assertEquals(FailureReason.UNSUPPORTED_TARGET, result.firstFailure?.reason)
+        assertTrue(result.steps[1] is StepResult.Skipped)
+        verify(exactly = 0) { mockPackageManager.getLaunchIntentForPackage(any()) }
     }
 
     @Test
-    fun `executeAction dispatches UI_AUTOMATION action to AutomationAccessibilityService`() {
-        val uiAction = Action(
-            actionType = ActionType.UI_AUTOMATION,
-            uiActionType = "CLICK",
-            targetNodeId = "com.example:id/button"
+    fun `chain continues after a failed step only when that step opts in`() {
+        val callFactory = mockk<Call.Factory>()
+        val call = mockk<Call>()
+        val response = mockk<Response>(relaxed = true)
+        every { callFactory.newCall(any()) } returns call
+        every { call.execute() } returns response
+        every { response.isSuccessful } returns true
+        val service = ActionExecutorService(mockContext, mockAccessibilityService, callFactory)
+
+        val result = service.executeActions(
+            listOf(
+                Action(ActionType.SYSTEM_TOGGLE, target = "unknown", state = "on", continueOnError = true),
+                Action(ActionType.HTTP_REQUEST, url = "https://api.example.com", method = "GET")
+            )
         )
 
-        every { mockAccessibilityService.executeAction(uiAction) } returns true
-
-        val result = actionExecutorService.executeAction(uiAction)
-        assertTrue(result)
-        verify { mockAccessibilityService.executeAction(uiAction) }
+        assertTrue(result.steps[0] is StepResult.Failed)
+        assertEquals(StepResult.Success, result.steps[1])
     }
 
     @Test
-    fun `executeAction UI_AUTOMATION returns false when AccessibilityService is unavailable`() {
-        val executorWithoutService = ActionExecutorService(mockContext, accessibilityService = null)
-        AutomationAccessibilityService.instance = null
-
-        val uiAction = Action(
-            actionType = ActionType.UI_AUTOMATION,
-            uiActionType = "CLICK",
-            targetNodeId = "com.example:id/button"
-        )
-
-        val result = executorWithoutService.executeAction(uiAction)
-        assertFalse(result)
+    fun `message and dial action values are pure and policy safe`() {
+        // Do not inspect Intent here: JVM android.jar stubs return null for Intent internals.
+        assertEquals("smsto:+14165551212", ActionExecutorService.smsSendToUri(" +14165551212 "))
+        assertEquals("tel:+14165551212", ActionExecutorService.dialUri(" +14165551212 "))
+        assertEquals(null, ActionExecutorService.smsSendToUri("   "))
+        assertEquals(null, ActionExecutorService.dialUri("   "))
     }
 
     @Test
-    fun `executeActions executes list of actions sequentially`() {
-        val mockConnection = mockk<HttpURLConnection>(relaxed = true)
-        every { mockConnection.responseCode } returns 200
+    fun `https is required unless this HTTP action explicitly opts into cleartext`() {
+        assertTrue(ActionExecutorService.isHttpAllowed("https://api.example.com/hook", allowCleartext = false))
+        assertFalse(ActionExecutorService.isHttpAllowed("http://device.local/hook", allowCleartext = false))
+        assertTrue(ActionExecutorService.isHttpAllowed("http://device.local/hook", allowCleartext = true))
+        assertFalse(ActionExecutorService.isHttpAllowed("ftp://example.com/file", allowCleartext = true))
+    }
 
-        val executor = ActionExecutorService(mockContext, mockAccessibilityService, urlConnectionFactory = { mockConnection })
+    @Test
+    fun `RunResult containing a Failed step produces a message carrying its userMessage`() {
+        val result = actionExecutorService.executeActions(
+            listOf(Action(ActionType.SYSTEM_TOGGLE, target = "unknown", state = "on")),
+            shortcutName = "Test Failure"
+        )
+        val step = result.steps.first()
+        assertTrue(step is StepResult.Failed)
+        val failedStep = step as StepResult.Failed
+        assertEquals("\"unknown\" isn't a device control this shortcut can run.", failedStep.userMessage)
+    }
 
-        val action1 = Action(actionType = ActionType.SYSTEM_TOGGLE, target = "WIFI", state = "ON")
-        val action2 = Action(actionType = ActionType.HTTP_REQUEST, url = "http://example.com", method = "GET")
-        val action3 = Action(actionType = ActionType.UI_AUTOMATION, targetNodeId = "id/btn")
+    @Test
+    fun `RunResult containing NeedsPermission surfaces the permission and exposes its settings intent`() {
+        // Mock permission missing for DND
+        val mockNotificationManager = mockk<android.app.NotificationManager>(relaxed = true)
+        every { mockContext.getSystemService(Context.NOTIFICATION_SERVICE) } returns mockNotificationManager
+        every { mockNotificationManager.isNotificationPolicyAccessGranted } returns false
 
-        every { mockAccessibilityService.executeAction(action3) } returns true
+        val result = actionExecutorService.executeAction(
+            Action(ActionType.SYSTEM_TOGGLE, target = "donotdisturb", state = "on")
+        )
 
-        val result = executor.executeActions(listOf(action1, action2, action3))
-        assertTrue(result)
-        verify { mockAccessibilityService.executeAction(action3) }
+        assertTrue(result is StepResult.NeedsPermission)
+        val needsPermission = result as StepResult.NeedsPermission
+        assertEquals("Do Not Disturb access", needsPermission.permission)
+        // A settings intent must be offered so the UI can route the user to grant it.
+        // Its ACTION cannot be asserted here: JVM unit tests run against a stubbed android.jar
+        // (isReturnDefaultValues = true), so Intent.getAction() always returns null regardless
+        // of what was constructed. The action string itself is covered by the pure-function
+        // test above; this test owns the executor's behaviour.
+        assertNotNull(needsPermission.settingsIntent)
     }
 }

@@ -1,0 +1,72 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700&display=swap">
+  <style>
+    body { margin: 0; font-family: 'Schibsted Grotesk', system-ui, sans-serif; }
+    a { color: #1A73E8; } a:hover { color: #1557b0; }
+  </style>
+</helmet>
+<div style="width: 400px; height: 860px; background: {{tint}}; display: flex; flex-direction: column; overflow: hidden;">
+
+  <div style="display: flex; align-items: center; justify-content: space-between; padding: 16px 16px 8px 16px;">
+    <div style="width: 44px; height: 44px; border-radius: 22px; display: flex; align-items: center; justify-content: center;">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"></path></svg>
+    </div>
+    <div style="font-size: 15px; font-weight: 600; color: rgba(255,255,255,0.92);">Describe the widget</div>
+    <div style="width: 44px; height: 44px;"></div>
+  </div>
+
+  <div style="padding: 26px 28px 0 28px;">
+    <div style="font-size: 27px; font-weight: 600; color: #FFFFFF; line-height: 1.4; letter-spacing: -0.3px; text-wrap: pretty;">What should this shortcut do?</div>
+    <div style="font-size: 13.5px; color: rgba(255,255,255,0.8); margin-top: 8px; line-height: 1.45;">Write it the way you&#39;d say it out loud.</div>
+  </div>
+
+  <div style="margin: 20px 20px 0 20px; border-radius: 22px; background: rgba(255,255,255,0.16); padding: 18px; min-height: 132px;">
+    <div style="font-size: 19px; font-weight: 500; color: #FFFFFF; line-height: 1.45;">Turn on the flashlight and open the camera</div>
+    <div style="width: 2px; height: 24px; background: #FFFFFF; margin-top: 4px;"></div>
+  </div>
+
+  <div style="padding: 16px 20px 0 20px;">
+    <div style="font-size: 12.5px; font-weight: 600; color: rgba(255,255,255,0.85); margin-bottom: 10px;">Try one of these</div>
+    <div style="display: flex; flex-direction: column; gap: 8px;">
+      <div style="padding: 11px 14px; border-radius: 14px; background: rgba(255,255,255,0.14); font-size: 13.5px; color: #FFFFFF;">Mute my phone and open Calendar</div>
+      <div style="padding: 11px 14px; border-radius: 14px; background: rgba(255,255,255,0.14); font-size: 13.5px; color: #FFFFFF;">Text Mum that I&#39;m running late</div>
+      <div style="padding: 11px 14px; border-radius: 14px; background: rgba(255,255,255,0.14); font-size: 13.5px; color: #FFFFFF;">Turn on Do Not Disturb</div>
+    </div>
+  </div>
+
+  <div style="flex-grow: 1;"></div>
+
+  <div style="display: flex; align-items: flex-start; gap: 10px; margin: 0 20px 14px 20px; padding: 12px 14px; border-radius: 16px; background: rgba(0,0,0,0.16);">
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.9)" stroke-width="2" stroke-linecap="round" style="flex-shrink: 0; margin-top: 1px;"><circle cx="12" cy="12" r="10"></circle><path d="M12 8v5M12 16.5v.01"></path></svg>
+    <div style="font-size: 12.5px; line-height: 1.45; color: rgba(255,255,255,0.92);">AI shortcuts are experimental and often get steps wrong. You&#39;ll review every step before it saves.</div>
+  </div>
+
+  <div style="display: flex; gap: 10px; padding: 0 20px 24px 20px;">
+    <div style="width: 52px; height: 52px; border-radius: 26px; background: rgba(255,255,255,0.18); display: flex; align-items: center; justify-content: center;">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect></svg>
+    </div>
+    <div style="flex-grow: 1; height: 52px; border-radius: 26px; background: #FFFFFF; display: flex; align-items: center; justify-content: center; gap: 8px;">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="{{tint}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"></path></svg>
+      <div style="font-size: 15px; font-weight: 600; color: #16130F;">Build the steps</div>
+    </div>
+  </div>
+
+</div>
+</x-dc>
+<script data-dc-script data-props='{"tint":{"editor":"color","default":"#1A73E8","options":["#9C27B0","#1A73E8","#34A853","#F57C00","#D32F2F","#00897B"]}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return { tint: this.props.tint ?? '#1A73E8' };
+  }
+}
+</script>
+</body>
+</html>

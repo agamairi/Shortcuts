@@ -52,6 +52,26 @@ This document details the background service infrastructure of the **Shortcuts**
 - **Parent Cycle Limit**: Parent chain traversal (`handleClickNode`) capped at `maxParentDepth = 25` with ancestor set tracking to prevent infinite loops on cyclic node trees.
 - **Strict Key Validation**: Rejects unrecognized `globalAction` keys or unsupported `uiActionType` values.
 
+### Recorder Session Ownership
+
+`RecorderSessionService` is a user-initiated foreground service that owns the lifetime of an
+active shortcut recording. It observes the process-scoped `RecorderSessionOwner`, rather than a
+Compose screen, so a recording remains active when the app is backgrounded or the recorder route
+is recreated. The in-progress session is synchronously persisted to private SharedPreferences as
+captured actions arrive; it is restored when either the service or app starts. Android can
+transiently recycle a bound accessibility-service instance, so `onDestroy()` starts a five-second
+grace period instead of ending the session immediately. A replacement connection cancels that
+check. Only if the grace period expires and `ENABLED_ACCESSIBILITY_SERVICES` no longer contains
+our component does the session end and post the disconnect notification. A confirmed disconnect
+leaves captured steps persisted for review.
+
+The recorder route is always entered from the dashboard. Its Compose screen renders disclosure
+consent and accessibility enablement as inline prerequisite states, then re-checks
+`AccessibilityStatusChecker` on `ON_RESUME` after a settings round trip. This keeps the recorder
+as the single workflow while making the sideloaded-app restricted-settings path actionable. If a
+confirmed disconnect ends a recording, the screen retains the persisted actions and explains that
+they are available for review.
+
 ---
 
 ## 3. ActionExecutorService

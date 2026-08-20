@@ -1,0 +1,118 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700&display=swap">
+  <style>
+    body { margin: 0; font-family: 'Schibsted Grotesk', system-ui, sans-serif; }
+    a { color: #1A73E8; } a:hover { color: #1557b0; }
+    .slot { cursor: pointer; }
+  </style>
+</helmet>
+<div style="width: 400px; height: 860px; background: {{tint}}; display: flex; flex-direction: column; overflow: hidden;">
+
+  <div style="display: flex; align-items: center; justify-content: space-between; padding: 16px 16px 8px 16px;">
+    <div style="width: 44px; height: 44px; border-radius: 22px; display: flex; align-items: center; justify-content: center;">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 12H5M12 19l-7-7 7-7"></path></svg>
+    </div>
+    <div onClick="{{cycleTemplate}}" class="slot" style="display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 16px; border-radius: 20px; background: rgba(255,255,255,0.22);">
+      <div style="font-size: 14px; font-weight: 600; color: #FFFFFF;">{{templateName}}</div>
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"></path></svg>
+    </div>
+    <div style="width: 44px; height: 44px; border-radius: 22px; background: #FFFFFF; display: flex; align-items: center; justify-content: center;">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="{{tint}}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"></path></svg>
+    </div>
+  </div>
+
+  <div style="flex-grow: 1; display: flex; align-items: center; justify-content: center; padding: 0 24px;">
+    <div style="width: 168px; height: 168px; border-radius: 40px; background: rgba(255,255,255,0.18); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;">
+      <div style="width: 76px; height: 76px; border-radius: 24px; background: #FFFFFF; display: flex; align-items: center; justify-content: center;">
+        <svg width="38" height="38" viewBox="0 0 24 24" fill="none" stroke="{{tint}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9z"></path></svg>
+      </div>
+      <div style="font-size: 15px; font-weight: 600; color: #FFFFFF;">{{previewSteps}}</div>
+    </div>
+  </div>
+
+  <div style="display: flex; gap: 6px; justify-content: center; padding-bottom: 18px;">
+    <sc-for list="{{dots}}" as="dot" hint-placeholder-count="4">
+      <div style="width: 7px; height: 7px; border-radius: 4px; background: {{dot.color}};"></div>
+    </sc-for>
+  </div>
+
+  <div style="padding: 0 28px 8px 28px; text-align: center;">
+    <div style="font-size: 27px; font-weight: 600; color: #FFFFFF; line-height: 1.45; letter-spacing: -0.3px; text-wrap: pretty;">
+      <span>{{leadIn}} </span><span onClick="{{cycleFirst}}" class="slot" style="border-bottom: 2.5px dotted rgba(255,255,255,0.75); padding-bottom: 2px;">{{firstSlot}}</span><span> {{midText}} </span><span onClick="{{cycleSecond}}" class="slot" style="border-bottom: 2.5px dotted rgba(255,255,255,0.75); padding-bottom: 2px;">{{secondSlot}}</span>
+    </div>
+  </div>
+
+  <div style="display: flex; justify-content: center; padding: 14px 0 10px 0;">
+    <div onClick="{{inspire}}" class="slot" style="display: flex; align-items: center; gap: 9px; height: 48px; padding: 0 22px; border-radius: 24px; background: #FFFFFF;">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="{{tint}}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h11M4 12h16M4 18h8"></path></svg>
+      <div style="font-size: 15px; font-weight: 600; color: #16130F;">Describe the widget</div>
+    </div>
+  </div>
+
+  <div style="display: flex; align-items: flex-start; gap: 10px; margin: 6px 20px 22px 20px; padding: 12px 14px; border-radius: 16px; background: rgba(0,0,0,0.16);">
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="rgba(255,255,255,0.9)" stroke-width="2" stroke-linecap="round" style="flex-shrink: 0; margin-top: 1px;"><circle cx="12" cy="12" r="10"></circle><path d="M12 8v5M12 16.5v.01"></path></svg>
+    <div style="font-size: 12.5px; line-height: 1.45; color: rgba(255,255,255,0.92);">AI shortcuts are experimental and often get steps wrong. You&#39;ll review every step before it saves.</div>
+  </div>
+
+</div>
+</x-dc>
+<script data-dc-script data-props='{"tint":{"editor":"color","default":"#9C27B0","options":["#9C27B0","#1A73E8","#34A853","#F57C00","#D32F2F","#00897B"]}}'>
+class Component extends DCLogic {
+  constructor(props) {
+    super(props);
+    this.state = { template: 0, first: 0, second: 0 };
+  }
+  templates() {
+    return [
+      { name: 'App + setting', leadIn: 'Turn on', mid: 'then open',
+        firsts: ['Wi-Fi', 'the flashlight', 'Do Not Disturb', 'Bluetooth'],
+        seconds: ['Spotify', 'Chrome', 'Maps', 'Gmail'] },
+      { name: 'Quick toggle', leadIn: 'Turn', mid: 'the',
+        firsts: ['on', 'off'],
+        seconds: ['flashlight', 'Wi-Fi', 'Do Not Disturb', 'ringer'] },
+      { name: 'Message someone', leadIn: 'Text', mid: 'saying',
+        firsts: ['Mum', 'Priya', 'Dad'],
+        seconds: ['&ldquo;running late&rdquo;', '&ldquo;on my way&rdquo;', '&ldquo;call me&rdquo;'] },
+      { name: 'Webhook', leadIn: 'Send a', mid: 'request to',
+        firsts: ['GET', 'POST'],
+        seconds: ['home-assistant.local', 'ifttt.com/trigger'] }
+    ];
+  }
+  renderVals() {
+    const t = this.templates()[this.state.template];
+    const tint = this.props.tint ?? '#9C27B0';
+    const firsts = t.firsts;
+    const seconds = t.seconds;
+    const dots = [0, 1, 2, 3].map((i) => ({
+      color: i === this.state.second % 4 ? '#FFFFFF' : 'rgba(255,255,255,0.4)'
+    }));
+    return {
+      tint: tint,
+      templateName: t.name,
+      leadIn: t.leadIn,
+      midText: t.mid,
+      firstSlot: firsts[this.state.first % firsts.length],
+      secondSlot: seconds[this.state.second % seconds.length],
+      previewSteps: '2 steps',
+      dots: dots,
+      cycleFirst: () => this.setState({ first: this.state.first + 1 }),
+      cycleSecond: () => this.setState({ second: this.state.second + 1 }),
+      cycleTemplate: () => this.setState({ template: this.state.template + 1, first: 0, second: 0 }),
+      inspire: () => this.setState({
+        first: Math.floor(Math.random() * 4),
+        second: Math.floor(Math.random() * 4)
+      })
+    };
+  }
+}
+</script>
+</body>
+</html>

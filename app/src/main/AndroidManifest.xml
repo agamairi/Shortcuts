@@ -7,15 +7,30 @@
     <uses-permission android:name="android.permission.CHANGE_WIFI_STATE" />
     <uses-permission android:name="android.permission.BLUETOOTH" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <uses-permission android:name="android.permission.WRITE_SETTINGS" />
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.READ_CONTACTS" />
+
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+    </queries>
 
     <application
         android:allowBackup="true"
         android:label="Shortcuts"
+        android:networkSecurityConfig="@xml/network_security_config"
         android:supportsRtl="true"
-        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        android:theme="@style/Theme.Shortcuts">
         <activity
             android:name=".ui.MainActivity"
             android:exported="true">
@@ -32,6 +47,22 @@
             android:foregroundServiceType="dataSync" />
 
         <service
+            android:name=".service.AutomationExecutionService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="dataSync" />
+
+        <service
+            android:name=".service.RecorderSessionService"
+            android:enabled="true"
+            android:exported="false"
+            android:foregroundServiceType="specialUse">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Records user-initiated accessibility shortcut steps across apps." />
+        </service>
+
+        <service
             android:name=".service.AutomationAccessibilityService"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
             android:exported="true">
@@ -42,8 +73,10 @@
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service_config" />
         </service>
+        <receiver android:name=".service.RecorderStopReceiver" android:exported="false" />
         <receiver
             android:name=".widget.AutomationWidgetReceiver"
+            android:label="@string/legacy_automation_widget_label"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
@@ -63,6 +96,7 @@
 
         <receiver
             android:name=".widget.ShortcutsListWidgetReceiver"
+            android:label="@string/legacy_shortcuts_list_widget_label"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
@@ -82,6 +116,7 @@
 
         <receiver
             android:name=".widget.CustomWidgetReceiver"
+            android:label="@string/legacy_custom_widget_label"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
@@ -101,6 +136,7 @@
 
         <receiver
             android:name=".widget.GridWidgetReceiver"
+            android:label="@string/legacy_grid_widget_label"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
@@ -120,6 +156,7 @@
 
         <receiver
             android:name=".widget.GreetingWidgetReceiver"
+            android:label="@string/legacy_greeting_widget_label"
             android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
@@ -128,6 +165,31 @@
                 android:name="android.appwidget.provider"
                 android:resource="@xml/greeting_widget_info" />
         </receiver>
+
+        <receiver
+            android:name=".widget.ShortcutWidgetReceiver"
+            android:label="@string/shortcut_widget_label"
+            android:description="@string/shortcut_widget_description"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+            </intent-filter>
+            <meta-data
+                android:name="android.appwidget.provider"
+                android:resource="@xml/shortcut_widget_info" />
+        </receiver>
+
+        <receiver
+            android:name=".widget.ShortcutWidgetPinReceiver"
+            android:exported="false" />
+
+        <activity
+            android:name=".widget.ShortcutWidgetConfigActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.appwidget.action.APPWIDGET_CONFIGURE" />
+            </intent-filter>
+        </activity>
 
         <activity
             android:name=".widget.GreetingWidgetConfigActivity"

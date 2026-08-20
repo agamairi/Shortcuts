@@ -8,6 +8,7 @@ import java.io.FileOutputStream
 import java.io.InputStream
 import java.net.HttpURLConnection
 import java.net.URL
+import java.security.MessageDigest
 
 class ModelDownloader(
     private val context: Context,
@@ -16,6 +17,8 @@ class ModelDownloader(
     companion object {
         const val MODEL_URL = "https://huggingface.co/litert-community/functiongemma-mobile-actions_q8_ekv1024.litertlm/resolve/main/mobile-actions_q8_ekv1024.litertlm"
         const val MODEL_FILE_NAME = "functiongemma.litertlm"
+        // Published Git LFS SHA-256 hash for functiongemma-mobile-actions_q8_ekv1024.litertlm / mobile-actions_q8_ekv1024.litertlm
+        const val MODEL_SHA256 = "92109695f911d1872fa8ae07c1e3ff0ed70f2c3d1690d410ec6db8587c2ab409"
     }
 
     fun getModelFile(): File = File(context.filesDir, MODEL_FILE_NAME)
@@ -98,7 +101,13 @@ class ModelDownloader(
             conn.disconnect()
 
             if (tempFile.exists() && tempFile.length() > 0) {
-                if (tempFile.renameTo(modelFile)) {
+                val computedHash = computeSha256(tempFile)
+                if (!computedHash.equals(MODEL_SHA256, ignoreCase = true)) {
+                    tempFile.delete()
+                    Result.failure(
+                        IllegalStateException("Model integrity check failed: SHA-256 hash mismatch. Expected: $MODEL_SHA256, got: $computedHash")
+                    )
+                } else if (tempFile.renameTo(modelFile)) {
                     onProgress(100)
                     Result.success(modelFile)
                 } else {
@@ -115,5 +124,18 @@ class ModelDownloader(
             }
             Result.failure(e)
         }
+    }
+
+    private fun computeSha256(file: File): String {
+        val digest = MessageDigest.getInstance("SHA-256")
+        file.inputStream().use { inputStream ->
+            val buffer = ByteArray(8192)
+            var bytesRead: Int
+            while (inputStream.read(buffer).also { bytesRead = it } != -1) {
+                digest.update(buffer, 0, bytesRead)
+            }
+        }
+        val hashBytes = digest.digest()
+        return hashBytes.joinToString("") { "%02x".format(it) }
     }
 }
