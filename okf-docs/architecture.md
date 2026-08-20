@@ -102,7 +102,7 @@ The **Shortcuts** Android application is an automated widget and workflow engine
 - **Widget Types**:
   1. **Quick Shortcut Tile** (`AutomationWidget`): Minimal single tile rendering a single bound automation.
   2. **Shortcuts List Widget** (`ShortcutsListWidget`): Multi-row scrollable Glance widget rendering up to 4 shortcuts. Configured via `ShortcutsListWidgetConfigActivity`.
-  3. **Custom Widget** (`CustomWidget`): User-styled single Glance tile supporting 6 background color keys (`WidgetColorKey`) and 6 white vector drawables (`WidgetIconKey`). Configured via `CustomWidgetConfigActivity`.
+  3. **Custom Widget** (`CustomWidget`): User-styled single Glance tile supporting all 14 background color keys (`WidgetColorKey`) and all 17 white vector drawables (`WidgetIconKey`). Configured via `CustomWidgetConfigActivity`.
   4. **Shortcuts Grid Widget** (`GridWidget`): 2-column grid Glance widget displaying up to 6 independently tappable `CustomWidgetTemplate` tiles. Configured via `GridWidgetConfigActivity`.
   5. **Greeting Widget** (`GreetingWidget`): Personalized, dynamic-content widget rendering a time-of-day-aware greeting with user name and an inner tappable shortcut button. Configured via `GreetingWidgetConfigActivity`.
 
@@ -116,6 +116,11 @@ The **Shortcuts** Android application is an automated widget and workflow engine
 - **FunctionGemma Integration**: Uses `OnDeviceInferenceService.generateWidgetSpecJson(prompt)` to generate strict JSON specs (`label`, `color`, `icon`, `automation_name`).
 - **Fallback & Resolution**: Maps color and icon strings to enums, resolves target shortcuts against `repository.allAutomations`. If no matching shortcut exists, displays a warning banner (`aiNoMatchMessage`) while retaining tile customization.
 - **Save & Pin**: Saves templates via `CustomWidgetTemplateDao` and exposes a direct "Pin to Home Screen" action via `AppWidgetManager.requestPinAppWidget`.
+
+### 6.3.1 Shortcut Appearance Resolution
+- **Single source of truth**: `WidgetColorKey` and `WidgetIconKey` define every supported appearance option.
+- **Shared resolution**: `widget/WidgetAppearance.kt` provides `resolveWidgetColor`, `resolveWidgetColorKey`, `resolveWidgetIconKey`, and `resolveWidgetIconDrawable`. All persisted keys are matched case-insensitively and invalid or missing values fall back deterministically.
+- **Picker coverage**: Manual, recorder, AI review, and custom-widget creation pickers enumerate their enum entries, so expanding either enum automatically exposes the new option.
 
 ### 6.4 Shortcuts Grid Widget (`GridWidget`)
 - **Layout**: 2-column grid built with nested Glance `Row`/`Column` elements, rendering up to 6 `CustomWidgetTemplate` tiles.
@@ -144,4 +149,3 @@ The **Shortcuts** Android application is an automated widget and workflow engine
   2. The 4 supported action types (`APP_INTENT`, `UI_ACTION`, `SYSTEM_TOGGLE`, `WEB_REQUEST`) with concrete examples.
   3. Overview of all 5 home-screen Glance widget types.
   4. Step-by-step walkthrough explaining multi-app action chaining (e.g. launching App A, tapping UI target, launching App B, tapping UI target) within a single shortcut execution pipeline.
-

@@ -4,5 +4,7 @@
     android:minHeight="60dp"
     android:resizeMode="horizontal|vertical"
     android:configure="com.shortcuts.app.widget.AutomationWidgetConfigActivity"
+    android:description="@string/legacy_widget_description"
     android:widgetCategory="home_screen"
+    android:widgetFeatures="hide_from_picker"
     android:initialLayout="@layout/glance_default_loading_layout" />

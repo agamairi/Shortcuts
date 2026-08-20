@@ -7,6 +7,7 @@ This file serves as the system rules for AI Agents working on this project.
 2. **Never commit directly to `development`.** `development` is the integration branch.
 3. **Always use feature branches.** When assigned a task, checkout a new branch from `development` (e.g., `feat/feature-name` or `fix/bug-name`).
 4. **Update Changelog.** Every time you are about to merge a feature branch into `development`, you MUST update `changelog.md` with the changes and a version bump if necessary.
+5. **No commits or pushes during work hours.** Do not run `git commit` or `git push` (or any equivalent that mutates git history/remote) Monday–Friday between 9:00 AM and 5:00 PM local time, unless the user explicitly asks for it in that moment. The user is often at their day job during these hours and cannot review/authorize commits on their own repo. Instead, make the code changes as normal (uncommitted working-tree changes are fine) and record a suggested commit message/summary in `git_commits.md` at the repo root for the user to review and commit later themselves, or ask Claude to commit once they're free. This restriction applies to Claude directly and to any work delegated to Antigravity/agy — instruct delegated agents not to commit or push either.
 
 ## Knowledge System (OKF)
 - The `okf-docs/` folder contains the Open Knowledge Format (OKF) documentation.
@@ -38,7 +39,8 @@ Use it to offload heavy work — large refactors, deep codebase research, or rep
 4. Use `antigravity_cancel(job_id)` to stop a job that's gone wrong, and `antigravity_list` to recover a `job_id` or see what's in flight.
 
 ### Model selection
-Verified via `agy models` on this install (`agy` 1.1.10):
+Verified via `agy models` on this install (2026-08-20, `agy` 1.1.16):
+- `gemini-3.7-flash-high` / `gemini-3.7-flash-medium` / `gemini-3.7-flash-low`
 - `gemini-3.6-flash-high` / `gemini-3.6-flash-medium` / `gemini-3.6-flash-low`
 - `gemini-3.5-flash-high` / `gemini-3.5-flash-medium` / `gemini-3.5-flash-low`
 - `gemini-3.1-pro-high` / `gemini-3.1-pro-low`

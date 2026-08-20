@@ -21,19 +21,31 @@ open class AutomationAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         super.onServiceConnected()
+        // Accessibility-service XML flags form a complete mask. Reapply the required flags when
+        // the service connects so future configuration changes cannot drop the default service
+        // flag or the node-discovery capabilities this app needs.
+        val configuredInfo = serviceInfo
+        configuredInfo.flags = AccessibilityServiceConfiguration.requiredFlags(configuredInfo.flags)
+        serviceInfo = configuredInfo
         instance = this
-        Log.d(TAG, "AutomationAccessibilityService connected")
+        AutomationRecorder.onAccessibilityServiceConnected()
+        Log.d(TAG, "AutomationAccessibilityService connected with flags=${configuredInfo.flags}")
     }
 
     override fun onDestroy() {
+        val wasConnectedInstance = instance == this
         super.onDestroy()
-        if (instance == this) {
+        if (wasConnectedInstance) {
             instance = null
+            AutomationRecorder.stopForAccessibilityDisconnect(this)
         }
         Log.d(TAG, "AutomationAccessibilityService destroyed")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
+        if (event != null) {
+            AutomationRecorder.onAccessibilityEvent(event, this)
+        }
         // Handle UI Automation feedback here
     }
 
@@ -360,4 +372,3 @@ open class AutomationAccessibilityService : AccessibilityService() {
         }
     }
 }
-

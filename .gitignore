@@ -1,19 +1,95 @@
-*.iml
-.gradle
-/local.properties
-/.idea/caches
-/.idea/libraries
-/.idea/modules.xml
-/.idea/workspace.xml
-/.idea/navEditor.xml
-/.idea/assetWizardSettings.xml
-.DS_Store
-/build
+# ---------------------------------------------------------------------------
+# Gradle
+# ---------------------------------------------------------------------------
+.gradle/
+build/
 app/build/
-/captures
-.externalNativeBuild
-.cxx
-local.properties
-.agents/
+# Project-local Gradle home used by some agent tooling here.
 .gradle_home/
-mcp/agy-connector/node_modules/
+
+# ---------------------------------------------------------------------------
+# Android build output
+# ---------------------------------------------------------------------------
+*.apk
+*.aab
+*.ap_
+*.dex
+*.class
+release/
+captures/
+.externalNativeBuild/
+.cxx/
+lint-results*.html
+lint-results*.xml
+# Baseline profiles are generated; keep them out unless deliberately committed.
+app/release/
+
+# ---------------------------------------------------------------------------
+# Secrets and local machine config  --  NEVER COMMIT THESE
+# ---------------------------------------------------------------------------
+# Contains the absolute SDK path for this machine.
+local.properties
+# Release signing material. The release build needs a real keystore; keep every
+# form of it out of git, along with the properties file holding its passwords.
+*.jks
+*.keystore
+keystore.properties
+signing.properties
+# Generic secret spillover.
+secrets.properties
+*.pem
+*.p12
+
+# ---------------------------------------------------------------------------
+# IDE — Android Studio / IntelliJ
+# ---------------------------------------------------------------------------
+*.iml
+.idea/
+# Kotlin plugin scratch/session data.
+.kotlin/
+
+# ---------------------------------------------------------------------------
+# OS noise
+# ---------------------------------------------------------------------------
+.DS_Store
+._*
+Thumbs.db
+desktop.ini
+
+# ---------------------------------------------------------------------------
+# Logs, crash dumps, profiling
+# ---------------------------------------------------------------------------
+*.log
+*.hprof
+heapdump*
+/tmp/
+*.tmp
+
+# ---------------------------------------------------------------------------
+# Node — the agy MCP connector under mcp/
+# ---------------------------------------------------------------------------
+node_modules/
+npm-debug.log*
+yarn-error.log*
+
+# ---------------------------------------------------------------------------
+# Agent tooling scratch
+# ---------------------------------------------------------------------------
+.agents/
+
+# ---------------------------------------------------------------------------
+# Deliberately NOT ignored — do not add these
+# ---------------------------------------------------------------------------
+# app/schemas/       Room's exported schema JSONs. MigrationTestHelper loads them
+#                    from the androidTest assets, so ignoring them silently breaks
+#                    every Room migration test. They must be committed.
+# gradle/wrapper/    The wrapper jar+properties pin the Gradle version for everyone.
+# app/proguard-rules.pro   Release keep rules are real source.
+
+# Agent scratch scripts (one-off rewrite/codegen helpers) — never part of the app
+/scratch/
+/rewrite*.py
+/fix*.py
+/delete_card.py
+/download_icons.py
+/test_*.kt

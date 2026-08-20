@@ -2,6 +2,7 @@ package com.shortcuts.app.ui.screens
 
 import android.appwidget.AppWidgetManager
 import android.content.ComponentName
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -10,169 +11,141 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowDownward
-import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.icons.filled.AutoAwesome
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.FlashOn
 import androidx.compose.material.icons.filled.GridView
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.ViewList
-import androidx.compose.material3.AssistChip
-import androidx.compose.material3.Button
-import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ElevatedCard
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExtendedFloatingActionButton
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.SnackbarDuration
-import androidx.compose.material3.SnackbarHost
-import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Switch
-import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
-import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.PathEffect
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import com.shortcuts.app.data.ActionConverter
+import com.shortcuts.app.data.AppDatabase
 import com.shortcuts.app.data.Automation
+import com.shortcuts.app.service.ActionExecutorService
 import com.shortcuts.app.ui.state.UiState
-import com.shortcuts.app.util.AutomationSorter
+import com.shortcuts.app.ui.theme.LocalShortcutsPalette
 import com.shortcuts.app.util.AutomationVisuals
-import com.shortcuts.app.util.SortMode
 import com.shortcuts.app.viewmodel.AutomationViewModel
-import com.shortcuts.app.widget.AutomationWidgetReceiver
-import com.shortcuts.app.widget.CustomWidgetReceiver
-import com.shortcuts.app.widget.GreetingWidgetReceiver
-import com.shortcuts.app.widget.GridWidgetReceiver
-import com.shortcuts.app.widget.ShortcutsListWidgetReceiver
 import com.shortcuts.app.widget.WidgetColorKey
+import com.shortcuts.app.widget.WidgetConfigParser
 import com.shortcuts.app.widget.WidgetIconKey
+import com.shortcuts.app.widget.resolveWidgetColor
+import com.shortcuts.app.widget.resolveWidgetIconKey
+import com.shortcuts.app.widget.ShortcutWidgetPinRequest
+import com.shortcuts.app.widget.ShortcutWidgetReceiver
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+private enum class DashboardFilter(val label: String) {
+    ALL("All"),
+    HOME("On homescreen"),
+    RECENT("Recent")
+}
 
 @Composable
 fun DashboardScreen(
     viewModel: AutomationViewModel,
     onNavigateToManualBuilder: () -> Unit,
     onNavigateToAiBuilder: () -> Unit,
-    onNavigateToCreateWidget: () -> Unit = {},
-    onNavigateToSettings: () -> Unit = {},
-    onPinListWidget: (() -> Unit)? = null,
-    onPinGridWidget: (() -> Unit)? = null,
-    onPinGreetingWidget: (() -> Unit)? = null
+    onNavigateToRecorder: () -> Unit = {},
+    onNavigateToSettings: () -> Unit = {}
 ) {
     val uiState by viewModel.uiState.collectAsState()
-    val errorState by viewModel.errorState.collectAsState()
+    val pendingDeletion by viewModel.pendingDeletion.collectAsState()
     val context = LocalContext.current
-
-    val pinListAction = onPinListWidget ?: {
-        val appWidgetManager = AppWidgetManager.getInstance(context)
-        val provider = ComponentName(context, ShortcutsListWidgetReceiver::class.java)
-        if (appWidgetManager.isRequestPinAppWidgetSupported) {
-            appWidgetManager.requestPinAppWidget(provider, null, null)
-        }
-    }
-
-    val pinGridAction = onPinGridWidget ?: {
-        val appWidgetManager = AppWidgetManager.getInstance(context)
-        val provider = ComponentName(context, GridWidgetReceiver::class.java)
-        if (appWidgetManager.isRequestPinAppWidgetSupported) {
-            appWidgetManager.requestPinAppWidget(provider, null, null)
-        }
-    }
-
-    val pinGreetingAction = onPinGreetingWidget ?: {
-        val appWidgetManager = AppWidgetManager.getInstance(context)
-        val provider = ComponentName(context, GreetingWidgetReceiver::class.java)
-        if (appWidgetManager.isRequestPinAppWidgetSupported) {
-            appWidgetManager.requestPinAppWidget(provider, null, null)
-        }
-    }
-
-    val pinCustomAction = {
-        val appWidgetManager = AppWidgetManager.getInstance(context)
-        val provider = ComponentName(context, CustomWidgetReceiver::class.java)
-        if (appWidgetManager.isRequestPinAppWidgetSupported) {
-            appWidgetManager.requestPinAppWidget(provider, null, null)
-        }
-    }
+    val scope = rememberCoroutineScope()
 
     DashboardScreenContent(
         uiState = uiState,
-        errorState = errorState,
         onNavigateToManualBuilder = onNavigateToManualBuilder,
         onNavigateToAiBuilder = onNavigateToAiBuilder,
-        onNavigateToCreateWidget = onNavigateToCreateWidget,
+        onNavigateToRecorder = onNavigateToRecorder,
         onNavigateToSettings = onNavigateToSettings,
-        onPinListWidget = pinListAction,
-        onPinGridWidget = pinGridAction,
-        onPinGreetingWidget = pinGreetingAction,
-        onPinCustomWidget = pinCustomAction,
-        onToggleActive = { viewModel.toggleActive(it) },
-        onDelete = { viewModel.delete(it) },
-        onUpdateAppearance = { auto, colorKey, iconKey -> viewModel.updateAppearance(auto, colorKey, iconKey) },
-        onClearError = { viewModel.clearError() },
-        onPinToHomeScreen = {
-            val appWidgetManager = AppWidgetManager.getInstance(context)
-            val provider = ComponentName(context, AutomationWidgetReceiver::class.java)
-            if (appWidgetManager.isRequestPinAppWidgetSupported) {
-                appWidgetManager.requestPinAppWidget(provider, null, null)
+        onRun = { automation ->
+            scope.launch(Dispatchers.IO) {
+                val result = runCatching {
+                    ActionExecutorService(context).executeActions(
+                        ActionConverter().toActionList(automation.actionsJson),
+                        automation.name
+                    )
+                }
+                withContext(Dispatchers.Main) {
+                    Toast.makeText(
+                        context,
+                        if (result.getOrNull()?.allSucceeded == true) "Ran '${automation.name}'" else "Couldn't run '${automation.name}'",
+                        Toast.LENGTH_LONG
+                    ).show()
+                }
             }
-        }
+        },
+        onDelete = viewModel::requestDelete,
+        onAddToHomeScreen = { shortcut -> requestShortcutWidgetPin(context, shortcut) }
     )
+    pendingDeletion?.let { pending ->
+        DeleteShortcutConfirmationDialog(
+            pending = pending,
+            onConfirm = viewModel::confirmDelete,
+            onDismiss = viewModel::cancelDelete
+        )
+    }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+/**
+ * Pixel-faithful dashboard content. Widget bindings are read here only to derive the filter and
+ * count; shortcut mutation remains owned by [AutomationViewModel].
+ */
 @Composable
 fun DashboardScreenContent(
     uiState: UiState<List<Automation>>,
     errorState: String? = null,
     onNavigateToManualBuilder: () -> Unit,
     onNavigateToAiBuilder: () -> Unit,
+    onNavigateToRecorder: () -> Unit = {},
     onNavigateToCreateWidget: () -> Unit = {},
     onNavigateToSettings: () -> Unit = {},
     onPinListWidget: () -> Unit = {},
@@ -181,984 +154,447 @@ fun DashboardScreenContent(
     onPinCustomWidget: () -> Unit = {},
     onToggleActive: (Automation) -> Unit = {},
     onDelete: (Automation) -> Unit = {},
+    onRun: (Automation) -> Unit = {},
     onUpdateAppearance: (Automation, WidgetColorKey, WidgetIconKey) -> Unit = { _, _, _ -> },
     onClearError: () -> Unit = {},
-    onPinToHomeScreen: () -> Unit = {}
+    onAddToHomeScreen: (Automation) -> Unit = {}
 ) {
-    val snackbarHostState = remember { SnackbarHostState() }
-    var showWidgetGallerySheet by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val palette = LocalShortcutsPalette.current
+    var filter by remember { mutableStateOf(DashboardFilter.ALL) }
     var isGridView by remember { mutableStateOf(true) }
-    var sortMode by remember { mutableStateOf(SortMode.NONE) }
-    var sortAscending by remember { mutableStateOf(true) }
-    var appearanceTargetAutomation by remember { mutableStateOf<Automation?>(null) }
+    var homescreenIds by remember { mutableStateOf(emptySet<Int>()) }
 
-    LaunchedEffect(errorState, uiState) {
-        val errorMessage = errorState ?: (uiState as? UiState.Error)?.message
-        if (errorMessage != null) {
-            snackbarHostState.showSnackbar(
-                message = errorMessage,
-                actionLabel = "Dismiss",
-                duration = SnackbarDuration.Short
-            )
-            onClearError()
+    LaunchedEffect(uiState) {
+        homescreenIds = withContext(Dispatchers.IO) {
+            runCatching {
+                AppDatabase.getDatabase(context).widgetConfigDao().getAllConfigs()
+                    .flatMap { WidgetConfigParser.automationIds(it.automationIdsJson) }
+                    .toSet()
+            }.getOrDefault(emptySet())
         }
     }
 
-    Scaffold(
-        snackbarHost = { SnackbarHost(snackbarHostState) },
-        topBar = {
-            var menuExpanded by remember { mutableStateOf(false) }
-            TopAppBar(
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            imageVector = Icons.Filled.FlashOn,
-                            contentDescription = null,
-                            tint = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.padding(end = 8.dp)
-                        )
-                        Text(
-                            text = "Shortcuts Dashboard",
-                            style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
-                        )
-                    }
-                },
-                actions = {
-                    IconButton(onClick = { isGridView = !isGridView }) {
-                        Icon(
-                            imageVector = if (isGridView) Icons.Filled.ViewList else Icons.Filled.GridView,
-                            contentDescription = if (isGridView) "Switch to List View" else "Switch to Grid View"
-                        )
-                    }
-                    IconButton(onClick = onNavigateToSettings) {
-                        Icon(Icons.Filled.Settings, contentDescription = "Settings")
-                    }
-                    IconButton(onClick = { menuExpanded = true }) {
-                        Icon(Icons.Filled.MoreVert, contentDescription = "More options")
-                    }
-                    DropdownMenu(
-                        expanded = menuExpanded,
-                        onDismissRequest = { menuExpanded = false }
-                    ) {
-                        DropdownMenuItem(
-                            text = { Text("Add Widget to Home Screen") },
-                            onClick = {
-                                menuExpanded = false
-                                showWidgetGallerySheet = true
-                            }
-                        )
-                    }
-                },
-                colors = TopAppBarDefaults.topAppBarColors(
-                    containerColor = MaterialTheme.colorScheme.surfaceVariant,
-                    titleContentColor = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            )
-        },
-        floatingActionButton = {
-            Column(horizontalAlignment = Alignment.End) {
-                ExtendedFloatingActionButton(
-                    text = { Text("AI Builder", style = MaterialTheme.typography.labelLarge) },
-                    icon = { Icon(Icons.Filled.AutoAwesome, contentDescription = "AI Builder") },
-                    onClick = onNavigateToAiBuilder,
-                    containerColor = MaterialTheme.colorScheme.tertiaryContainer,
-                    contentColor = MaterialTheme.colorScheme.onTertiaryContainer,
-                    modifier = Modifier.padding(bottom = 8.dp)
-                )
-                FloatingActionButton(
-                    onClick = onNavigateToManualBuilder,
-                    containerColor = MaterialTheme.colorScheme.primary,
-                    contentColor = MaterialTheme.colorScheme.onPrimary
-                ) {
-                    Icon(Icons.Filled.Add, contentDescription = "Add Manual Shortcut")
-                }
-            }
-        }
-    ) { padding ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(padding)
-                .padding(16.dp)
-        ) {
-            when (uiState) {
-                is UiState.Loading -> {
-                    Column(
-                        modifier = Modifier.fillMaxSize(),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
-                        Spacer(modifier = Modifier.height(16.dp))
-                        Text(
-                            text = "Loading shortcuts...",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
-                }
-                is UiState.Success -> {
-                    val automations = uiState.data
-                    if (automations.isEmpty()) {
-                        ElevatedCard(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(top = 32.dp),
-                            colors = CardDefaults.elevatedCardColors(
-                                containerColor = MaterialTheme.colorScheme.surfaceVariant
-                            )
-                        ) {
-                            Column(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(24.dp),
-                                horizontalAlignment = Alignment.CenterHorizontally
-                            ) {
-                                Icon(
-                                    imageVector = Icons.Filled.AutoAwesome,
-                                    contentDescription = null,
-                                    modifier = Modifier.size(48.dp),
-                                    tint = MaterialTheme.colorScheme.primary
-                                )
-                                Spacer(modifier = Modifier.height(16.dp))
-                                Text(
-                                    text = "No shortcuts created yet",
-                                    style = MaterialTheme.typography.titleMedium,
-                                    color = MaterialTheme.colorScheme.onSurface
-                                )
-                                Spacer(modifier = Modifier.height(8.dp))
-                                Text(
-                                    text = "Tap '+' to create a manual shortcut or 'AI Builder' to generate one with natural language.",
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                                )
-                            }
-                        }
-                    } else {
-                        val displayAutomations = remember(automations, sortMode, sortAscending, isGridView) {
-                            if (isGridView) {
-                                automations
-                            } else {
-                                AutomationSorter.sortAutomations(automations, sortMode, sortAscending)
-                            }
-                        }
-
-                        Column(modifier = Modifier.fillMaxSize()) {
-                            if (!isGridView) {
-                                Row(
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(bottom = 12.dp)
-                                ) {
-                                    Text(
-                                        text = "Sort:",
-                                        style = MaterialTheme.typography.labelMedium,
-                                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                    listOf(
-                                        SortMode.NONE to "None",
-                                        SortMode.NAME to "Name",
-                                        SortMode.ACTION_COUNT to "Action Count"
-                                    ).forEach { (mode, label) ->
-                                        val isSelected = sortMode == mode
-                                        FilterChip(
-                                            selected = isSelected,
-                                            onClick = {
-                                                if (isSelected) {
-                                                    sortAscending = !sortAscending
-                                                } else {
-                                                    sortMode = mode
-                                                    sortAscending = true
-                                                }
-                                            },
-                                            label = { Text(label, style = MaterialTheme.typography.labelSmall) },
-                                            trailingIcon = if (isSelected) {
-                                                {
-                                                    Icon(
-                                                        imageVector = if (sortAscending) Icons.Filled.ArrowUpward else Icons.Filled.ArrowDownward,
-                                                        contentDescription = if (sortAscending) "Ascending" else "Descending",
-                                                        modifier = Modifier.size(14.dp)
-                                                    )
-                                                }
-                                            } else null
-                                        )
-                                    }
-                                }
-                            }
-
-                            if (isGridView) {
-                                LazyVerticalGrid(
-                                    columns = GridCells.Fixed(2),
-                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                                    modifier = Modifier.fillMaxSize()
-                                ) {
-                                    items(displayAutomations, key = { it.id }) { automation ->
-                                        AutomationGridItemCard(
-                                            automation = automation,
-                                            onToggleActive = { onToggleActive(automation) },
-                                            onDelete = { onDelete(automation) },
-                                            onPinToHomeScreen = onPinToHomeScreen,
-                                            onOpenAppearancePicker = { appearanceTargetAutomation = automation }
-                                        )
-                                    }
-                                }
-                            } else {
-                                LazyColumn(
-                                    verticalArrangement = Arrangement.spacedBy(12.dp),
-                                    modifier = Modifier.fillMaxSize()
-                                ) {
-                                    items(displayAutomations, key = { it.id }) { automation ->
-                                        AutomationItemCard(
-                                            automation = automation,
-                                            onToggleActive = { onToggleActive(automation) },
-                                            onDelete = { onDelete(automation) },
-                                            onPinToHomeScreen = onPinToHomeScreen,
-                                            onOpenAppearancePicker = { appearanceTargetAutomation = automation }
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                is UiState.Error -> {
-                    ElevatedCard(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(top = 32.dp),
-                        colors = CardDefaults.elevatedCardColors(
-                            containerColor = MaterialTheme.colorScheme.errorContainer
-                        )
-                    ) {
-                        Column(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(16.dp),
-                            horizontalAlignment = Alignment.CenterHorizontally
-                        ) {
-                            Text(
-                                text = "Error: ${uiState.message}",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onErrorContainer
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    if (showWidgetGallerySheet) {
-        WidgetGalleryBottomSheet(
-            onDismiss = { showWidgetGallerySheet = false },
-            onNavigateToCreateWidget = onNavigateToCreateWidget,
-            onPinQuickShortcut = onPinToHomeScreen,
-            onPinListWidget = onPinListWidget,
-            onPinCustomWidget = onPinCustomWidget,
-            onPinGridWidget = onPinGridWidget,
-            onPinGreetingWidget = onPinGreetingWidget
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(palette.ground)
+            .safeDrawingPadding()
+    ) {
+        DashboardHeader(
+            shortcutCount = (uiState as? UiState.Success)?.data?.size ?: 0,
+            homescreenCount = homescreenIds.size,
+            isGridView = isGridView,
+            onToggleView = { isGridView = !isGridView },
+            onNavigateToSettings = onNavigateToSettings
         )
-    }
+        DashboardFilters(selected = filter, onSelected = { filter = it })
 
-    appearanceTargetAutomation?.let { target ->
-        AutomationAppearancePickerSheet(
-            automation = target,
-            onDismiss = { appearanceTargetAutomation = null },
-            onSaveAppearance = { colorKey, iconKey ->
-                onUpdateAppearance(target, colorKey, iconKey)
+        when (uiState) {
+            UiState.Loading -> Box(Modifier.weight(1f).fillMaxWidth(), contentAlignment = Alignment.Center) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                    CircularProgressIndicator(color = palette.ink)
+                    Spacer(Modifier.height(12.dp))
+                    Text("Loading shortcuts...", style = androidx.compose.material3.MaterialTheme.typography.bodyMedium, color = palette.inkMuted)
+                }
             }
-        )
+
+            is UiState.Error -> Box(Modifier.weight(1f).fillMaxWidth().padding(horizontal = 20.dp), contentAlignment = Alignment.Center) {
+                Text(
+                    text = errorState ?: uiState.message,
+                    style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
+                    color = palette.danger
+                )
+            }
+
+            is UiState.Success -> {
+                val visible = when (filter) {
+                    DashboardFilter.ALL -> uiState.data
+                    DashboardFilter.HOME -> uiState.data.filter { it.id in homescreenIds }
+                    DashboardFilter.RECENT -> uiState.data.asReversed()
+                }
+                if (isGridView) {
+                    DashboardGrid(
+                        automations = visible,
+                        onRun = onRun,
+                        onDelete = onDelete,
+                        onAddToHomeScreen = onAddToHomeScreen,
+                        onNewShortcut = onNavigateToManualBuilder,
+                        modifier = Modifier.weight(1f)
+                    )
+                } else {
+                    DashboardList(
+                        automations = visible,
+                        onRun = onRun,
+                        onDelete = onDelete,
+                        onAddToHomeScreen = onAddToHomeScreen,
+                        onNewShortcut = onNavigateToManualBuilder,
+                        modifier = Modifier.weight(1f)
+                    )
+                }
+            }
+        }
+        DashboardBottomBar(onDescribe = onNavigateToAiBuilder, onCreate = onNavigateToManualBuilder
+        , onRecord = onNavigateToRecorder)
     }
 }
 
 @Composable
-fun AutomationItemCard(
-    automation: Automation,
-    onToggleActive: () -> Unit,
-    onDelete: () -> Unit,
-    onPinToHomeScreen: () -> Unit = {},
-    onOpenAppearancePicker: () -> Unit = {}
+private fun DashboardHeader(
+    shortcutCount: Int,
+    homescreenCount: Int,
+    isGridView: Boolean,
+    onToggleView: () -> Unit,
+    onNavigateToSettings: () -> Unit
 ) {
-    val colorKey = automation.colorKey?.let { runCatching { WidgetColorKey.valueOf(it) }.getOrNull() }
-        ?: AutomationVisuals.colorForAutomation(automation.id)
-    val iconKey = automation.iconKey?.let { runCatching { WidgetIconKey.valueOf(it) }.getOrNull() }
-        ?: AutomationVisuals.iconForAutomation(automation.id)
-
-    ElevatedCard(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        )
+    val palette = LocalShortcutsPalette.current
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(start = 20.dp, top = 20.dp, end = 20.dp, bottom = 12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
+        Column {
+            Text("Shortcuts", style = androidx.compose.material3.MaterialTheme.typography.headlineMedium, color = palette.ink)
+            Spacer(Modifier.height(2.dp))
+            Text(
+                "$shortcutCount shortcuts · $homescreenCount on homescreen",
+                style = androidx.compose.material3.MaterialTheme.typography.bodyMedium,
+                color = palette.inkFaint
+            )
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+            IconButton(onClick = onToggleView, modifier = Modifier.size(44.dp)) {
+                Icon(
+                    imageVector = if (isGridView) Icons.Filled.ViewList else Icons.Filled.GridView,
+                    contentDescription = if (isGridView) "Switch to List View" else "Switch to Grid View",
+                    tint = palette.ink,
+                    modifier = Modifier.size(22.dp)
+                )
+            }
+            IconButton(onClick = onNavigateToSettings, modifier = Modifier.size(44.dp)) {
+                Icon(Icons.Filled.Settings, "Settings", tint = palette.ink, modifier = Modifier.size(22.dp))
+            }
+        }
+    }
+}
+
+@Composable
+private fun DashboardFilters(selected: DashboardFilter, onSelected: (DashboardFilter) -> Unit) {
+    val palette = LocalShortcutsPalette.current
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(start = 20.dp, top = 4.dp, end = 20.dp, bottom = 16.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        DashboardFilter.entries.forEach { filter ->
+            val selectedFilter = filter == selected
             Box(
                 modifier = Modifier
-                    .size(44.dp)
-                    .clip(RoundedCornerShape(12.dp))
-                    .background(colorKey.composeColor)
-                    .clickable { onOpenAppearancePicker() },
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(if (selectedFilter) palette.ink else palette.surface)
+                    .then(if (selectedFilter) Modifier else Modifier.border(1.dp, palette.outline, RoundedCornerShape(18.dp)))
+                    .clickable { onSelected(filter) }
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
                 contentAlignment = Alignment.Center
             ) {
-                Icon(
-                    imageVector = iconKey.composeIcon,
-                    contentDescription = "Customize appearance",
-                    tint = Color.White,
-                    modifier = Modifier.size(24.dp)
-                )
-            }
-
-            Spacer(modifier = Modifier.width(12.dp))
-
-            Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    text = automation.name,
-                    style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                    color = MaterialTheme.colorScheme.onSurface
+                    filter.label,
+                    style = androidx.compose.material3.MaterialTheme.typography.labelMedium,
+                    color = if (selectedFilter) palette.ground else palette.inkMuted
                 )
-                Spacer(modifier = Modifier.height(4.dp))
-                AssistChip(
-                    onClick = { },
-                    label = {
-                        Text(
-                            text = "Trigger: ${automation.triggerType}",
-                            style = MaterialTheme.typography.labelSmall
-                        )
-                    }
-                )
-            }
-
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Switch(
-                    checked = automation.isActive,
-                    onCheckedChange = { onToggleActive() },
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = MaterialTheme.colorScheme.primary,
-                        checkedTrackColor = MaterialTheme.colorScheme.primaryContainer
-                    )
-                )
-                Spacer(modifier = Modifier.width(8.dp))
-                IconButton(onClick = onPinToHomeScreen) {
-                    Icon(
-                        imageVector = Icons.Default.PushPin,
-                        contentDescription = "Pin to Home Screen",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Spacer(modifier = Modifier.width(4.dp))
-                IconButton(onClick = onDelete) {
-                    Icon(
-                        imageVector = Icons.Default.Delete,
-                        contentDescription = "Delete Shortcut",
-                        tint = MaterialTheme.colorScheme.error
-                    )
-                }
             }
         }
     }
 }
 
 @Composable
-fun AutomationGridItemCard(
-    automation: Automation,
-    onToggleActive: () -> Unit,
-    onDelete: () -> Unit,
-    onPinToHomeScreen: () -> Unit = {},
-    onOpenAppearancePicker: () -> Unit = {}
+private fun DashboardGrid(
+    automations: List<Automation>,
+    onRun: (Automation) -> Unit,
+    onDelete: (Automation) -> Unit,
+    onAddToHomeScreen: (Automation) -> Unit,
+    onNewShortcut: () -> Unit,
+    modifier: Modifier
 ) {
-    val colorKey = automation.colorKey?.let { runCatching { WidgetColorKey.valueOf(it) }.getOrNull() }
-        ?: AutomationVisuals.colorForAutomation(automation.id)
-    val iconKey = automation.iconKey?.let { runCatching { WidgetIconKey.valueOf(it) }.getOrNull() }
-        ?: AutomationVisuals.iconForAutomation(automation.id)
-
-    ElevatedCard(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.surface
-        )
+    LazyVerticalGrid(
+        columns = GridCells.Fixed(2),
+        modifier = modifier.fillMaxWidth().padding(horizontal = 20.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(12.dp)
-        ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(40.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(colorKey.composeColor)
-                        .clickable { onOpenAppearancePicker() },
-                    contentAlignment = Alignment.Center
-                ) {
-                    Icon(
-                        imageVector = iconKey.composeIcon,
-                        contentDescription = "Customize appearance",
-                        tint = Color.White,
-                        modifier = Modifier.size(22.dp)
-                    )
-                }
+        items(automations, key = { it.id }) { shortcut ->
+            DashboardTile(shortcut, onRun, onDelete, onAddToHomeScreen)
+        }
+        item { NewShortcutTile(onNewShortcut) }
+    }
+}
 
-                Switch(
-                    checked = automation.isActive,
-                    onCheckedChange = { onToggleActive() },
-                    colors = SwitchDefaults.colors(
-                        checkedThumbColor = MaterialTheme.colorScheme.primary,
-                        checkedTrackColor = MaterialTheme.colorScheme.primaryContainer
-                    )
-                )
-            }
+@Composable
+private fun DashboardList(
+    automations: List<Automation>,
+    onRun: (Automation) -> Unit,
+    onDelete: (Automation) -> Unit,
+    onAddToHomeScreen: (Automation) -> Unit,
+    onNewShortcut: () -> Unit,
+    modifier: Modifier
+) {
+    LazyColumn(
+        modifier = modifier.fillMaxWidth().padding(horizontal = 20.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        items(automations, key = { it.id }) { shortcut ->
+            ShortcutListRow(shortcut, onRun, onDelete, onAddToHomeScreen)
+        }
+        item { NewShortcutTile(onNewShortcut) }
+    }
+}
 
-            Spacer(modifier = Modifier.height(10.dp))
-
+@Composable
+private fun DashboardTile(
+    shortcut: Automation,
+    onRun: (Automation) -> Unit,
+    onDelete: (Automation) -> Unit,
+    onAddToHomeScreen: (Automation) -> Unit
+) {
+    val palette = LocalShortcutsPalette.current
+    val color = tileColor(shortcut.colorKey, shortcut.id)
+    val icon = tileIcon(shortcut.iconKey, shortcut.id)
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(132.dp)
+            .clip(RoundedCornerShape(24.dp))
+            .background(color)
+            .clickable { onRun(shortcut) }
+            .padding(16.dp),
+        verticalArrangement = Arrangement.SpaceBetween
+    ) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+            Icon(icon, null, tint = palette.tileContent, modifier = Modifier.size(26.dp))
+            ShortcutOverflowMenu(
+                shortcut = shortcut,
+                handleTint = palette.tileContent,
+                onRun = onRun,
+                onAddToHomeScreen = onAddToHomeScreen,
+                onDelete = onDelete
+            )
+        }
+        Column {
             Text(
-                text = automation.name,
-                style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.SemiBold),
-                color = MaterialTheme.colorScheme.onSurface,
-                maxLines = 2,
+                shortcut.name,
+                style = androidx.compose.material3.MaterialTheme.typography.titleMedium,
+                color = palette.tileContent,
+                maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-
-            Spacer(modifier = Modifier.height(4.dp))
-
+            Spacer(Modifier.height(3.dp))
             Text(
-                text = "Trigger: ${automation.triggerType}",
-                style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
+                pluralSteps(shortcut),
+                style = androidx.compose.material3.MaterialTheme.typography.labelMedium,
+                color = palette.tileContent.copy(alpha = 0.85f)
             )
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End
-            ) {
-                IconButton(
-                    onClick = onPinToHomeScreen,
-                    modifier = Modifier.size(32.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.PushPin,
-                        contentDescription = "Pin to Home Screen",
-                        tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-                IconButton(
-                    onClick = onDelete,
-                    modifier = Modifier.size(32.dp)
-                ) {
-                    Icon(
-                        imageVector = Icons.Default.Delete,
-                        contentDescription = "Delete Shortcut",
-                        tint = MaterialTheme.colorScheme.error,
-                        modifier = Modifier.size(18.dp)
-                    )
-                }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun AutomationAppearancePickerSheet(
-    automation: Automation,
-    onDismiss: () -> Unit,
-    onSaveAppearance: (WidgetColorKey, WidgetIconKey) -> Unit
-) {
-    val initialColor = automation.colorKey?.let { runCatching { WidgetColorKey.valueOf(it) }.getOrNull() }
-        ?: AutomationVisuals.colorForAutomation(automation.id)
-    val initialIcon = automation.iconKey?.let { runCatching { WidgetIconKey.valueOf(it) }.getOrNull() }
-        ?: AutomationVisuals.iconForAutomation(automation.id)
-
-    var selectedColor by remember { mutableStateOf(initialColor) }
-    var selectedIcon by remember { mutableStateOf(initialIcon) }
-
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 20.dp, vertical = 8.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp)
-        ) {
-            Text(
-                text = "Customize Appearance",
-                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
-            )
-
-            Text(
-                text = "Icon & Color for \"${automation.name}\"",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            // Color Swatches
-            Column {
-                Text(
-                    text = "Color",
-                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    WidgetColorKey.entries.forEach { colorKey ->
-                        val isSelected = selectedColor == colorKey
-                        Box(
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clip(CircleShape)
-                                .background(colorKey.composeColor)
-                                .border(
-                                    width = if (isSelected) 3.dp else 0.dp,
-                                    color = if (isSelected) MaterialTheme.colorScheme.onSurface else Color.Transparent,
-                                    shape = CircleShape
-                                )
-                                .clickable { selectedColor = colorKey },
-                            contentAlignment = Alignment.Center
-                        ) {
-                            if (isSelected) {
-                                Icon(
-                                    imageVector = Icons.Filled.Check,
-                                    contentDescription = "Selected",
-                                    tint = Color.White,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-
-            // Icon Swatches
-            Column {
-                Text(
-                    text = "Icon",
-                    style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.SemiBold)
-                )
-                Spacer(modifier = Modifier.height(8.dp))
-                Row(
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    WidgetIconKey.entries.forEach { iconKey ->
-                        val isSelected = selectedIcon == iconKey
-                        IconButton(
-                            onClick = { selectedIcon = iconKey },
-                            modifier = Modifier
-                                .size(44.dp)
-                                .background(
-                                    color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
-                                    shape = RoundedCornerShape(8.dp)
-                                )
-                                .border(
-                                    width = if (isSelected) 2.dp else 0.dp,
-                                    color = if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent,
-                                    shape = RoundedCornerShape(8.dp)
-                                )
-                        ) {
-                            Icon(
-                                imageVector = iconKey.composeIcon,
-                                contentDescription = iconKey.displayLabel,
-                                tint = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurface
-                            )
-                        }
-                    }
-                }
-            }
-
-            Spacer(modifier = Modifier.height(8.dp))
-
-            Button(
-                onClick = {
-                    onSaveAppearance(selectedColor, selectedIcon)
-                    onDismiss()
-                },
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Save")
-            }
-
-            Spacer(modifier = Modifier.height(16.dp))
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun WidgetGalleryBottomSheet(
-    onDismiss: () -> Unit,
-    onNavigateToCreateWidget: () -> Unit,
-    onPinQuickShortcut: () -> Unit,
-    onPinListWidget: () -> Unit,
-    onPinCustomWidget: () -> Unit,
-    onPinGridWidget: () -> Unit,
-    onPinGreetingWidget: () -> Unit
-) {
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp)
-                .verticalScroll(rememberScrollState())
-        ) {
-            Text(
-                text = "Add Widget to Home Screen",
-                style = MaterialTheme.typography.titleLarge.copy(fontWeight = FontWeight.Bold)
-            )
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(
-                text = "Choose a widget layout to add to your home screen",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-            Spacer(modifier = Modifier.height(16.dp))
-
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                // 1. Quick Shortcut Tile
-                WidgetGalleryCard(
-                    title = "Quick Shortcut Tile",
-                    description = "Minimal single tile rendering a single bound automation.",
-                    previewContent = {
-                        Box(
-                            modifier = Modifier
-                                .size(60.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(WidgetColorKey.BLUE.composeColor)
-                                .padding(6.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
-                            ) {
-                                Icon(
-                                    imageVector = WidgetIconKey.BOLT.composeIcon,
-                                    contentDescription = null,
-                                    tint = Color.White,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = "Shortcut",
-                                    color = Color.White,
-                                    fontSize = 9.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    maxLines = 1
-                                )
-                            }
-                        }
-                    },
-                    onPin = {
-                        onPinQuickShortcut()
-                        onDismiss()
-                    }
-                )
-
-                // 2. Shortcuts List Widget
-                WidgetGalleryCard(
-                    title = "Shortcuts List Widget",
-                    description = "Multi-row scrollable Glance widget rendering up to 4 shortcuts.",
-                    previewContent = {
-                        Box(
-                            modifier = Modifier
-                                .size(60.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(MaterialTheme.colorScheme.surface)
-                                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
-                                .padding(6.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(
-                                modifier = Modifier.fillMaxSize(),
-                                verticalArrangement = Arrangement.SpaceEvenly
-                            ) {
-                                repeat(3) { index ->
-                                    Row(
-                                        modifier = Modifier
-                                            .fillMaxWidth()
-                                            .height(12.dp)
-                                            .clip(RoundedCornerShape(3.dp))
-                                            .background(
-                                                when (index) {
-                                                    0 -> WidgetColorKey.BLUE.composeColor.copy(alpha = 0.8f)
-                                                    1 -> WidgetColorKey.GREEN.composeColor.copy(alpha = 0.8f)
-                                                    else -> WidgetColorKey.ORANGE.composeColor.copy(alpha = 0.8f)
-                                                }
-                                            )
-                                            .padding(horizontal = 4.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        Box(
-                                            modifier = Modifier
-                                                .size(6.dp)
-                                                .clip(CircleShape)
-                                                .background(Color.White)
-                                        )
-                                        Spacer(modifier = Modifier.width(4.dp))
-                                        Box(
-                                            modifier = Modifier
-                                                .height(3.dp)
-                                                .fillMaxWidth(0.7f)
-                                                .clip(RoundedCornerShape(1.dp))
-                                                .background(Color.White)
-                                        )
-                                    }
-                                }
-                            }
-                        }
-                    },
-                    onPin = {
-                        onPinListWidget()
-                        onDismiss()
-                    }
-                )
-
-                // 3. Custom Widget
-                WidgetGalleryCard(
-                    title = "Custom Widget",
-                    description = "User-styled single Glance tile supporting custom colors and icons. Design your own tile first in 'Create Your Own Widget', then pin it here.",
-                    previewContent = {
-                        Box(
-                            modifier = Modifier
-                                .size(60.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(WidgetColorKey.PURPLE.composeColor)
-                                .padding(6.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
-                            ) {
-                                Icon(
-                                    imageVector = WidgetIconKey.STAR.composeIcon,
-                                    contentDescription = null,
-                                    tint = Color.White,
-                                    modifier = Modifier.size(20.dp)
-                                )
-                                Spacer(modifier = Modifier.height(2.dp))
-                                Text(
-                                    text = "Custom",
-                                    color = Color.White,
-                                    fontSize = 9.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    maxLines = 1
-                                )
-                            }
-                        }
-                    },
-                    secondaryActionText = "Create Your Own Widget",
-                    onSecondaryAction = {
-                        onNavigateToCreateWidget()
-                        onDismiss()
-                    },
-                    onPin = {
-                        onPinCustomWidget()
-                        onDismiss()
-                    }
-                )
-
-                // 4. Shortcuts Grid Widget
-                WidgetGalleryCard(
-                    title = "Shortcuts Grid Widget",
-                    description = "2-column grid Glance widget displaying up to 6 custom widget tiles. Design custom tiles first in 'Create Your Own Widget', then pin it here.",
-                    previewContent = {
-                        Box(
-                            modifier = Modifier
-                                .size(60.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(MaterialTheme.colorScheme.surface)
-                                .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(12.dp))
-                                .padding(4.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(
-                                modifier = Modifier.fillMaxSize(),
-                                verticalArrangement = Arrangement.spacedBy(3.dp)
-                            ) {
-                                Row(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(3.dp)
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .fillMaxHeight()
-                                            .clip(RoundedCornerShape(4.dp))
-                                            .background(WidgetColorKey.BLUE.composeColor)
-                                    )
-                                    Box(
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .fillMaxHeight()
-                                            .clip(RoundedCornerShape(4.dp))
-                                            .background(WidgetColorKey.GREEN.composeColor)
-                                    )
-                                }
-                                Row(
-                                    modifier = Modifier
-                                        .weight(1f)
-                                        .fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(3.dp)
-                                ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .fillMaxHeight()
-                                            .clip(RoundedCornerShape(4.dp))
-                                            .background(WidgetColorKey.ORANGE.composeColor)
-                                    )
-                                    Box(
-                                        modifier = Modifier
-                                            .weight(1f)
-                                            .fillMaxHeight()
-                                            .clip(RoundedCornerShape(4.dp))
-                                            .background(WidgetColorKey.TEAL.composeColor)
-                                    )
-                                }
-                            }
-                        }
-                    },
-                    secondaryActionText = "Create Your Own Widget",
-                    onSecondaryAction = {
-                        onNavigateToCreateWidget()
-                        onDismiss()
-                    },
-                    onPin = {
-                        onPinGridWidget()
-                        onDismiss()
-                    }
-                )
-
-                // 5. Greeting Widget
-                WidgetGalleryCard(
-                    title = "Greeting Widget",
-                    description = "Personalized, dynamic-content widget rendering a time-of-day-aware greeting with user name and shortcut button.",
-                    previewContent = {
-                        Box(
-                            modifier = Modifier
-                                .size(60.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(WidgetColorKey.TEAL.composeColor)
-                                .padding(6.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Column(
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.Center
-                            ) {
-                                Text(
-                                    text = "Good Morning",
-                                    color = Color.White,
-                                    fontSize = 8.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    maxLines = 1
-                                )
-                                Spacer(modifier = Modifier.height(3.dp))
-                                Box(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(4.dp))
-                                        .background(Color.White.copy(alpha = 0.3f))
-                                        .padding(horizontal = 6.dp, vertical = 2.dp)
-                                ) {
-                                    Text(
-                                        text = "▶ Run",
-                                        color = Color.White,
-                                        fontSize = 8.sp,
-                                        fontWeight = FontWeight.SemiBold
-                                    )
-                                }
-                            }
-                        }
-                    },
-                    onPin = {
-                        onPinGreetingWidget()
-                        onDismiss()
-                    }
-                )
-            }
-            Spacer(modifier = Modifier.height(24.dp))
         }
     }
 }
 
 @Composable
-fun WidgetGalleryCard(
-    title: String,
-    description: String,
-    previewContent: @Composable () -> Unit,
-    secondaryActionText: String? = null,
-    onSecondaryAction: (() -> Unit)? = null,
-    onPin: () -> Unit
+private fun ShortcutListRow(
+    shortcut: Automation,
+    onRun: (Automation) -> Unit,
+    onDelete: (Automation) -> Unit,
+    onAddToHomeScreen: (Automation) -> Unit
 ) {
-    ElevatedCard(
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.elevatedCardColors(
-            containerColor = MaterialTheme.colorScheme.surfaceVariant
-        )
+    val palette = LocalShortcutsPalette.current
+    val color = tileColor(shortcut.colorKey, shortcut.id)
+    Row(
+        modifier = Modifier.fillMaxWidth().height(76.dp).clip(RoundedCornerShape(24.dp)).background(palette.surface)
+            .border(1.dp, palette.outline, RoundedCornerShape(24.dp)).clickable { onRun(shortcut) }.padding(horizontal = 16.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Column(
+        Box(Modifier.size(44.dp).clip(RoundedCornerShape(15.dp)).background(color), contentAlignment = Alignment.Center) {
+            Icon(tileIcon(shortcut.iconKey, shortcut.id), null, tint = palette.tileContent, modifier = Modifier.size(22.dp))
+        }
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Text(shortcut.name, style = androidx.compose.material3.MaterialTheme.typography.titleMedium, color = palette.ink, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(pluralSteps(shortcut), style = androidx.compose.material3.MaterialTheme.typography.labelMedium, color = palette.inkFaint)
+        }
+        ShortcutOverflowMenu(
+            shortcut = shortcut,
+            handleTint = palette.ink,
+            onRun = onRun,
+            onAddToHomeScreen = onAddToHomeScreen,
+            onDelete = onDelete
+        )
+    }
+}
+
+@Composable
+private fun ShortcutOverflowMenu(
+    shortcut: Automation,
+    handleTint: Color,
+    onRun: (Automation) -> Unit,
+    onAddToHomeScreen: (Automation) -> Unit,
+    onDelete: (Automation) -> Unit
+) {
+    val palette = LocalShortcutsPalette.current
+    var expanded by remember { mutableStateOf(false) }
+    Box {
+        Box(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(16.dp)
+                .size(22.dp)
+                .clip(CircleShape)
+                .background(handleTint.copy(alpha = 0.28f))
+                .clickable { expanded = true },
+            contentAlignment = Alignment.Center
         ) {
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                previewContent()
-                Spacer(modifier = Modifier.width(16.dp))
-                Column(modifier = Modifier.weight(1f)) {
-                    Text(
-                        text = title,
-                        style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
-                    )
-                    Spacer(modifier = Modifier.height(4.dp))
-                    Text(
-                        text = description,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-            Spacer(modifier = Modifier.height(12.dp))
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.End,
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                if (secondaryActionText != null && onSecondaryAction != null) {
-                    TextButton(onClick = onSecondaryAction) {
-                        Text(secondaryActionText)
-                    }
-                    Spacer(modifier = Modifier.width(8.dp))
-                }
-                Button(onClick = onPin) {
-                    Icon(
-                        imageVector = Icons.Filled.PushPin,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
-                    Spacer(modifier = Modifier.width(6.dp))
-                    Text("Pin to Home Screen")
-                }
-            }
+            Icon(
+                Icons.Filled.MoreVert,
+                contentDescription = "Shortcut actions for ${shortcut.name}",
+                tint = if (handleTint == palette.ink) palette.ink else palette.tileContent,
+                modifier = Modifier.size(16.dp)
+            )
+        }
+        // DropdownMenu gained `containerColor` after compose-bom 2023.10.01, which this
+        // project pins. It is unnecessary here: the theme already maps Material's `surface`
+        // slot onto palette.surface, so the menu picks up the right ground on its own.
+        DropdownMenu(
+            expanded = expanded,
+            onDismissRequest = { expanded = false }
+        ) {
+            DropdownMenuItem(
+                text = { Text("Run", color = palette.ink) },
+                leadingIcon = { Icon(Icons.Filled.PlayArrow, null, tint = palette.ink) },
+                onClick = { expanded = false; onRun(shortcut) }
+            )
+            DropdownMenuItem(
+                text = { Text("Add to homescreen", color = palette.ink) },
+                onClick = { expanded = false; onAddToHomeScreen(shortcut) }
+            )
+            DropdownMenuItem(
+                text = { Text("Delete", color = palette.danger) },
+                onClick = { expanded = false; onDelete(shortcut) }
+            )
         }
     }
 }
+
+@Composable
+private fun DeleteShortcutConfirmationDialog(
+    pending: com.shortcuts.app.viewmodel.PendingDeletion,
+    onConfirm: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val palette = LocalShortcutsPalette.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = {
+            Text(
+                stringResource(com.shortcuts.app.R.string.delete_shortcut_dialog_title, pending.automation.name),
+                color = palette.ink
+            )
+        },
+        text = {
+            val textRes = if (pending.affectedWidgetCount == 1) {
+                com.shortcuts.app.R.string.delete_shortcut_dialog_body_one
+            } else {
+                com.shortcuts.app.R.string.delete_shortcut_dialog_body_other
+            }
+            val text = if (pending.affectedWidgetCount == 1) {
+                stringResource(textRes)
+            } else {
+                stringResource(textRes, pending.affectedWidgetCount)
+            }
+            Text(text, color = palette.inkMuted)
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) {
+                Text(stringResource(com.shortcuts.app.R.string.delete_shortcut_dialog_confirm), color = palette.danger)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) {
+                Text(stringResource(com.shortcuts.app.R.string.delete_shortcut_dialog_cancel), color = palette.ink)
+            }
+        },
+        containerColor = palette.surface
+    )
+}
+
+private fun requestShortcutWidgetPin(context: android.content.Context, shortcut: Automation) {
+    val appWidgetManager = AppWidgetManager.getInstance(context)
+    if (appWidgetManager.isRequestPinAppWidgetSupported) {
+        appWidgetManager.requestPinAppWidget(
+            ComponentName(context, ShortcutWidgetReceiver::class.java),
+            null,
+            ShortcutWidgetPinRequest.createSuccessCallback(context, shortcut.id)
+        )
+    } else {
+        Toast.makeText(context, "Your launcher doesn't support adding widgets from Shortcuts.", Toast.LENGTH_LONG).show()
+    }
+}
+
+@Composable
+private fun NewShortcutTile(onClick: () -> Unit) {
+    val palette = LocalShortcutsPalette.current
+    Column(
+        modifier = Modifier.fillMaxWidth().height(132.dp).clip(RoundedCornerShape(24.dp))
+            .background(palette.surface).dashedRoundedBorder(1.5.dp, palette.outlineDashed, 24.dp)
+            .clickable(onClick = onClick),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Icon(Icons.Filled.Add, null, tint = palette.inkFaint, modifier = Modifier.size(26.dp))
+        Spacer(Modifier.height(8.dp))
+        Text("New shortcut", style = androidx.compose.material3.MaterialTheme.typography.labelLarge, color = palette.inkFaint)
+    }
+}
+
+@Composable
+private fun DashboardBottomBar(onDescribe: () -> Unit, onCreate: () -> Unit, onRecord: () -> Unit) {
+    val palette = LocalShortcutsPalette.current
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(start = 20.dp, top = 16.dp, end = 20.dp, bottom = 24.dp),
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(
+            modifier = Modifier.weight(1f).height(52.dp).clip(RoundedCornerShape(26.dp)).background(palette.ink).clickable(onClick = onDescribe),
+            horizontalArrangement = Arrangement.Center,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(Icons.Filled.AutoAwesome, null, tint = palette.ground, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Describe a shortcut", style = androidx.compose.material3.MaterialTheme.typography.bodyLarge, color = palette.ground)
+        }
+        Box(
+            modifier = Modifier.size(52.dp).clip(CircleShape).background(palette.surface).border(1.dp, palette.outline, CircleShape).clickable(onClick = onRecord),
+            contentAlignment = Alignment.Center
+        ) { Icon(Icons.Filled.RadioButtonChecked, "Record a Shortcut", tint = palette.danger, modifier = Modifier.size(20.dp)) }
+        Box(
+            modifier = Modifier.size(52.dp).clip(CircleShape).background(palette.surface).border(1.dp, palette.outline, CircleShape).clickable(onClick = onCreate),
+            contentAlignment = Alignment.Center
+        ) { Icon(Icons.Filled.Add, "Add Manual Shortcut", tint = palette.ink, modifier = Modifier.size(20.dp)) }
+    }
+}
+
+private fun pluralSteps(shortcut: Automation): String {
+    val count = runCatching { ActionConverter().toActionList(shortcut.actionsJson).size }.getOrDefault(0)
+    return if (count == 1) "1 step" else "$count steps"
+}
+
+private fun tileColor(colorKey: String?, id: Int): Color =
+    resolveWidgetColor(colorKey, AutomationVisuals.colorForAutomation(id))
+
+private fun tileIcon(iconKey: String?, id: Int) =
+    resolveWidgetIconKey(iconKey, AutomationVisuals.iconForAutomation(id)).composeIcon
+
+private fun Modifier.dashedRoundedBorder(width: androidx.compose.ui.unit.Dp, color: Color, radius: androidx.compose.ui.unit.Dp): Modifier =
+    drawBehind {
+        drawRoundRect(
+            color = color,
+            cornerRadius = androidx.compose.ui.geometry.CornerRadius(radius.toPx()),
+            style = Stroke(
+                width = width.toPx(),
+                pathEffect = PathEffect.dashPathEffect(floatArrayOf(6.dp.toPx(), 6.dp.toPx()))
+            )
+        )
+    }

@@ -30,14 +30,22 @@ data class Action(
     val uiActionType: String? = null,
     val globalAction: String? = null,
     val scrollDirection: String? = null,
-    val targetText: String? = null
+    val targetText: String? = null,
+    /** Continue the chain after this action fails. Defaults to the safe, stop-on-error behavior. */
+    val continueOnError: Boolean = false,
+    /** Optional pause before the next action in a chain. */
+    val delayMillis: Long? = null
 )
 
 enum class ActionType {
     SYSTEM_TOGGLE,
     APP_INTENT,
     HTTP_REQUEST,
-    UI_AUTOMATION
+    UI_AUTOMATION,
+    /** Opens the user's SMS app with a recipient and message ready to review and send. */
+    SEND_MESSAGE,
+    /** Opens the user's dialer with a number ready to call. */
+    DIAL_NUMBER
 }
 
 class ActionConverter {

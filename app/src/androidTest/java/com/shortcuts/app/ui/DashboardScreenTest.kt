@@ -6,7 +6,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.shortcuts.app.data.Automation
 import com.shortcuts.app.ui.screens.DashboardScreenContent
 import com.shortcuts.app.ui.state.UiState
-import org.junit.Assert.assertTrue
+import org.junit.Assert.assertEquals
 import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -40,7 +40,7 @@ class DashboardScreenTest {
             )
         }
 
-        composeTestRule.onNodeWithText("No shortcuts created yet").assertIsDisplayed()
+        composeTestRule.onNodeWithText("New shortcut").assertIsDisplayed()
     }
 
     @Test
@@ -58,32 +58,25 @@ class DashboardScreenTest {
         }
 
         composeTestRule.onNodeWithText("WiFi Auto").assertIsDisplayed()
-        composeTestRule.onNodeWithText("Trigger: MANUAL").assertIsDisplayed()
+        composeTestRule.onNodeWithText("0 steps").assertIsDisplayed()
     }
 
     @Test
-    fun dashboardScreen_overflowMenuTriggersCallbacks() {
-        var createWidgetClicked = false
-        var pinListWidgetClicked = false
+    fun dashboardScreen_shortcutOverflowInvokesDeleteCallback() {
+        val shortcut = Automation(id = 1, name = "WiFi Auto", actionsJson = "[]", isActive = true, triggerType = "MANUAL")
+        var deletedShortcut: Automation? = null
 
         composeTestRule.setContent {
             DashboardScreenContent(
-                uiState = UiState.Success(emptyList()),
+                uiState = UiState.Success(listOf(shortcut)),
                 onNavigateToManualBuilder = {},
                 onNavigateToAiBuilder = {},
-                onNavigateToCreateWidget = { createWidgetClicked = true },
-                onPinListWidget = { pinListWidgetClicked = true }
+                onDelete = { deletedShortcut = it }
             )
         }
 
-        composeTestRule.onNodeWithContentDescription("More options").performClick()
-        composeTestRule.onNodeWithText("Add Widget to Home Screen").performClick()
-        composeTestRule.onAllNodesWithText("Create Your Own Widget")[0].performClick()
-        assertTrue(createWidgetClicked)
-
-        composeTestRule.onNodeWithContentDescription("More options").performClick()
-        composeTestRule.onNodeWithText("Add Widget to Home Screen").performClick()
-        composeTestRule.onAllNodesWithText("Pin to Home Screen")[1].performClick()
-        assertTrue(pinListWidgetClicked)
+        composeTestRule.onNodeWithContentDescription("Shortcut actions for WiFi Auto").performClick()
+        composeTestRule.onNodeWithText("Delete").performClick()
+        assertEquals(shortcut, deletedShortcut)
     }
 }
