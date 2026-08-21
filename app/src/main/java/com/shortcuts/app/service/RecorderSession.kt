@@ -105,6 +105,7 @@ class RecorderSessionOwner(
             val action = when (event.eventType) {
                 RecorderEventType.CLICK -> createClickAction(event)
                 RecorderEventType.TEXT_CHANGE -> createTypeAction(event)
+                RecorderEventType.SCROLL -> createScrollAction(event)
             } ?: return
 
             val currentActions = _recordedActions.value
@@ -136,13 +137,17 @@ class RecorderSessionOwner(
     private fun createClickAction(event: RecorderEvent): Action? {
         val targetText = event.sourceText ?: event.sourceContentDescription
         val targetNodeId = event.sourceViewId
-        if (targetText.isNullOrBlank() && targetNodeId.isNullOrBlank()) return null
+        if (targetText.isNullOrBlank() && targetNodeId.isNullOrBlank() && event.screenX == null) return null
 
         return Action(
             actionType = ActionType.UI_AUTOMATION,
             uiActionType = "TAP",
             targetText = targetText,
             targetNodeId = targetNodeId,
+            targetContentDescription = event.sourceContentDescription,
+            targetClassName = event.sourceClassName,
+            screenX = event.screenX,
+            screenY = event.screenY,
             delayMillis = 500L
         )
     }
@@ -153,10 +158,23 @@ class RecorderSessionOwner(
             uiActionType = "TYPE_TEXT",
             targetText = event.sourceText ?: event.sourceContentDescription,
             targetNodeId = event.sourceViewId,
+            targetContentDescription = event.sourceContentDescription,
+            targetClassName = event.sourceClassName,
             textInput = event.enteredText,
             delayMillis = 500L
         )
     }
+
+    private fun createScrollAction(event: RecorderEvent): Action = Action(
+        actionType = ActionType.UI_AUTOMATION,
+        uiActionType = "SCROLL",
+        scrollDirection = "FORWARD",
+        targetText = event.sourceText ?: event.sourceContentDescription,
+        targetNodeId = event.sourceViewId,
+        targetContentDescription = event.sourceContentDescription,
+        targetClassName = event.sourceClassName,
+        delayMillis = 700L
+    )
 
     private companion object {
         const val SYSTEM_UI_PACKAGE = "com.android.systemui"

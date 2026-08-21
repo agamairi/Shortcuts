@@ -19,8 +19,28 @@ data class WidgetConfig(
     val label: String? = null,
     val colorKey: String? = null,
     val iconKey: String? = null,
-    val userName: String? = null
+    val userName: String? = null,
+    /**
+     * The layout the user explicitly chose, or null / [WidgetLayoutKey.AUTO] to keep the
+     * size-adaptive behaviour. Stored as the enum name so an unknown value from a newer build
+     * degrades to AUTO rather than crashing.
+     */
+    val layoutKey: String? = null
 )
+
+/** The shapes a placed widget can render in. */
+enum class WidgetLayoutKey {
+    /** Pick the layout from the widget's current size, as before. */
+    AUTO,
+    SINGLE,
+    GRID,
+    LIST;
+
+    companion object {
+        fun fromKeyOrAuto(value: String?): WidgetLayoutKey =
+            entries.firstOrNull { it.name.equals(value?.trim(), ignoreCase = true) } ?: AUTO
+    }
+}
 
 enum class WidgetConfigSource {
     UNIFIED,

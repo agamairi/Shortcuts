@@ -26,6 +26,11 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.core.content.ContextCompat
 import com.shortcuts.app.data.ThemePreferences
+import android.util.Log
+import androidx.glance.appwidget.updateAll
+import androidx.lifecycle.lifecycleScope
+import com.shortcuts.app.widget.ShortcutWidget
+import kotlinx.coroutines.launch
 import com.shortcuts.app.service.AutomationRecorder
 import com.shortcuts.app.ui.theme.ShortcutsTheme as AppShortcutsTheme
 import com.shortcuts.app.ui.theme.ThemeMode
@@ -51,6 +56,13 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         AutomationRecorder.restoreSession(applicationContext)
+        // A widget that was pinned while the refresh was broken renders "Tap to set up" forever:
+        // its config row is fine, but the launcher caches the last RemoteViews and never asks for
+        // another render on its own. Redrawing every instance on launch lets those self-heal.
+        lifecycleScope.launch {
+            runCatching { ShortcutWidget().updateAll(applicationContext) }
+                .onFailure { Log.w("MainActivity", "Could not refresh placed widgets", it) }
+        }
         val startDestination = intent?.getStringExtra(EXTRA_START_DESTINATION) ?: "dashboard"
         val themePreferences = ThemePreferences(applicationContext)
         setContent {

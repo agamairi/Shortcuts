@@ -3,6 +3,7 @@ package com.shortcuts.app.data
 import androidx.room.Dao
 import androidx.room.Query
 import androidx.room.Upsert
+import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface WidgetConfigDao {
@@ -11,6 +12,14 @@ interface WidgetConfigDao {
 
     @Query("SELECT * FROM widget_configs")
     suspend fun getAllConfigs(): List<WidgetConfig>
+
+    /**
+     * Observable form of [getAllConfigs]. The dashboard's "on homescreen" count read the suspend
+     * variant once per shortcut-list change, so pinning a widget — which changes this table but
+     * not the shortcut list — left the count stale at its old value.
+     */
+    @Query("SELECT * FROM widget_configs")
+    fun observeAllConfigs(): Flow<List<WidgetConfig>>
 
     @Upsert
     suspend fun upsertConfig(config: WidgetConfig)

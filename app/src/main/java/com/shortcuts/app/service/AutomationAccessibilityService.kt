@@ -1,18 +1,34 @@
 package com.shortcuts.app.service
 
 import android.accessibilityservice.AccessibilityService
+import android.accessibilityservice.GestureDescription
+import android.graphics.Path
 import android.os.Bundle
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
+import androidx.annotation.VisibleForTesting
 import androidx.core.os.bundleOf
 import com.shortcuts.app.data.Action
 import com.shortcuts.app.data.ActionType
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 
 open class AutomationAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "AutomationAccService"
+
+        /**
+         * How long a replayed step waits for its target to appear. A recorded shortcut replays far
+         * faster than a person tapped it, so the view a step targets is routinely not on screen yet
+         * when the step runs. Failing on the first miss is why recorded shortcuts were unusable.
+         */
+        private const val NODE_WAIT_TIMEOUT_MS = 5_000L
+        private const val NODE_POLL_INTERVAL_MS = 150L
+        private const val TAP_DURATION_MS = 60L
+        private const val GESTURE_TIMEOUT_MS = 2_000L
 
         @Volatile
         var instance: AutomationAccessibilityService? = null
@@ -56,25 +72,59 @@ open class AutomationAccessibilityService : AccessibilityService() {
     open fun getRootNode(): AccessibilityNodeInfo? = rootInActiveWindow
 
     /**
+     * Why the most recent [executeAction] returned false, phrased for the user rather than the log.
+     * Null after a successful call. [ActionExecutorService] reads this so a failed tap can say what
+     * it was looking for, instead of the old one-size-fits-all "This screen couldn't be automated".
+     */
+    @Volatile
+    var lastFailureMessage: String? = null
+        private set
+
+    /** Records why a step failed and returns false, so handlers can `return fail("...")`. */
+    private fun fail(message: String): Boolean {
+        lastFailureMessage = message
+        return false
+    }
+
+    /** The most human-recognisable name for what a step was aiming at. */
+    private fun Action.describeTarget(): String {
+        val label = targetText?.takeIf { it.isNotBlank() }
+            ?: target?.takeIf { it.isNotBlank() }
+            ?: targetNodeId?.takeIf { it.isNotBlank() }
+        return if (label != null) "\"$label\"" else "the target"
+    }
+
+    /**
      * Executes a given UI automation action.
      * Returns true if the action was successfully performed, false otherwise.
      */
     fun executeAction(action: Action): Boolean {
+        lastFailureMessage = null
         if (action.actionType != ActionType.UI_AUTOMATION) {
             Log.w(TAG, "Action type is not UI_AUTOMATION: ${action.actionType}")
-            return false
+            return fail("This step isn't a screen-automation step, so it can't be run on the current screen.")
+        }
+        if (getRootNode() == null) {
+            return fail(
+                "No app screen could be read. Open the app this step belongs to, then run the shortcut again."
+            )
         }
 
-        return when {
+        val performed = when {
             isGlobalNavigationAction(action) -> handleGlobalNavigation(action)
             isTextEntryAction(action) -> handleTextEntry(action)
             isScrollAction(action) -> handleScroll(action)
             isClickAction(action) -> handleClickNode(action)
             else -> {
                 Log.e(TAG, "Unknown or unsupported uiActionType: '${action.uiActionType}'")
-                false
+                fail("This step has no screen action set, so there was nothing to do.")
             }
         }
+        // A handler can fail at the final performAction without having called fail().
+        if (!performed && lastFailureMessage == null) {
+            lastFailureMessage = "${action.describeTarget()} was found but wouldn't respond on this screen."
+        }
+        return performed
     }
 
     private fun isGlobalNavigationAction(action: Action): Boolean {
@@ -150,12 +200,15 @@ open class AutomationAccessibilityService : AccessibilityService() {
 
     private fun handleTextEntry(action: Action): Boolean {
         val textToSet = action.textInput ?: ""
-        val targetNode = findTargetNode(action)
+        val targetNode = awaitTargetNode(action)
         val editableNode = findEditableNode(targetNode) ?: targetNode
 
         if (editableNode == null) {
             Log.w(TAG, "No suitable target node found for text entry")
-            return false
+            return fail(
+                "No text box matching ${action.describeTarget()} was on screen. " +
+                    "Open the screen with that text box before this step runs."
+            )
         }
 
         val arguments = bundleOf(
@@ -187,14 +240,14 @@ open class AutomationAccessibilityService : AccessibilityService() {
             AccessibilityNodeInfo.ACTION_SCROLL_FORWARD
         }
 
-        var targetNode = findTargetNode(action)
+        var targetNode = awaitTargetNode(action)
         if (targetNode == null || !targetNode.isScrollable) {
             targetNode = findScrollableNode(getRootNode()) ?: targetNode
         }
 
         if (targetNode == null) {
             Log.w(TAG, "No scrollable node found")
-            return false
+            return fail("Nothing on this screen could be scrolled.")
         }
 
         Log.d(TAG, "Executing scroll actionId $scrollActionId on node: ${targetNode.viewIdResourceName}")
@@ -216,10 +269,13 @@ open class AutomationAccessibilityService : AccessibilityService() {
     }
 
     private fun handleClickNode(action: Action): Boolean {
-        val targetNode = findTargetNode(action)
+        val targetNode = awaitTargetNode(action)
         if (targetNode == null) {
             Log.w(TAG, "Target node not found for click action: targetNodeId=${action.targetNodeId}, targetText=${action.targetText}")
-            return false
+            if (tapAtRecordedPoint(action)) {
+                return true
+            }
+            return fail("${action.describeTarget()} wasn't on screen when this step ran.")
         }
 
         // Find clickable node (either target node or closest clickable parent up to maxParentDepth)
@@ -248,6 +304,79 @@ open class AutomationAccessibilityService : AccessibilityService() {
      * 2. Text lookup
      * 3. Robust recursive node traversal checking viewId, text, and contentDescription
      */
+    /**
+     * How long a replayed step waits for its target to appear. Settable so JVM unit tests can turn
+     * the wait off: they assert the target-not-found path, and there is no real UI that will ever
+     * arrive, so waiting only makes the suite slow.
+     */
+    @VisibleForTesting
+    internal var nodeWaitTimeoutMillis: Long = NODE_WAIT_TIMEOUT_MS
+
+    /**
+     * Retries [findTargetNode] until the target appears or the wait budget runs out, re-reading the
+     * window each attempt so a screen that is still loading gets a chance to settle.
+     *
+     * Bounded by a retry COUNT rather than a wall-clock deadline on purpose: `SystemClock` is not
+     * available off-device and returns a constant 0 under plain JUnit, which turned a deadline
+     * comparison into an infinite loop.
+     *
+     * Blocks the calling thread, so it must run off the main thread — every caller of
+     * [ActionExecutorService.executeActions] dispatches to IO for exactly this reason.
+     */
+    private fun awaitTargetNode(action: Action): AccessibilityNodeInfo? {
+        findTargetNode(action)?.let { return it }
+
+        val retries = (nodeWaitTimeoutMillis / NODE_POLL_INTERVAL_MS).toInt()
+        repeat(retries) {
+            try {
+                Thread.sleep(NODE_POLL_INTERVAL_MS)
+            } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                return null
+            }
+            findTargetNode(action)?.let { return it }
+        }
+        return null
+    }
+
+    /**
+     * Taps the screen point the recorder captured. Last resort: it is the only selector that still
+     * works when the target is an unlabelled container, or its view id changed between app versions.
+     * Returns false when the step carries no recorded point (anything saved before recording
+     * captured coordinates).
+     */
+    private fun tapAtRecordedPoint(action: Action): Boolean {
+        val x = action.screenX ?: return false
+        val y = action.screenY ?: return false
+        if (x < 0 || y < 0) return false
+
+        val path = Path().apply { moveTo(x.toFloat(), y.toFloat()) }
+        val gesture = GestureDescription.Builder()
+            .addStroke(GestureDescription.StrokeDescription(path, 0L, TAP_DURATION_MS))
+            .build()
+
+        val finished = CountDownLatch(1)
+        val landed = AtomicBoolean(false)
+        val dispatched = dispatchGesture(
+            gesture,
+            object : GestureResultCallback() {
+                override fun onCompleted(description: GestureDescription?) {
+                    landed.set(true)
+                    finished.countDown()
+                }
+
+                override fun onCancelled(description: GestureDescription?) {
+                    finished.countDown()
+                }
+            },
+            null
+        )
+        if (!dispatched) return false
+        finished.await(GESTURE_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+        Log.d(TAG, "Coordinate fallback tap at ($x, $y) landed=${landed.get()}")
+        return landed.get()
+    }
+
     fun findTargetNode(action: Action): AccessibilityNodeInfo? {
         val root = getRootNode() ?: return null
 
@@ -260,8 +389,15 @@ open class AutomationAccessibilityService : AccessibilityService() {
         }
 
         // 2. Search by Text
-        val searchTerms = listOfNotNull(action.targetText, action.targetNodeId, action.target)
-            .filter { it.isNotEmpty() }
+        // The recorder stores several selectors per step because the one that fires a click is
+        // often an unlabelled container. Trying them in order of specificity is what makes a
+        // replayed step survive a UI that renders slightly differently than when it was recorded.
+        val searchTerms = listOfNotNull(
+            action.targetText,
+            action.targetContentDescription,
+            action.targetNodeId,
+            action.target
+        ).filter { it.isNotEmpty() }
 
         for (term in searchTerms) {
             val nodes = root.findAccessibilityNodeInfosByText(term)

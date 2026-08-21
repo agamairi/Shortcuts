@@ -82,6 +82,40 @@ class AppDatabaseMigrationTest {
         }
     }
 
+    @Test
+    fun migration7To8_addsLayoutKeyAndLeavesExistingWidgetsOnAutomatic() {
+        helper.createDatabase(TEST_DATABASE, 7).apply {
+            execSQL(
+                "INSERT INTO widget_configs (widgetId, sourceType, automationIdsJson) " +
+                    "VALUES (201, 'UNIFIED', '[7]')"
+            )
+            close()
+        }
+
+        val migratedDb = helper.runMigrationsAndValidate(
+            TEST_DATABASE,
+            8,
+            true,
+            AppDatabase.MIGRATION_7_8
+        )
+        try {
+            migratedDb.query(
+                "SELECT layoutKey, automationIdsJson FROM widget_configs WHERE widgetId = 201"
+            ).use { cursor ->
+                assertEquals("Expected the existing config to survive", true, cursor.moveToFirst())
+                // NULL, not a default string: a widget placed before layouts were selectable must
+                // keep adapting to its size, which WidgetLayoutKey.fromKeyOrAuto maps to AUTO.
+                assertEquals(null, cursor.stringOrNull("layoutKey"))
+                assertEquals("[7]", cursor.getString(cursor.getColumnIndexOrThrow("automationIdsJson")))
+            }
+            assertEquals(WidgetLayoutKey.AUTO, WidgetLayoutKey.fromKeyOrAuto(null))
+            assertEquals(WidgetLayoutKey.GRID, WidgetLayoutKey.fromKeyOrAuto("GRID"))
+            assertEquals(WidgetLayoutKey.AUTO, WidgetLayoutKey.fromKeyOrAuto("SOMETHING_NEWER"))
+        } finally {
+            migratedDb.close()
+        }
+    }
+
     private fun assertConfig(
         db: androidx.sqlite.db.SupportSQLiteDatabase,
         widgetId: Int,

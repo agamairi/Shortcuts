@@ -4,6 +4,7 @@ import android.appwidget.AppWidgetManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.util.Log
 import com.shortcuts.app.data.AppDatabase
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -11,6 +12,10 @@ import kotlinx.coroutines.launch
 
 /** Persists the selected shortcut after the launcher assigns an id to a pinned widget. */
 class ShortcutWidgetPinReceiver : BroadcastReceiver() {
+    private companion object {
+        const val TAG = "ShortcutWidgetPin"
+    }
+
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != ShortcutWidgetPinRequest.ACTION_WIDGET_PINNED) return
 
@@ -29,6 +34,11 @@ class ShortcutWidgetPinReceiver : BroadcastReceiver() {
                     unifiedWidgetConfig(appWidgetId, listOf(automationId))
                 )
                 refreshShortcutWidget(context.applicationContext, appWidgetId)
+            } catch (t: Throwable) {
+                // Without this the failure vanished into the receiver's scope, and the widget sat
+                // on "Tap to set up" with no clue why. A pinned widget failing to bind is exactly
+                // the thing worth a log line.
+                Log.e(TAG, "Failed to bind pinned widget $appWidgetId to automation $automationId", t)
             } finally {
                 pendingResult.finish()
             }

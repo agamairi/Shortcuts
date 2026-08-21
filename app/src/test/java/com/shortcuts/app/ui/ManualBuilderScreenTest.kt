@@ -213,7 +213,9 @@ class ManualBuilderScreenTest {
     @Test
     fun `action type metadata contains all action types with valid titles and icons`() {
         val metadataList = ManualBuilderUtils.ACTION_TYPE_METADATA
-        assertEquals(6, metadataList.size)
+        // Every ActionType must be offerable in the builder, so the catalog tracks the enum.
+        // Asserting against the enum rather than a literal keeps this honest as types are added.
+        assertEquals(ActionType.values().size, metadataList.size)
 
         ActionType.values().forEach { type ->
             val meta = ManualBuilderUtils.getMetadataForType(type)

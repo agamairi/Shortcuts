@@ -47,6 +47,7 @@ import com.google.gson.reflect.TypeToken
 import com.shortcuts.app.data.AppDatabase
 import com.shortcuts.app.data.Automation
 import com.shortcuts.app.data.WidgetConfig
+import com.shortcuts.app.data.WidgetLayoutKey
 import com.shortcuts.app.data.WidgetConfigSource
 
 /** Parses legacy JSON defensively, so a corrupt old binding becomes setup rather than a blank UI. */
@@ -98,6 +99,7 @@ open class UnifiedShortcutWidget(
                 null
             }
         val shortcuts = config?.let { resolveShortcuts(db, it) }.orEmpty()
+        val layout = WidgetLayoutKey.fromKeyOrAuto(config?.layoutKey)
         val configIntent = Intent(context, configActivity).putExtra(
             AppWidgetManager.EXTRA_APPWIDGET_ID,
             appWidgetId
@@ -105,7 +107,7 @@ open class UnifiedShortcutWidget(
 
         provideContent {
             GlanceTheme {
-                AdaptiveShortcutWidgetContent(shortcuts, configIntent)
+                AdaptiveShortcutWidgetContent(shortcuts, configIntent, layout)
             }
         }
     }
@@ -139,14 +141,25 @@ open class UnifiedShortcutWidget(
 @Composable
 private fun AdaptiveShortcutWidgetContent(
     shortcuts: List<ShortcutTileModel>,
-    configIntent: Intent
+    configIntent: Intent,
+    layout: WidgetLayoutKey = WidgetLayoutKey.AUTO
 ) {
     val size = LocalSize.current
-    when {
-        shortcuts.isEmpty() -> NeedsSetup(configIntent)
-        size.width < 180.dp || size.height < 150.dp -> ShortcutTile(shortcuts.first(), compact = true)
-        size.height < 220.dp -> ShortcutGrid(shortcuts.take(6))
-        else -> ShortcutList(shortcuts)
+    if (shortcuts.isEmpty()) {
+        NeedsSetup(configIntent)
+        return
+    }
+    // An explicit choice wins over the size heuristic. AUTO keeps the original behaviour, so a
+    // widget placed before layouts were selectable still adapts as the user resizes it.
+    when (layout) {
+        WidgetLayoutKey.SINGLE -> ShortcutTile(shortcuts.first(), compact = true)
+        WidgetLayoutKey.GRID -> ShortcutGrid(shortcuts.take(6))
+        WidgetLayoutKey.LIST -> ShortcutList(shortcuts)
+        WidgetLayoutKey.AUTO -> when {
+            size.width < 180.dp || size.height < 150.dp -> ShortcutTile(shortcuts.first(), compact = true)
+            size.height < 220.dp -> ShortcutGrid(shortcuts.take(6))
+            else -> ShortcutList(shortcuts)
+        }
     }
 }
 

@@ -30,6 +30,7 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.RadioButtonChecked
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.GridView
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
@@ -66,6 +67,7 @@ import com.shortcuts.app.data.ActionConverter
 import com.shortcuts.app.data.AppDatabase
 import com.shortcuts.app.data.Automation
 import com.shortcuts.app.service.ActionExecutorService
+import com.shortcuts.app.util.ActionDescriber
 import com.shortcuts.app.ui.state.UiState
 import com.shortcuts.app.ui.theme.LocalShortcutsPalette
 import com.shortcuts.app.util.AutomationVisuals
@@ -78,6 +80,8 @@ import com.shortcuts.app.widget.resolveWidgetIconKey
 import com.shortcuts.app.widget.ShortcutWidgetPinRequest
 import com.shortcuts.app.widget.ShortcutWidgetReceiver
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.flowOn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -91,6 +95,7 @@ private enum class DashboardFilter(val label: String) {
 fun DashboardScreen(
     viewModel: AutomationViewModel,
     onNavigateToManualBuilder: () -> Unit,
+    onNavigateToEditShortcut: (Int) -> Unit,
     onNavigateToAiBuilder: () -> Unit,
     onNavigateToRecorder: () -> Unit = {},
     onNavigateToSettings: () -> Unit = {}
@@ -108,23 +113,25 @@ fun DashboardScreen(
         onNavigateToSettings = onNavigateToSettings,
         onRun = { automation ->
             scope.launch(Dispatchers.IO) {
+                val actions = runCatching { ActionConverter().toActionList(automation.actionsJson) }
+                    .getOrDefault(emptyList())
                 val result = runCatching {
-                    ActionExecutorService(context).executeActions(
-                        ActionConverter().toActionList(automation.actionsJson),
-                        automation.name
-                    )
+                    ActionExecutorService(context).executeActions(actions, automation.name)
                 }
+                // Report exactly what Test Run reports. Running from the dashboard used to say only
+                // "Couldn't run 'X'", so the same failure was diagnosable in the builder and opaque
+                // here — which is backwards, since this is where shortcuts are actually used.
+                val message = result.getOrNull()
+                    ?.userSummary { index -> actions.getOrNull(index)?.let(ActionDescriber::describe) }
+                    ?: "Couldn't run \"${automation.name}\""
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(
-                        context,
-                        if (result.getOrNull()?.allSucceeded == true) "Ran '${automation.name}'" else "Couldn't run '${automation.name}'",
-                        Toast.LENGTH_LONG
-                    ).show()
+                    Toast.makeText(context, message, Toast.LENGTH_LONG).show()
                 }
             }
         },
         onDelete = viewModel::requestDelete,
-        onAddToHomeScreen = { shortcut -> requestShortcutWidgetPin(context, shortcut) }
+        onAddToHomeScreen = { shortcut -> requestShortcutWidgetPin(context, shortcut) },
+        onEdit = { shortcut -> onNavigateToEditShortcut(shortcut.id) }
     )
     pendingDeletion?.let { pending ->
         DeleteShortcutConfirmationDialog(
@@ -157,7 +164,8 @@ fun DashboardScreenContent(
     onRun: (Automation) -> Unit = {},
     onUpdateAppearance: (Automation, WidgetColorKey, WidgetIconKey) -> Unit = { _, _, _ -> },
     onClearError: () -> Unit = {},
-    onAddToHomeScreen: (Automation) -> Unit = {}
+    onAddToHomeScreen: (Automation) -> Unit = {},
+    onEdit: (Automation) -> Unit = {}
 ) {
     val context = LocalContext.current
     val palette = LocalShortcutsPalette.current
@@ -165,14 +173,19 @@ fun DashboardScreenContent(
     var isGridView by remember { mutableStateOf(true) }
     var homescreenIds by remember { mutableStateOf(emptySet<Int>()) }
 
-    LaunchedEffect(uiState) {
-        homescreenIds = withContext(Dispatchers.IO) {
-            runCatching {
-                AppDatabase.getDatabase(context).widgetConfigDao().getAllConfigs()
+    // Observed, not read once: pinning a widget changes widget_configs without changing the
+    // shortcut list, so a LaunchedEffect keyed on uiState never re-ran and the count stayed at
+    // its old value — which is why the header read "0 on homescreen" after a successful add.
+    LaunchedEffect(context) {
+        AppDatabase.getDatabase(context).widgetConfigDao()
+            .observeAllConfigs()
+            .flowOn(Dispatchers.IO)
+            .catch { homescreenIds = emptySet() }
+            .collect { configs ->
+                homescreenIds = configs
                     .flatMap { WidgetConfigParser.automationIds(it.automationIdsJson) }
                     .toSet()
-            }.getOrDefault(emptySet())
-        }
+            }
     }
 
     Column(
@@ -219,6 +232,7 @@ fun DashboardScreenContent(
                         onRun = onRun,
                         onDelete = onDelete,
                         onAddToHomeScreen = onAddToHomeScreen,
+                        onEdit = onEdit,
                         onNewShortcut = onNavigateToManualBuilder,
                         modifier = Modifier.weight(1f)
                     )
@@ -228,6 +242,7 @@ fun DashboardScreenContent(
                         onRun = onRun,
                         onDelete = onDelete,
                         onAddToHomeScreen = onAddToHomeScreen,
+                        onEdit = onEdit,
                         onNewShortcut = onNavigateToManualBuilder,
                         modifier = Modifier.weight(1f)
                     )
@@ -312,6 +327,7 @@ private fun DashboardGrid(
     onRun: (Automation) -> Unit,
     onDelete: (Automation) -> Unit,
     onAddToHomeScreen: (Automation) -> Unit,
+    onEdit: (Automation) -> Unit,
     onNewShortcut: () -> Unit,
     modifier: Modifier
 ) {
@@ -322,7 +338,7 @@ private fun DashboardGrid(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         items(automations, key = { it.id }) { shortcut ->
-            DashboardTile(shortcut, onRun, onDelete, onAddToHomeScreen)
+            DashboardTile(shortcut, onRun, onDelete, onAddToHomeScreen, onEdit)
         }
         item { NewShortcutTile(onNewShortcut) }
     }
@@ -334,6 +350,7 @@ private fun DashboardList(
     onRun: (Automation) -> Unit,
     onDelete: (Automation) -> Unit,
     onAddToHomeScreen: (Automation) -> Unit,
+    onEdit: (Automation) -> Unit,
     onNewShortcut: () -> Unit,
     modifier: Modifier
 ) {
@@ -342,7 +359,7 @@ private fun DashboardList(
         verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         items(automations, key = { it.id }) { shortcut ->
-            ShortcutListRow(shortcut, onRun, onDelete, onAddToHomeScreen)
+            ShortcutListRow(shortcut, onRun, onDelete, onAddToHomeScreen, onEdit)
         }
         item { NewShortcutTile(onNewShortcut) }
     }
@@ -353,7 +370,8 @@ private fun DashboardTile(
     shortcut: Automation,
     onRun: (Automation) -> Unit,
     onDelete: (Automation) -> Unit,
-    onAddToHomeScreen: (Automation) -> Unit
+    onAddToHomeScreen: (Automation) -> Unit,
+    onEdit: (Automation) -> Unit
 ) {
     val palette = LocalShortcutsPalette.current
     val color = tileColor(shortcut.colorKey, shortcut.id)
@@ -375,7 +393,8 @@ private fun DashboardTile(
                 handleTint = palette.tileContent,
                 onRun = onRun,
                 onAddToHomeScreen = onAddToHomeScreen,
-                onDelete = onDelete
+                onDelete = onDelete,
+                onEdit = onEdit
             )
         }
         Column {
@@ -401,7 +420,8 @@ private fun ShortcutListRow(
     shortcut: Automation,
     onRun: (Automation) -> Unit,
     onDelete: (Automation) -> Unit,
-    onAddToHomeScreen: (Automation) -> Unit
+    onAddToHomeScreen: (Automation) -> Unit,
+    onEdit: (Automation) -> Unit
 ) {
     val palette = LocalShortcutsPalette.current
     val color = tileColor(shortcut.colorKey, shortcut.id)
@@ -423,7 +443,8 @@ private fun ShortcutListRow(
             handleTint = palette.ink,
             onRun = onRun,
             onAddToHomeScreen = onAddToHomeScreen,
-            onDelete = onDelete
+            onDelete = onDelete,
+            onEdit = onEdit
         )
     }
 }
@@ -434,7 +455,8 @@ private fun ShortcutOverflowMenu(
     handleTint: Color,
     onRun: (Automation) -> Unit,
     onAddToHomeScreen: (Automation) -> Unit,
-    onDelete: (Automation) -> Unit
+    onDelete: (Automation) -> Unit,
+    onEdit: (Automation) -> Unit
 ) {
     val palette = LocalShortcutsPalette.current
     var expanded by remember { mutableStateOf(false) }
@@ -465,6 +487,11 @@ private fun ShortcutOverflowMenu(
                 text = { Text("Run", color = palette.ink) },
                 leadingIcon = { Icon(Icons.Filled.PlayArrow, null, tint = palette.ink) },
                 onClick = { expanded = false; onRun(shortcut) }
+            )
+            DropdownMenuItem(
+                text = { Text("Edit", color = palette.ink) },
+                leadingIcon = { Icon(Icons.Filled.Edit, null, tint = palette.ink) },
+                onClick = { expanded = false; onEdit(shortcut) }
             )
             DropdownMenuItem(
                 text = { Text("Add to homescreen", color = palette.ink) },

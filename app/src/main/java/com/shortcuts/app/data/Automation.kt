@@ -4,6 +4,8 @@ import androidx.room.Entity
 import androidx.room.PrimaryKey
 import androidx.room.TypeConverter
 import com.google.gson.Gson
+import com.google.gson.GsonBuilder
+import com.google.gson.JsonDeserializer
 import com.google.gson.reflect.TypeToken
 
 @Entity(tableName = "automations")
@@ -31,6 +33,13 @@ data class Action(
     val globalAction: String? = null,
     val scrollDirection: String? = null,
     val targetText: String? = null,
+    /** Additional selector captured from accessibility nodes; older saved actions simply omit it. */
+    val targetContentDescription: String? = null,
+    /** Class name narrows an otherwise ambiguous text/description match. */
+    val targetClassName: String? = null,
+    /** Screen point captured for a tap, used only when every semantic selector has disappeared. */
+    val screenX: Int? = null,
+    val screenY: Int? = null,
     /** Continue the chain after this action fails. Defaults to the safe, stop-on-error behavior. */
     val continueOnError: Boolean = false,
     /** Optional pause before the next action in a chain. */
@@ -42,6 +51,8 @@ enum class ActionType {
     APP_INTENT,
     HTTP_REQUEST,
     UI_AUTOMATION,
+    /** A standalone, user-configured pause. Its duration is stored in [Action.delayMillis]. */
+    WAIT,
     /** Opens the user's SMS app with a recipient and message ready to review and send. */
     SEND_MESSAGE,
     /** Opens the user's dialer with a number ready to call. */
@@ -49,7 +60,14 @@ enum class ActionType {
 }
 
 class ActionConverter {
-    private val gson = Gson()
+    // A future action enum from a newer app must never make an existing shortcut crash while
+    // Room is being read. It becomes an invalid WAIT step, which reports a clear validation
+    // error if run; an action with no type at all is dropped below.
+    private val gson: Gson = GsonBuilder()
+        .registerTypeAdapter(ActionType::class.java, JsonDeserializer { json, _, _ ->
+            runCatching { ActionType.valueOf(json.asString) }.getOrDefault(ActionType.WAIT)
+        })
+        .create()
     
     @TypeConverter
     fun fromActionList(actions: List<Action>): String {
@@ -59,6 +77,8 @@ class ActionConverter {
     @TypeConverter
     fun toActionList(actionsString: String): List<Action> {
         val type = object : TypeToken<List<Action>>() {}.type
-        return gson.fromJson(actionsString, type)
+        return runCatching { gson.fromJson<List<Action>>(actionsString, type) }
+            .getOrDefault(emptyList())
+            .filterNot { runCatching { it.actionType.name }.isFailure }
     }
 }

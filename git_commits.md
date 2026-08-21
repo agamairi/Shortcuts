@@ -206,3 +206,54 @@ recording is still live.
   (`com.android.settings:id/recycler_view`).
 
 Verified: `assembleDebug` + 311 unit tests, 0 failures.
+
+---
+
+## Suggested commit — branch `fix/app-reliability-v0.7.1` (2026-08-20)
+
+Branched from `development` per Agents.md rule 3. Changes are UNCOMMITTED in the working tree
+for review. Suggested message:
+
+```
+fix: shortcut reliability — widgets, recorder replay, wait action, edit (v0.7.1)
+
+Widgets
+- A pinned widget stayed on "Tap to set up" forever. Android bound the widget and the
+  config row was written, but refreshShortcutWidget asked Glance for the new id before
+  Glance had mapped it; getGlanceIdBy THROWS in that window and the throw vanished inside
+  the broadcast receiver's coroutine. Retry, fall back to updateAll, and log failures.
+- Redraw all placed widgets on app launch so widgets already stuck in that state recover.
+- Dashboard read "0 on homescreen" forever: the count was keyed on the shortcut list, which
+  pinning does not change. It now observes widget_configs directly.
+
+Recorder
+- Capture: subscribe to typeViewScrolled, drop notificationTimeout to 0, record scrolls, and
+  store multiple selectors per step (content description, class name, screen x/y) so an
+  unlabelled tap is no longer discarded outright.
+- Replay: wait up to 5s for a target to appear instead of looking once and giving up, try
+  each selector in turn, and fall back to a coordinate tap when all of them miss.
+- Bound the retry by attempt count, not a SystemClock deadline — SystemClock returns a
+  constant 0 under plain JUnit, which made the loop infinite off-device.
+
+Actions
+- Add WAIT as a first-class action with a duration picker (1-60s), wired through the builder,
+  the sentence view, ActionDescriber, the review cards, and the planner.
+- Test Run ran shortcuts on the main thread; with a Wait step that is an ANR. Moved to IO.
+- Failed tap/type now reports which target it looked for and why it failed, instead of one
+  generic "This screen couldn't be automated".
+- Web requests carry back HTTP status and a truncated body so a webhook can be verified.
+
+Builder
+- Edit a saved shortcut from the dashboard ⋮ menu, preloaded with its name, colour, icon and
+  steps; saving updates the existing row rather than creating a duplicate.
+- Backing out of a builder discards its draft and cancels in-flight work (ViewModels are now
+  scoped to their NavBackStackEntry).
+- "Describe to AI" accepts successive prompts, appending steps turn by turn, with recent
+  steps passed as context (bounded for a small on-device model).
+
+Verified on a Pixel 6a (Android 16): widget pin renders the shortcut, stuck widget self-heals,
+Edit preloads and updates without duplicating, Wait persists as delayMillis=3000.
+Not verified on hardware: multi-step record/replay reliability, per-target system toggles.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+```

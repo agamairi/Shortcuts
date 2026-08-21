@@ -18,8 +18,8 @@ Each `Action` object inside an automation workflow contains the following fields
 
 | Field Name | Type | Description | Applicable Action Types |
 |---|---|---|---|
-| `actionType` | Enum (`ActionType`) | The primary category of action (`SYSTEM_TOGGLE`, `APP_INTENT`, `HTTP_REQUEST`, `UI_AUTOMATION`) | All |
-| `target` | String? | Target identifier (e.g. "WIFI", "BLUETOOTH", button text) | `SYSTEM_TOGGLE`, `UI_AUTOMATION` |
+| `actionType` | Enum (`ActionType`) | The primary category of action (`SYSTEM_TOGGLE`, `APP_INTENT`, `HTTP_REQUEST`, `UI_AUTOMATION`, `WAIT`, `SEND_MESSAGE`, `DIAL_NUMBER`) | All |
+| `target` | String? | Target identifier (e.g. "WIFI", "BLUETOOTH", button text) | `SYSTEM_TOGGLE`, `UI_AUTOMATION`, `SEND_MESSAGE`, `DIAL_NUMBER` |
 | `state` | String? | Desired toggle state ("ON", "OFF") | `SYSTEM_TOGGLE` |
 | `packageName` | String? | Target Android package name (e.g. `com.spotify.music`) | `APP_INTENT` |
 | `intentAction` | String? | Android Intent Action string (e.g. `android.intent.action.MAIN`) | `APP_INTENT` |
@@ -27,10 +27,16 @@ Each `Action` object inside an automation workflow contains the following fields
 | `method` | String? | HTTP method (`GET`, `POST`, `PUT`, `DELETE`) | `HTTP_REQUEST` |
 | `targetNodeId` | String? | View resource ID for accessibility targeting | `UI_AUTOMATION` |
 | `targetText` | String? | Target View text content | `UI_AUTOMATION` |
-| `textInput` | String? | Text payload to inject into editable fields | `UI_AUTOMATION` |
+| `targetContentDescription`| String? | Content description captured from accessibility node | `UI_AUTOMATION` |
+| `targetClassName` | String? | Target class name to disambiguate identical text | `UI_AUTOMATION` |
+| `textInput` | String? | Text payload to inject into editable fields | `UI_AUTOMATION`, `SEND_MESSAGE` |
 | `uiActionType` | String? | Sub-type of UI action (`CLICK`, `LONG_CLICK`, `SCROLL`, `TEXT_INPUT`, `GLOBAL`) | `UI_AUTOMATION` |
 | `globalAction` | String? | System global action ("GLOBAL_ACTION_BACK", "GLOBAL_ACTION_HOME", "GLOBAL_ACTION_RECENTS") | `UI_AUTOMATION` |
 | `scrollDirection` | String? | Direction for scroll actions ("UP", "DOWN", "LEFT", "RIGHT") | `UI_AUTOMATION` |
+| `screenX` | Int? | Screen point captured for a tap fallback | `UI_AUTOMATION` |
+| `screenY` | Int? | Screen point captured for a tap fallback | `UI_AUTOMATION` |
+| `continueOnError` | Boolean | Continue the chain after this action fails | All |
+| `delayMillis` | Long? | Optional pause before the next action in a chain, or primary duration for `WAIT` action | All, `WAIT` |
 
 ---
 
@@ -50,19 +56,16 @@ Each `Action` object inside an automation workflow contains the following fields
     "intentAction": "android.intent.action.MAIN"
   },
   {
-    "actionType": "HTTP_REQUEST",
-    "url": "https://api.example.com/trigger",
-    "method": "POST"
+    "actionType": "WAIT",
+    "delayMillis": 5000
   },
   {
     "actionType": "UI_AUTOMATION",
     "uiActionType": "CLICK",
-    "targetText": "Play"
-  },
-  {
-    "actionType": "UI_AUTOMATION",
-    "uiActionType": "GLOBAL",
-    "globalAction": "GLOBAL_ACTION_HOME"
+    "targetText": "Play",
+    "targetClassName": "android.widget.Button",
+    "screenX": 450,
+    "screenY": 800
   }
 ]
 ```

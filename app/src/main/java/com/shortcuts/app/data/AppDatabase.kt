@@ -23,7 +23,7 @@ import kotlinx.coroutines.launch
         GreetingWidgetBinding::class,
         WidgetConfig::class
     ],
-    version = 7,
+    version = 8,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -87,6 +87,16 @@ abstract class AppDatabase : RoomDatabase() {
          * Add the consolidated representation without touching the old tables. Keeping the
          * originals makes this migration recoverable and preserves a downgrade path.
          */
+        /**
+         * Adds the user's explicit widget layout choice. Additive and nullable: every existing
+         * widget keeps rendering size-adaptively because a NULL layoutKey means AUTO.
+         */
+        val MIGRATION_7_8 = object : Migration(7, 8) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE widget_configs ADD COLUMN layoutKey TEXT")
+            }
+        }
+
         val MIGRATION_6_7 = object : Migration(6, 7) {
             override fun migrate(db: SupportSQLiteDatabase) {
                 db.execSQL(
@@ -150,7 +160,8 @@ abstract class AppDatabase : RoomDatabase() {
                         MIGRATION_3_4,
                         MIGRATION_4_5,
                         MIGRATION_5_6,
-                        MIGRATION_6_7
+                        MIGRATION_6_7,
+                        MIGRATION_7_8
                     )
                     .build()
                 instance.installWidgetRefreshObserver(context.applicationContext)

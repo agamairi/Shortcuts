@@ -3,6 +3,7 @@ package com.shortcuts.app.util
 import com.shortcuts.app.data.Action
 import com.shortcuts.app.data.ActionType
 import java.net.URI
+import java.util.Locale
 
 /** Converts stored shortcut actions into the sentence shown in the review editor. */
 object ActionDescriber {
@@ -11,8 +12,26 @@ object ActionDescriber {
         ActionType.APP_INTENT -> "Open ${appName(action.packageName)}"
         ActionType.HTTP_REQUEST -> describeRequest(action)
         ActionType.UI_AUTOMATION -> describeScreenAction(action)
+        ActionType.WAIT -> "Wait ${formatWaitDuration(action.delayMillis)}"
         ActionType.SEND_MESSAGE -> describeMessage(action)
         ActionType.DIAL_NUMBER -> "Call ${action.target?.takeIf { it.isNotBlank() } ?: "a contact"}"
+    }
+
+    /**
+     * Renders a pause the way a person would say it: "3 seconds", "1 second", "1.5 seconds".
+     * Shared with the manual builder so the sentence and the review card never disagree.
+     */
+    fun formatWaitDuration(millis: Long?): String {
+        val value = millis ?: return "a moment"
+        if (value <= 0L) return "a moment"
+        if (value < 1000L) return "$value milliseconds"
+        val seconds = value / 1000.0
+        val rendered = if (seconds % 1.0 == 0.0) {
+            seconds.toInt().toString()
+        } else {
+            String.format(Locale.US, "%.1f", seconds)
+        }
+        return if (rendered == "1") "1 second" else "$rendered seconds"
     }
 
     private fun describeMessage(action: Action): String {

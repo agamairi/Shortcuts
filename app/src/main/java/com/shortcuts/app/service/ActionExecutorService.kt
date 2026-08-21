@@ -27,34 +27,56 @@ class ActionExecutorService(
     private val accessibilityService: AutomationAccessibilityService? = null,
     private val callFactory: Call.Factory = OkHttpClient()
 ) {
+    private var lastSuccessDetail: String? = null
 
     fun executeActions(actions: List<Action>, shortcutName: String = "Shortcut"): RunResult {
         val results = mutableListOf<StepResult>()
+        val details = mutableListOf<String?>()
         actions.forEachIndexed { index, action ->
             val result = executeAction(action)
             results += result
+            details += lastSuccessDetail
 
             if (result !is StepResult.Success && !action.continueOnError) {
                 actions.drop(index + 1).forEach {
                     results += StepResult.Skipped("Skipped because step ${index + 1} did not complete")
+                    details += null
                 }
-                return RunResult(shortcutName, results)
+                return RunResult(shortcutName, results, details)
             }
 
             action.delayMillis
                 ?.takeIf { it > 0 && index < actions.lastIndex }
                 ?.let { Thread.sleep(it) }
         }
-        return RunResult(shortcutName, results)
+        return RunResult(shortcutName, results, details)
     }
 
-    fun executeAction(action: Action): StepResult = when (action.actionType) {
+    fun executeAction(action: Action): StepResult {
+        lastSuccessDetail = null
+        return when (action.actionType) {
         ActionType.SYSTEM_TOGGLE -> handleSystemToggle(action)
         ActionType.APP_INTENT -> handleAppIntent(action)
         ActionType.HTTP_REQUEST -> handleHttpRequest(action)
         ActionType.UI_AUTOMATION -> handleUiAutomation(action)
+        ActionType.WAIT -> handleWait(action)
         ActionType.SEND_MESSAGE -> handleSendMessage(action)
         ActionType.DIAL_NUMBER -> handleDialNumber(action)
+        }
+    }
+
+    private fun handleWait(action: Action): StepResult {
+        val duration = action.delayMillis ?: return failed(FailureReason.INVALID_STATE, "Choose how long this shortcut should wait.")
+        if (duration !in 1..MAX_WAIT_MILLIS) {
+            return failed(FailureReason.INVALID_STATE, "Choose a wait between 1 millisecond and 10 minutes.")
+        }
+        return try {
+            Thread.sleep(duration)
+            StepResult.Success
+        } catch (_: InterruptedException) {
+            Thread.currentThread().interrupt()
+            failed(FailureReason.DEVICE_UNAVAILABLE, "The wait was interrupted before it finished.")
+        }
     }
 
     private fun handleSystemToggle(action: Action): StepResult {
@@ -285,10 +307,15 @@ class ActionExecutorService(
             val body = spec.body?.toRequestBody()
             requestBuilder.method(spec.method, body.takeIf { spec.method.permitsRequestBody() })
             callFactory.newCall(requestBuilder.build()).execute().use { response ->
-                if (response.isSuccessful) StepResult.Success else failed(
-                    FailureReason.NETWORK_ERROR,
-                    "The web request was rejected by the server."
-                )
+                val preview = response.body?.string().orEmpty().replace(Regex("\\s+"), " ").take(400)
+                val detail = buildString {
+                    append("HTTP ${response.code}")
+                    if (preview.isNotBlank()) append(": ").append(preview)
+                }
+                if (response.isSuccessful) {
+                    lastSuccessDetail = detail
+                    StepResult.Success
+                } else failed(FailureReason.NETWORK_ERROR, "$detail — the server rejected the request.")
             }
         } catch (_: Exception) {
             failed(FailureReason.NETWORK_ERROR, "The web request couldn't be completed. Check your connection and address.")
@@ -339,7 +366,10 @@ class ActionExecutorService(
         return if (service.executeAction(action)) {
             StepResult.Success
         } else {
-            failed(FailureReason.ACCESSIBILITY_UNAVAILABLE, "This screen couldn't be automated. Check the selected app and action.")
+            failed(
+                FailureReason.UI_AUTOMATION_FAILED,
+                service.lastFailureMessage ?: "The target was not found or could not be used on the current screen."
+            )
         }
     }
 
@@ -354,10 +384,7 @@ class ActionExecutorService(
 
     private enum class ToggleState { ON, OFF, TOGGLE }
 
-    private fun String?.normalizedToggleTarget(): String? = this
-        ?.lowercase()
-        ?.filter { it.isLetterOrDigit() }
-        ?.takeIf { it.isNotEmpty() }
+    private fun String?.normalizedToggleTarget(): String? = normalizeToggleTarget(this)
 
     private fun String?.normalizedToggleState(): ToggleState? = when (this?.trim()?.lowercase()) {
         "on", "enable", "enabled" -> ToggleState.ON
@@ -367,7 +394,14 @@ class ActionExecutorService(
     }
 
     companion object {
+        private const val MAX_WAIT_MILLIS = 10 * 60 * 1000L
         private val torchStates = ConcurrentHashMap<String, Boolean>()
+
+        /** Normalizes user and model spellings such as "Do Not Disturb" into a stable target id. */
+        fun normalizeToggleTarget(value: String?): String? = value
+            ?.lowercase()
+            ?.filter { it.isLetterOrDigit() }
+            ?.takeIf { it.isNotEmpty() }
 
         /**
          * Pure mapping from SDK level to the WiFi screen Android actually permits us to open.

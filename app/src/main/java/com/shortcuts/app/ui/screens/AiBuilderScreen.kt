@@ -33,6 +33,9 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Send
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.KeyboardArrowDown
@@ -140,9 +143,11 @@ fun AiBuilderScreen(
     if (aiData.draft != null) {
         ReviewStepsScreen(
             aiData = aiData,
+            prompt = prompt,
+            onPromptChange = vm::updatePrompt,
+            onGenerate = { vm.downloadModelAndGenerate(context) },
             onNavigateBack = {
-                // Clear the draft and return to the builder so the user can revise.
-                vm.clearError() // also resets generating/progress flags
+                vm.clearError()
             },
             onSave = vm::saveGeneratedAutomation,
             onAppearanceChange = vm::updateAppearance,
@@ -957,6 +962,9 @@ private fun FreeTextBuilderScreen(
 @Composable
 private fun ReviewStepsScreen(
     aiData: AiBuilderData,
+    prompt: String,
+    onPromptChange: (String) -> Unit,
+    onGenerate: () -> Unit,
     onNavigateBack: () -> Unit,
     onSave: () -> Unit,
     onAppearanceChange: (WidgetColorKey, WidgetIconKey) -> Unit,
@@ -978,6 +986,48 @@ private fun ReviewStepsScreen(
         snackbarHost = { SnackbarHost(snackbarHostState) },
         containerColor = palette.ground,
         bottomBar = {
+            Column {
+                if (aiData.isGenerating) {
+                    Box(modifier = Modifier.fillMaxWidth().padding(16.dp), contentAlignment = Alignment.Center) {
+                        CircularProgressIndicator(modifier = Modifier.size(24.dp), color = palette.ink)
+                    }
+                } else {
+                    Row(
+                        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        OutlinedTextField(
+                            value = prompt,
+                            onValueChange = onPromptChange,
+                            modifier = Modifier.weight(1f),
+                            placeholder = { Text("Add another step...") },
+                            singleLine = true,
+                            colors = TextFieldDefaults.colors(
+                                focusedIndicatorColor = palette.ink,
+                                unfocusedIndicatorColor = palette.ink.copy(alpha = 0.5f),
+                                cursorColor = palette.ink,
+                                focusedContainerColor = androidx.compose.ui.graphics.Color.Transparent,
+                                unfocusedContainerColor = androidx.compose.ui.graphics.Color.Transparent
+                            )
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Box(
+                            modifier = Modifier
+                                .size(48.dp)
+                                .clip(CircleShape)
+                                .background(if (prompt.isNotBlank()) palette.ink else palette.ink.copy(alpha = 0.3f))
+                                .clickable(enabled = prompt.isNotBlank()) { onGenerate() },
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Filled.Send,
+                                contentDescription = "Generate",
+                                tint = selectedColor.composeColor,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                }
             // Test run button — outlined, full width, 52dp height
             Row(
                 modifier = Modifier
@@ -1024,7 +1074,8 @@ private fun ReviewStepsScreen(
                         )
                     }
                 }
-            }
+        }
+                }
         }
     ) { padding ->
         LazyColumn(

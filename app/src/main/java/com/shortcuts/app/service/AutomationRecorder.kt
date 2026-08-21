@@ -1,6 +1,7 @@
 package com.shortcuts.app.service
 
 import android.content.Context
+import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
@@ -10,7 +11,7 @@ import com.shortcuts.app.util.AccessibilityStatusChecker
 import kotlinx.coroutines.flow.StateFlow
 import kotlin.collections.ArrayDeque
 
-enum class RecorderEventType { CLICK, TEXT_CHANGE }
+enum class RecorderEventType { CLICK, TEXT_CHANGE, SCROLL }
 
 data class RecorderEvent(
     val eventType: RecorderEventType,
@@ -19,6 +20,9 @@ data class RecorderEvent(
     val sourceContentDescription: String?,
     val sourceViewId: String?,
     val enteredText: String,
+    val sourceClassName: String? = null,
+    val screenX: Int? = null,
+    val screenY: Int? = null,
     /** AccessibilityEvent.eventTime when available; used to exclude the stop action. */
     val occurredAtMillis: Long = Long.MIN_VALUE
 )
@@ -105,6 +109,7 @@ object AutomationRecorder {
             AccessibilityEvent.TYPE_VIEW_CLICKED -> RecorderEventType.CLICK
             AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED,
             AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED -> RecorderEventType.TEXT_CHANGE
+            AccessibilityEvent.TYPE_VIEW_SCROLLED -> RecorderEventType.SCROLL
             else -> {
                 rawNode.recycle()
                 return
@@ -133,6 +138,10 @@ object AutomationRecorder {
             sourceContentDescription = rawNode.contentDescription?.toString()
             sourceViewId = rawNode.viewIdResourceName
         }
+        val bounds = Rect().also { rawNode.getBoundsInScreen(it) }
+        val screenX = bounds.takeIf { !it.isEmpty }?.centerX()
+        val screenY = bounds.takeIf { !it.isEmpty }?.centerY()
+        val sourceClassName = rawNode.className?.toString()
         node.free()
 
         val recorderEvent = RecorderEvent(
@@ -142,6 +151,9 @@ object AutomationRecorder {
             sourceContentDescription = sourceContentDescription,
             sourceViewId = sourceViewId,
             enteredText = event.text.joinToString(""),
+            sourceClassName = sourceClassName,
+            screenX = screenX,
+            screenY = screenY,
             occurredAtMillis = event.eventTime
         )
         sessionOwner.processEvent(recorderEvent, context.packageName)
@@ -236,7 +248,7 @@ fun deriveNodeLabel(node: RecorderNode): DerivedLabel {
 
             val hasLabel = !curr.text.isNullOrBlank() || !curr.contentDescription.isNullOrBlank()
             if (hasLabel) {
-                val result = DerivedLabel(curr.text, curr.contentDescription, null)
+                val result = DerivedLabel(curr.text, curr.contentDescription, curr.viewIdResourceName)
                 curr.free()
                 queue.forEach { it.first.free() }
                 return result

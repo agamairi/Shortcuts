@@ -6,6 +6,10 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.shortcuts.app.service.AutomationRecorder
 import com.shortcuts.app.data.AppDatabase
 import com.shortcuts.app.repository.AutomationRepository
 import com.shortcuts.app.service.OnDeviceInferenceService
@@ -13,13 +17,24 @@ import com.shortcuts.app.ui.screens.AiBuilderScreen
 import com.shortcuts.app.ui.screens.CreateWidgetScreen
 import com.shortcuts.app.ui.screens.DashboardScreen
 import com.shortcuts.app.ui.screens.HelpScreen
+import androidx.navigation.NavType
+import androidx.navigation.navArgument
 import com.shortcuts.app.ui.screens.ManualBuilderScreen
+import com.shortcuts.app.ui.screens.NEW_SHORTCUT_ID
 import com.shortcuts.app.ui.screens.RecorderScreen
 import com.shortcuts.app.ui.screens.SettingsScreen
 import com.shortcuts.app.viewmodel.AiBuilderViewModel
 import com.shortcuts.app.viewmodel.AutomationViewModel
 import com.shortcuts.app.viewmodel.CustomWidgetViewModel
 import com.shortcuts.app.viewmodel.SettingsViewModel
+
+
+class RecorderCleanupViewModel : ViewModel() {
+    override fun onCleared() {
+        super.onCleared()
+        AutomationRecorder.clearRecording()
+    }
+}
 
 @Composable
 fun ShortcutsNavigation(startDestination: String = "dashboard") {
@@ -61,21 +76,41 @@ fun ShortcutsNavigation(startDestination: String = "dashboard") {
             DashboardScreen(
                 viewModel = automationViewModel,
                 onNavigateToManualBuilder = { navController.navigate("manual_builder") },
+                onNavigateToEditShortcut = { id -> navController.navigate("manual_builder?automationId=$id") },
                 onNavigateToRecorder = { navController.navigate(recordButtonDestination()) },
                 onNavigateToAiBuilder = { navController.navigate("ai_builder") },
                 onNavigateToSettings = { navController.navigate("settings") }
             )
         }
-        composable("manual_builder") {
+        composable(
+            route = "manual_builder?automationId={automationId}",
+            arguments = listOf(
+                navArgument("automationId") {
+                    type = NavType.IntType
+                    defaultValue = NEW_SHORTCUT_ID
+                }
+            )
+        ) { backStackEntry ->
             ManualBuilderScreen(
                 viewModel = automationViewModel,
                 onNavigateBack = { navController.popBackStack() },
-                onNavigateToSettings = { navController.navigate("settings") }
+                onNavigateToSettings = { navController.navigate("settings") },
+                editingAutomationId = backStackEntry.arguments
+                    ?.getInt("automationId") ?: NEW_SHORTCUT_ID
             )
         }
-        composable("ai_builder") {
+        composable("ai_builder") { backStackEntry ->
+            val scopedAiViewModel: AiBuilderViewModel = viewModel(
+                viewModelStoreOwner = backStackEntry,
+                factory = object : ViewModelProvider.Factory {
+                    override fun <T : ViewModel> create(modelClass: Class<T>): T {
+                        @Suppress("UNCHECKED_CAST")
+                        return AiBuilderViewModel(repository = repository, inferenceService = inferenceService) as T
+                    }
+                }
+            )
             AiBuilderScreen(
-                viewModel = aiBuilderViewModel,
+                viewModel = scopedAiViewModel,
                 onNavigateBack = { navController.popBackStack() }
             )
         }
@@ -98,7 +133,8 @@ fun ShortcutsNavigation(startDestination: String = "dashboard") {
                 onNavigateBack = { navController.popBackStack() }
             )
         }
-        composable(RECORDER_ROUTE) {
+        composable(RECORDER_ROUTE) { backStackEntry ->
+            viewModel<RecorderCleanupViewModel>(viewModelStoreOwner = backStackEntry)
             RecorderScreen(
                 viewModel = automationViewModel,
                 onNavigateBack = { navController.popBackStack() }

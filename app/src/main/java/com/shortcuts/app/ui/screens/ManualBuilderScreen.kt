@@ -49,11 +49,14 @@ import com.shortcuts.app.data.ActionConverter
 import com.shortcuts.app.data.ActionType
 import com.shortcuts.app.data.Automation
 import com.shortcuts.app.util.AccessibilityStatusChecker
+import com.shortcuts.app.util.ActionDescriber
 import com.shortcuts.app.viewmodel.AutomationViewModel
 import com.shortcuts.app.planner.PackageManagerInstalledAppSource
 import com.shortcuts.app.ui.theme.LocalShortcutsPalette
 import com.shortcuts.app.ui.theme.TileColors
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.map
 
 private val Context.accessibilityOptInDataStore by preferencesDataStore(name = "accessibility_opt_in")
@@ -75,6 +78,9 @@ data class InstalledAppInfo(
     val packageName: String,
     val iconDrawable: Drawable? = null
 )
+
+/** Sentinel meaning "the builder is creating a new shortcut", not editing an existing one. */
+const val NEW_SHORTCUT_ID: Int = -1
 
 data class ActionTypeMetadata(
     val type: ActionType,
@@ -104,9 +110,15 @@ object ManualBuilderUtils {
             icon = Icons.Filled.ToggleOn
         ),
         ActionTypeMetadata(
+            type = ActionType.WAIT,
+            title = "Wait",
+            description = "Pause before the next step, to let a screen finish loading",
+            icon = Icons.Filled.Timer
+        ),
+        ActionTypeMetadata(
             type = ActionType.HTTP_REQUEST,
             title = "Web Request",
-            description = "Call a URL or webhook",
+            description = "Send data to a webhook — a smart-home scene, IFTTT, or your own server",
             icon = Icons.Filled.Language
         ),
         ActionTypeMetadata(
@@ -137,6 +149,7 @@ object ManualBuilderUtils {
             ActionType.UI_AUTOMATION -> Action(actionType = ActionType.UI_AUTOMATION, targetNodeId = "")
             ActionType.SYSTEM_TOGGLE -> Action(actionType = ActionType.SYSTEM_TOGGLE, target = "WIFI", state = "TOGGLE")
             ActionType.HTTP_REQUEST -> Action(actionType = ActionType.HTTP_REQUEST, url = "", method = "GET")
+            ActionType.WAIT -> Action(actionType = ActionType.WAIT, delayMillis = 3_000L)
             ActionType.SEND_MESSAGE -> Action(actionType = ActionType.SEND_MESSAGE, target = "", textInput = "")
             ActionType.DIAL_NUMBER -> Action(actionType = ActionType.DIAL_NUMBER, target = "")
         }
@@ -234,6 +247,7 @@ object ManualBuilderUtils {
                     "Web Request"
                 }
             }
+            ActionType.WAIT -> "Wait ${ActionDescriber.formatWaitDuration(action.delayMillis)}"
             ActionType.SEND_MESSAGE -> action.target?.takeIf { it.isNotBlank() }
                 ?.let { "Message $it" } ?: "Send a Message"
             ActionType.DIAL_NUMBER -> action.target?.takeIf { it.isNotBlank() }
@@ -248,7 +262,9 @@ fun ManualBuilderScreen(
     onNavigateBack: () -> Unit,
     onNavigateToSettings: (() -> Unit)? = null,
     viewModel: AutomationViewModel? = null,
-    onSaveAutomation: ((Automation) -> Unit)? = null
+    onSaveAutomation: ((Automation) -> Unit)? = null,
+    /** Id of the shortcut being edited, or [NEW_SHORTCUT_ID] when building a new one. */
+    editingAutomationId: Int = NEW_SHORTCUT_ID
 ) {
     val context = LocalContext.current
     val palette = LocalShortcutsPalette.current
@@ -277,6 +293,26 @@ fun ManualBuilderScreen(
     var isActionPickerOpen by remember { mutableStateOf(false) }
     var showDisclosure by remember { mutableStateOf(false) }
     var selectedIcon by remember { mutableStateOf(WidgetIconKey.BOLT) }
+
+    // Edit mode: replace the starter steps with the saved shortcut's own. Keyed on the id so
+    // re-entering the builder for a different shortcut reloads rather than showing the last one.
+    LaunchedEffect(editingAutomationId) {
+        if (editingAutomationId == NEW_SHORTCUT_ID || viewModel == null) return@LaunchedEffect
+        val existing = viewModel.getAutomationById(editingAutomationId) ?: return@LaunchedEffect
+        shortcutName = existing.name
+        existing.colorKey
+            ?.let { key -> com.shortcuts.app.widget.WidgetColorKey.entries.firstOrNull { it.name == key } }
+            ?.let { selectedColor = it.composeColor }
+        existing.iconKey
+            ?.let { key -> WidgetIconKey.entries.firstOrNull { it.name == key } }
+            ?.let { selectedIcon = it }
+        val saved = runCatching { ActionConverter().toActionList(existing.actionsJson) }
+            .getOrDefault(emptyList())
+        if (saved.isNotEmpty()) {
+            actions.clear()
+            actions.addAll(saved)
+        }
+    }
 
     if (showDisclosure) {
         AccessibilityDisclosureScreen {
@@ -316,7 +352,7 @@ fun ManualBuilderScreen(
                     }
                 }
                 Box(Modifier.size(44.dp).clip(androidx.compose.foundation.shape.CircleShape).background(palette.tileContent).clickable {
-                    saveManualAutomation(context, shortcutName, actions.toList(), selectedColor, selectedIcon.name, viewModel, onSaveAutomation, onNavigateBack, snackbarHostState, coroutineScope) { isSaving = it }
+                    saveManualAutomation(context, shortcutName, actions.toList(), selectedColor, selectedIcon.name, viewModel, onSaveAutomation, onNavigateBack, snackbarHostState, coroutineScope, editingAutomationId) { isSaving = it }
                 }, contentAlignment = Alignment.Center) {
                     if (isSaving) CircularProgressIndicator(Modifier.size(20.dp), color = selectedColor) else Icon(Icons.Filled.Check, "Save shortcut", tint = selectedColor, modifier = Modifier.size(20.dp))
                 }
@@ -397,7 +433,11 @@ fun ManualBuilderScreen(
             Row(Modifier.fillMaxWidth().padding(start = 20.dp, end = 20.dp, top = 6.dp, bottom = 24.dp)) {
                 Row(Modifier.fillMaxWidth().height(52.dp).clip(androidx.compose.foundation.shape.RoundedCornerShape(26.dp)).border(1.5.dp, palette.tileContent.copy(alpha = .6f), androidx.compose.foundation.shape.RoundedCornerShape(26.dp)).clickable {
                     coroutineScope.launch {
-                        val result = com.shortcuts.app.service.ActionExecutorService(context).executeActions(actions.toList(), shortcutName)
+                        // executeActions blocks — a Wait step sleeps the calling thread — so it must
+                        // never run on the composition's Main scope, or Test Run would ANR the app.
+                        val result = withContext(Dispatchers.IO) {
+                            com.shortcuts.app.service.ActionExecutorService(context).executeActions(actions.toList(), shortcutName)
+                        }
                         val firstIncompleteIdx = result.steps.indexOfFirst { it !is com.shortcuts.app.service.StepResult.Success }
                         if (firstIncompleteIdx == -1) {
                             snackbarHostState.showSnackbar("All ${actions.size} steps completed successfully!")
@@ -499,6 +539,7 @@ fun ManualBuilderScreen(
                         ManualSlotKind.APP -> action.copy(packageName = picked)
                         ManualSlotKind.HTTP_METHOD -> action.copy(method = picked)
                         ManualSlotKind.UI_ACTION_TYPE -> action.copy(uiActionType = picked)
+                        ManualSlotKind.DURATION -> action.copy(delayMillis = picked.toLongOrNull()?.times(1000))
                         else -> action
                     }
                 }
@@ -508,7 +549,7 @@ fun ManualBuilderScreen(
     }
 }
 
-enum class ManualSlotKind { STATE, CONTROL, APP, HTTP_METHOD, UI_ACTION_TYPE, TEXT }
+enum class ManualSlotKind { STATE, CONTROL, APP, HTTP_METHOD, UI_ACTION_TYPE, DURATION, TEXT }
 data class ManualSlotPicker(val stepIndex: Int, val kind: ManualSlotKind, val label: String = "", val initialValue: String = "", val isSecondaryText: Boolean = false)
 
 @Composable fun ManualSentenceRow(index: Int, totalActions: Int, action: Action, installedApps: List<InstalledAppInfo>, onOpenPicker: (ManualSlotPicker) -> Unit, onMoveUp: () -> Unit, onMoveDown: () -> Unit, onRemove: () -> Unit) {
@@ -524,6 +565,10 @@ data class ManualSlotPicker(val stepIndex: Int, val kind: ManualSlotKind, val la
                     DottedSlot(action.state?.lowercase() ?: "on") { onOpenPicker(ManualSlotPicker(index, ManualSlotKind.STATE)) }
                     Text(" the ", fontSize = 21.sp, lineHeight = 31.5.sp, letterSpacing = (-0.2).sp, fontWeight = FontWeight.SemiBold, color = palette.tileContent)
                     DottedSlot(SUPPORTED_DEVICE_CONTROLS.firstOrNull { it.id == action.target }?.displayLabel ?: "flashlight") { onOpenPicker(ManualSlotPicker(index, ManualSlotKind.CONTROL)) }
+                }
+                ActionType.WAIT -> {
+                    Text("Wait for ", fontSize = 21.sp, lineHeight = 31.5.sp, letterSpacing = (-0.2).sp, fontWeight = FontWeight.SemiBold, color = palette.tileContent)
+                    DottedSlot(ActionDescriber.formatWaitDuration(action.delayMillis)) { onOpenPicker(ManualSlotPicker(index, ManualSlotKind.DURATION)) }
                 }
                 ActionType.APP_INTENT -> {
                     Text("Open ", fontSize = 21.sp, lineHeight = 31.5.sp, letterSpacing = (-0.2).sp, fontWeight = FontWeight.SemiBold, color = palette.tileContent)
@@ -581,6 +626,7 @@ data class ManualSlotPicker(val stepIndex: Int, val kind: ManualSlotKind, val la
         ManualSlotKind.APP -> apps.map { it.packageName }
         ManualSlotKind.HTTP_METHOD -> listOf("GET", "POST", "PUT", "DELETE")
         ManualSlotKind.UI_ACTION_TYPE -> listOf("TAP", "TYPE_TEXT")
+        ManualSlotKind.DURATION -> listOf("1", "2", "3", "5", "10", "15", "30", "60")
         else -> emptyList()
     }
     AlertDialog(onDismissRequest = onDismiss, title = { 
@@ -590,6 +636,7 @@ data class ManualSlotPicker(val stepIndex: Int, val kind: ManualSlotKind, val la
             ManualSlotKind.APP -> "Choose an app"
             ManualSlotKind.HTTP_METHOD -> "Choose HTTP method"
             ManualSlotKind.UI_ACTION_TYPE -> "Choose action type"
+            ManualSlotKind.DURATION -> "How long should this shortcut wait?"
             else -> ""
         }) 
     }, text = { 
@@ -603,6 +650,7 @@ data class ManualSlotPicker(val stepIndex: Int, val kind: ManualSlotKind, val la
                             ManualSlotKind.STATE -> raw 
                             ManualSlotKind.HTTP_METHOD -> raw
                             ManualSlotKind.UI_ACTION_TYPE -> if (raw == "TAP") "Tap" else "Type"
+                            ManualSlotKind.DURATION -> ActionDescriber.formatWaitDuration(raw.toLongOrNull()?.times(1000))
                             else -> raw
                         } 
                     }, 
@@ -613,14 +661,22 @@ data class ManualSlotPicker(val stepIndex: Int, val kind: ManualSlotKind, val la
     }, confirmButton = {})
 }
 
-private fun saveManualAutomation(context: Context, name: String, actions: List<Action>, color: androidx.compose.ui.graphics.Color, iconKey: String, viewModel: AutomationViewModel?, onSave: ((Automation) -> Unit)?, onBack: () -> Unit, snackbar: SnackbarHostState, scope: kotlinx.coroutines.CoroutineScope, setSaving: (Boolean) -> Unit) {
+private fun saveManualAutomation(context: Context, name: String, actions: List<Action>, color: androidx.compose.ui.graphics.Color, iconKey: String, viewModel: AutomationViewModel?, onSave: ((Automation) -> Unit)?, onBack: () -> Unit, snackbar: SnackbarHostState, scope: kotlinx.coroutines.CoroutineScope, editingAutomationId: Int = NEW_SHORTCUT_ID, setSaving: (Boolean) -> Unit) {
     if (name.isBlank() || actions.isEmpty()) { scope.launch { snackbar.showSnackbar(if (name.isBlank()) "Shortcut name cannot be empty" else "Please add at least one step") }; return }
     setSaving(true)
     val safe = actions.map { com.shortcuts.app.service.ActionExecutorService.prepareActionForPersistence(context, it) }
     if (safe.any { it == null }) { setSaving(false); scope.launch { snackbar.showSnackbar("The web token couldn't be secured. Your shortcut was not saved.") }; return }
     val colorKey = com.shortcuts.app.widget.WidgetColorKey.entries.firstOrNull { it.composeColor == color }?.name ?: "TEAL"
-    val automation = ManualBuilderUtils.buildManualAutomation(name, safe.filterNotNull(), colorKey, iconKey)
-    onSave?.invoke(automation) ?: viewModel?.insert(automation)
+    val built = ManualBuilderUtils.buildManualAutomation(name, safe.filterNotNull(), colorKey, iconKey)
+    // Carrying the id over turns the Room insert into a replace, so editing updates the existing
+    // shortcut — and every widget already bound to that id — instead of creating a duplicate.
+    val isEdit = editingAutomationId != NEW_SHORTCUT_ID
+    val automation = if (isEdit) built.copy(id = editingAutomationId) else built
+    when {
+        onSave != null -> onSave.invoke(automation)
+        isEdit -> viewModel?.update(automation)
+        else -> viewModel?.insert(automation)
+    }
     setSaving(false); onBack()
 }
 

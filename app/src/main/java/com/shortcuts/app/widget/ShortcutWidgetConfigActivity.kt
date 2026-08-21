@@ -57,6 +57,9 @@ import com.shortcuts.app.data.ThemePreferences
 import com.shortcuts.app.data.WidgetConfig
 import com.shortcuts.app.data.WidgetConfigDao
 import com.shortcuts.app.data.WidgetConfigSource
+import com.shortcuts.app.data.WidgetLayoutKey
+import android.util.Log
+import android.widget.Toast
 import com.shortcuts.app.R
 import com.shortcuts.app.ui.MainActivity
 import com.shortcuts.app.ui.theme.LocalShortcutsPalette
@@ -79,10 +82,15 @@ class ShortcutWidgetConfigActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
         setResult(RESULT_CANCELED)
-        appWidgetId = intent?.getIntExtra(
+        appWidgetId = intent?.extras?.getInt(
             AppWidgetManager.EXTRA_APPWIDGET_ID,
             AppWidgetManager.INVALID_APPWIDGET_ID
-        ) ?: AppWidgetManager.INVALID_APPWIDGET_ID
+        )?.takeIf { it != AppWidgetManager.INVALID_APPWIDGET_ID }
+            ?: intent?.getIntExtra(
+                AppWidgetManager.EXTRA_APPWIDGET_ID,
+                AppWidgetManager.INVALID_APPWIDGET_ID
+            ) ?: AppWidgetManager.INVALID_APPWIDGET_ID
+        
         if (appWidgetId == AppWidgetManager.INVALID_APPWIDGET_ID) {
             finish()
             return
@@ -104,27 +112,52 @@ class ShortcutWidgetConfigActivity : ComponentActivity() {
                     shortcuts = shortcuts,
                     onBack = ::finish,
                     onCreateShortcut = ::openManualBuilder,
-                    onPlaceWidget = { selected -> saveConfig(selectionStore, selected) }
+                    onPlaceWidget = { selected, layout -> saveConfig(selectionStore, selected, layout) }
                 )
             }
         }
     }
 
-    private fun saveConfig(selectionStore: ShortcutWidgetSelectionStore, selected: List<Automation>) {
+    private fun saveConfig(
+        selectionStore: ShortcutWidgetSelectionStore,
+        selected: List<Automation>,
+        layout: WidgetLayoutKey
+    ) {
         lifecycleScope.launch {
-            saveShortcutWidgetConfig(
-                selectionStore = selectionStore,
-                widgetId = appWidgetId,
-                shortcuts = selected,
-                refreshWidget = { widgetId ->
-                    refreshShortcutWidget(this@ShortcutWidgetConfigActivity, widgetId)
-                },
-                reportSuccess = {
-                    setResult(RESULT_OK, Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId))
-                    finish()
-                }
-            )
+            // Anything thrown in here used to escape the coroutine BEFORE reportSuccess ran, so the
+            // activity never finished and the button looked completely dead. Whatever happens, the
+            // user gets either a placed widget or an explanation — never a button that does nothing.
+            try {
+                saveShortcutWidgetConfig(
+                    selectionStore = selectionStore,
+                    widgetId = appWidgetId,
+                    shortcuts = selected,
+                    layout = layout,
+                    refreshWidget = { widgetId ->
+                        refreshShortcutWidget(this@ShortcutWidgetConfigActivity, widgetId)
+                    },
+                    reportSuccess = {
+                        setResult(
+                            RESULT_OK,
+                            Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
+                        )
+                        finish()
+                    }
+                )
+            } catch (t: Throwable) {
+                Log.e(TAG, "Could not place widget $appWidgetId", t)
+                Toast.makeText(
+                    this@ShortcutWidgetConfigActivity,
+                    "That widget couldn't be set up. Please try again.",
+                    Toast.LENGTH_LONG
+                ).show()
+                finish()
+            }
         }
+    }
+
+    private companion object {
+        const val TAG = "ShortcutWidgetConfig"
     }
 
     private fun openManualBuilder() {
@@ -141,13 +174,14 @@ private fun ShortcutWidgetConfigScreen(
     shortcuts: List<Automation>?,
     onBack: () -> Unit,
     onCreateShortcut: () -> Unit,
-    onPlaceWidget: (List<Automation>) -> Unit
+    onPlaceWidget: (List<Automation>, WidgetLayoutKey) -> Unit
 ) {
     val palette = LocalShortcutsPalette.current
     var selectedIds by remember(shortcuts) {
         mutableStateOf(shortcuts.orEmpty().take(MAX_SHORTCUTS_PER_WIDGET).map { it.id }.toSet())
     }
     val selectedShortcuts = shortcuts.orEmpty().filter { it.id in selectedIds }
+    var selectedLayout by remember { mutableStateOf(WidgetLayoutKey.AUTO) }
 
     Column(
         Modifier
@@ -192,8 +226,20 @@ private fun ShortcutWidgetConfigScreen(
                             color = palette.inkMuted
                         )
                     } else {
-                        WidgetPreviewTopRow(selectedShortcuts)
-                        ScrollingListPreview(selectedShortcuts)
+                        WidgetPreviewTopRow(
+                            shortcuts = selectedShortcuts,
+                            selectedLayout = selectedLayout,
+                            onSelectLayout = { selectedLayout = it }
+                        )
+                        ScrollingListPreview(
+                            shortcuts = selectedShortcuts,
+                            selectedLayout = selectedLayout,
+                            onSelectLayout = { selectedLayout = it }
+                        )
+                        LayoutModeRow(
+                            selectedLayout = selectedLayout,
+                            onSelectLayout = { selectedLayout = it }
+                        )
                     }
                     ShortcutSelectionRow(
                         shortcuts = shortcuts,
@@ -211,7 +257,7 @@ private fun ShortcutWidgetConfigScreen(
             }
         }
         Button(
-            onClick = { onPlaceWidget(selectedShortcuts) },
+            onClick = { onPlaceWidget(selectedShortcuts, selectedLayout) },
             modifier = Modifier.fillMaxWidth().height(52.dp).padding(horizontal = 16.dp),
             shape = RoundedCornerShape(26.dp),
             enabled = selectedShortcuts.isNotEmpty(),
@@ -224,12 +270,21 @@ private fun ShortcutWidgetConfigScreen(
 }
 
 @Composable
-private fun WidgetPreviewTopRow(shortcuts: List<Automation>) {
+private fun WidgetPreviewTopRow(
+    shortcuts: List<Automation>,
+    selectedLayout: WidgetLayoutKey,
+    onSelectLayout: (WidgetLayoutKey) -> Unit
+) {
     val palette = LocalShortcutsPalette.current
     Row(horizontalArrangement = Arrangement.spacedBy(14.dp), modifier = Modifier.fillMaxWidth()) {
         Column(Modifier.width(108.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+            val selected = selectedLayout == WidgetLayoutKey.SINGLE
             Box(
-                Modifier.size(108.dp).clip(RoundedCornerShape(26.dp)).background(shortcuts.firstOrNull()?.tileColor() ?: palette.surfaceMuted),
+                Modifier.size(108.dp)
+                    .clip(RoundedCornerShape(26.dp))
+                    .background(shortcuts.firstOrNull()?.tileColor() ?: palette.surfaceMuted)
+                    .then(if (selected) Modifier.border(2.dp, palette.ink, RoundedCornerShape(26.dp)) else Modifier)
+                    .clickable { onSelectLayout(WidgetLayoutKey.SINGLE) },
                 contentAlignment = Alignment.Center
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -243,12 +298,17 @@ private fun WidgetPreviewTopRow(shortcuts: List<Automation>) {
                 }
             }
             Spacer(Modifier.height(8.dp))
-            PreviewLabel("Single tile")
+            PreviewLabel("Single tile", selected = selectedLayout == WidgetLayoutKey.SINGLE)
         }
         Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+            val selected = selectedLayout == WidgetLayoutKey.GRID
             Row(
-                modifier = Modifier.fillMaxWidth().height(108.dp).clip(RoundedCornerShape(26.dp)).background(palette.surface)
-                    .border(1.dp, palette.outline, RoundedCornerShape(26.dp)).padding(12.dp),
+                modifier = Modifier.fillMaxWidth().height(108.dp)
+                    .clip(RoundedCornerShape(26.dp))
+                    .background(palette.surface)
+                    .then(if (selected) Modifier.border(2.dp, palette.ink, RoundedCornerShape(26.dp)) else Modifier.border(1.dp, palette.outline, RoundedCornerShape(26.dp)))
+                    .clickable { onSelectLayout(WidgetLayoutKey.GRID) }
+                    .padding(12.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -263,7 +323,7 @@ private fun WidgetPreviewTopRow(shortcuts: List<Automation>) {
                 }
             }
             Spacer(Modifier.height(8.dp))
-            PreviewLabel("Grid of four")
+            PreviewLabel("Grid of four", selected = selectedLayout == WidgetLayoutKey.GRID)
         }
     }
 }
@@ -282,12 +342,21 @@ private fun ColumnScope.PreviewGridTile(shortcut: Automation) {
 }
 
 @Composable
-private fun ScrollingListPreview(shortcuts: List<Automation>) {
+private fun ScrollingListPreview(
+    shortcuts: List<Automation>,
+    selectedLayout: WidgetLayoutKey,
+    onSelectLayout: (WidgetLayoutKey) -> Unit
+) {
     val palette = LocalShortcutsPalette.current
     Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        val selected = selectedLayout == WidgetLayoutKey.LIST
         Column(
-            modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(26.dp)).background(palette.surface)
-                .border(1.dp, palette.outline, RoundedCornerShape(26.dp)).padding(14.dp),
+            modifier = Modifier.fillMaxWidth()
+                .clip(RoundedCornerShape(26.dp))
+                .background(palette.surface)
+                .then(if (selected) Modifier.border(2.dp, palette.ink, RoundedCornerShape(26.dp)) else Modifier.border(1.dp, palette.outline, RoundedCornerShape(26.dp)))
+                .clickable { onSelectLayout(WidgetLayoutKey.LIST) }
+                .padding(14.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp)
         ) {
             shortcuts.take(3).forEachIndexed { index, shortcut ->
@@ -296,7 +365,7 @@ private fun ScrollingListPreview(shortcuts: List<Automation>) {
             }
         }
         Spacer(Modifier.height(8.dp))
-        PreviewLabel("Scrolling list")
+        PreviewLabel("Scrolling list", selected = selectedLayout == WidgetLayoutKey.LIST)
     }
 }
 
@@ -368,9 +437,69 @@ private fun WidgetPickerEmptyState(onCreateShortcut: () -> Unit) {
 }
 
 @Composable
-private fun PreviewLabel(label: String) {
+private fun PreviewLabel(label: String, selected: Boolean = false) {
     val palette = LocalShortcutsPalette.current
-    Text(label, style = MaterialTheme.typography.labelMedium, color = palette.inkMuted, textAlign = TextAlign.Center)
+    Text(
+        label,
+        style = MaterialTheme.typography.labelMedium,
+        color = if (selected) palette.ink else palette.inkMuted,
+        fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
+        textAlign = TextAlign.Center
+    )
+}
+
+/**
+ * The layout picker. Previously the three previews above were decorative labels with no click
+ * handler at all, so there was nothing to select — the layout was only ever inferred from the
+ * widget's size. AUTO keeps that behaviour; the other three pin the layout.
+ */
+@Composable
+private fun LayoutModeRow(
+    selectedLayout: WidgetLayoutKey,
+    onSelectLayout: (WidgetLayoutKey) -> Unit
+) {
+    val palette = LocalShortcutsPalette.current
+    val options = listOf(
+        WidgetLayoutKey.AUTO to "Automatic",
+        WidgetLayoutKey.SINGLE to "Single tile",
+        WidgetLayoutKey.GRID to "Grid",
+        WidgetLayoutKey.LIST to "List"
+    )
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("Layout", style = MaterialTheme.typography.labelLarge, color = palette.inkMuted)
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            items(options) { (key, label) ->
+                val selected = key == selectedLayout
+                Box(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(18.dp))
+                        .background(if (selected) palette.ink else palette.surface)
+                        .then(
+                            if (selected) Modifier
+                            else Modifier.border(1.dp, palette.outline, RoundedCornerShape(18.dp))
+                        )
+                        .clickable { onSelectLayout(key) }
+                        .padding(horizontal = 14.dp, vertical = 9.dp)
+                ) {
+                    Text(
+                        label,
+                        style = MaterialTheme.typography.labelMedium,
+                        color = if (selected) palette.ground else palette.inkMuted,
+                        maxLines = 1
+                    )
+                }
+            }
+        }
+        Text(
+            if (selectedLayout == WidgetLayoutKey.AUTO) {
+                "Automatic changes the layout as you resize the widget."
+            } else {
+                "This layout stays fixed, whatever size you resize the widget to."
+            },
+            style = MaterialTheme.typography.bodySmall,
+            color = palette.inkFaint
+        )
+    }
 }
 
 private const val MAX_SHORTCUTS_PER_WIDGET = 6
@@ -390,8 +519,14 @@ internal class ShortcutWidgetSelectionStore(
 ) {
     suspend fun loadShortcuts(): List<Automation> = automationDao.getAllAutomations().first()
 
-    suspend fun saveSelection(widgetId: Int, shortcuts: List<Automation>) {
-        widgetConfigDao.upsertConfig(unifiedWidgetConfig(widgetId, shortcuts.map { it.id }, gson))
+    suspend fun saveSelection(
+        widgetId: Int,
+        shortcuts: List<Automation>,
+        layout: WidgetLayoutKey = WidgetLayoutKey.AUTO
+    ) {
+        widgetConfigDao.upsertConfig(
+            unifiedWidgetConfig(widgetId, shortcuts.map { it.id }, gson, layout)
+        )
     }
 }
 
@@ -399,13 +534,15 @@ internal class ShortcutWidgetSelectionStore(
 internal fun unifiedWidgetConfig(
     widgetId: Int,
     automationIds: List<Int>,
-    gson: Gson = Gson()
+    gson: Gson = Gson(),
+    layout: WidgetLayoutKey = WidgetLayoutKey.AUTO
 ): WidgetConfig {
     require(automationIds.isNotEmpty()) { "A widget needs at least one shortcut" }
     return WidgetConfig(
         widgetId = widgetId,
         sourceType = WidgetConfigSource.UNIFIED.name,
-        automationIdsJson = gson.toJson(automationIds.take(MAX_SHORTCUTS_PER_WIDGET))
+        automationIdsJson = gson.toJson(automationIds.take(MAX_SHORTCUTS_PER_WIDGET)),
+        layoutKey = layout.name
     )
 }
 
@@ -417,13 +554,16 @@ internal suspend fun saveShortcutWidgetConfig(
     selectionStore: ShortcutWidgetSelectionStore,
     widgetId: Int,
     shortcuts: List<Automation>,
+    layout: WidgetLayoutKey = WidgetLayoutKey.AUTO,
     refreshWidget: suspend (Int) -> Unit,
     reportSuccess: () -> Unit
 ) {
     withContext(Dispatchers.IO) {
-        selectionStore.saveSelection(widgetId, shortcuts)
+        selectionStore.saveSelection(widgetId, shortcuts, layout)
     }
-    refreshWidget(widgetId)
+    // The redraw is best-effort: the configuration is already persisted, so a widget that fails to
+    // repaint right now still resolves on the next update. It must never block reporting success.
+    runCatching { refreshWidget(widgetId) }
     reportSuccess()
 }
 
