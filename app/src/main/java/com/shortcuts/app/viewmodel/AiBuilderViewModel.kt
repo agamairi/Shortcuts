@@ -87,11 +87,25 @@ class AiBuilderViewModel(
     private val _uiState = MutableStateFlow<UiState<AiBuilderData>>(UiState.Success(AiBuilderData()))
     val uiState: StateFlow<UiState<AiBuilderData>> = _uiState.asStateFlow()
 
+    private var activeJob: kotlinx.coroutines.Job? = null
+
     private var currentData = AiBuilderData(
         tileColorKey = pickRandomTileColor(random),
         tileIconKey = WidgetIconKey.BOLT.name
     )
 
+    
+    fun reset() {
+        activeJob?.cancel()
+        activeJob = null
+        _prompt.value = ""
+        currentData = AiBuilderData(
+            tileColorKey = pickRandomTileColor(random),
+            tileIconKey = WidgetIconKey.BOLT.name
+        )
+        _uiState.value = UiState.Success(currentData)
+    }
+    
     init {
         _uiState.value = UiState.Success(currentData)
     }
@@ -115,7 +129,8 @@ class AiBuilderViewModel(
             return
         }
 
-        viewModelScope.launch {
+        activeJob?.cancel()
+        activeJob = viewModelScope.launch {
             if (context != null) {
                 startDownloadAction?.invoke(context)
             } else {
@@ -162,16 +177,16 @@ class AiBuilderViewModel(
     suspend fun performInference(promptText: String) {
         try {
             val clauses = splitIntoSteps(promptText)
-            // Tier 1: always give the complete request one chance. FunctionGemma is normally
-            // single-call, but some outputs contain multiple valid calls and must not be discarded.
-            val tierOneResponse = inferenceService?.generateAutomationJson(promptText)
+            
+            val modelPrompt = contextualizedPrompt(promptText)
+
+            val tierOneResponse = inferenceService?.generateAutomationJson(modelPrompt)
 
             if (clauses.size <= 1) {
                 if (tierOneResponse.isNullOrBlank()) {
                     _uiState.value = UiState.Error("AI model inference returned no valid output")
                     return
                 }
-                // A normal one-call response follows the exact same parser and output path as before.
                 val automation = parseAutomationJson(tierOneResponse, promptText)
                 if (automation == null) {
                     _uiState.value = UiState.Error("Failed to parse automation JSON from AI output")
@@ -182,17 +197,22 @@ class AiBuilderViewModel(
                     _uiState.value = UiState.Error("The AI produced no action for this step.")
                     return
                 }
+                val newDraftStep = DraftStep.Resolved(promptText, action, TIER_ONE_CONFIDENCE)
+                val existingSteps = currentData.draft?.steps ?: emptyList()
                 val draft = DraftShortcut(
-                    steps = listOf(DraftStep.Resolved(promptText, action, TIER_ONE_CONFIDENCE)),
-                    originalPrompt = promptText
+                    steps = existingSteps + newDraftStep,
+                    originalPrompt = currentData.draft?.originalPrompt ?: promptText
                 )
+                val allActions = draft.steps.filterIsInstance<DraftStep.Resolved>().map { it.action }
                 currentData = currentData.copy(
                     isGenerating = false,
-                    generatedAutomation = automation.copy(actionsJson = gson.toJson(listOf(action))),
+                    generatedAutomation = automation.copy(actionsJson = gson.toJson(allActions)),
                     draft = draft,
-                    shortcutName = automation.name,
-                    stepResults = null
+                    shortcutName = currentData.shortcutName.ifBlank { automation.name },
+                    stepResults = null,
+                    prompt = "" // Clear prompt for next turn
                 )
+                _prompt.value = ""
                 _uiState.value = UiState.Success(currentData)
                 return
             }
@@ -202,30 +222,31 @@ class AiBuilderViewModel(
                 ?.let { ActionConverter().toActionList(it.actionsJson) }
                 .orEmpty()
 
-            // Tier 1 calls name their target but not their source clause. Align only the calls
-            // with strong, unique evidence; every remaining clause uses the established Tier-2
-            // recovery path, preserving one visible DraftStep for each deterministic clause.
             val alignedTierOneActions = ClauseAligner { packageName ->
                 inferenceService?.appLabelForPackage(packageName)
             }.align(clauses, tierOneActions)
+            
             val draftSteps = clauses.mapIndexed { index, clause ->
                 val batched = alignedTierOneActions[index]
                 batched?.let { action ->
                     DraftStep.Resolved(sourceText = clause, action = action, confidence = TIER_ONE_CONFIDENCE)
                 } ?: planStep(clause, TIER_TWO_CONFIDENCE)
             }
-            val draft = DraftShortcut(steps = draftSteps, originalPrompt = promptText)
+            
+            val existingSteps = currentData.draft?.steps ?: emptyList()
+            val draft = DraftShortcut(steps = existingSteps + draftSteps, originalPrompt = currentData.draft?.originalPrompt ?: promptText)
 
-            val allActions = draftSteps.filterIsInstance<DraftStep.Resolved>().map { it.action }
+            val allActions = draft.steps.filterIsInstance<DraftStep.Resolved>().map { it.action }
 
-            if (allActions.isEmpty()) {
-                currentData = currentData.copy(isGenerating = false, draft = draft)
+            if (draftSteps.filterIsInstance<DraftStep.Resolved>().isEmpty()) {
+                currentData = currentData.copy(isGenerating = false, draft = draft, prompt = "")
+                _prompt.value = ""
                 _uiState.value = UiState.Error("Failed to generate any actions from AI output")
                 return
             }
 
             val automation = Automation(
-                name = "AI Shortcut: $promptText",
+                name = currentData.shortcutName.ifBlank { "AI Shortcut: \$promptText" },
                 actionsJson = gson.toJson(allActions),
                 triggerType = "AI_GENERATED"
             )
@@ -234,8 +255,10 @@ class AiBuilderViewModel(
                 generatedAutomation = automation,
                 draft = draft,
                 shortcutName = automation.name,
-                stepResults = null
+                stepResults = null,
+                prompt = "" // Clear prompt for next turn
             )
+            _prompt.value = ""
             _uiState.value = UiState.Success(currentData)
         } catch (e: Exception) {
             _uiState.value = UiState.Error(e.localizedMessage ?: "AI generation failed due to internal error", e)
@@ -246,9 +269,24 @@ class AiBuilderViewModel(
      * Runs one segment through the model and maps it onto exactly one [DraftStep].
      * Never returns null and never throws — a failure becomes [DraftStep.Unresolved].
      */
+    /**
+     * Prefixes a turn with the steps already in the draft so the model can resolve back-references
+     * like "then close it". Only the most recent steps are carried: this is a small on-device
+     * model with a tight context budget, and an unbounded prefix would crowd out the real request.
+     */
+    private fun contextualizedPrompt(request: String): String {
+        val priorSteps = currentData.draft?.steps.orEmpty()
+        if (priorSteps.isEmpty()) return request
+        val recent = priorSteps
+            .takeLast(MAX_CONTEXT_STEPS)
+            .joinToString("; ") { it.sourceText }
+        return "Steps already added: [$recent]. Now handle only this new request: $request"
+    }
+
     private suspend fun planStep(step: String, confidence: Float): DraftStep {
+        val modelPrompt = contextualizedPrompt(step)
         val jsonResponse = try {
-            inferenceService?.generateAutomationJson(step)
+            inferenceService?.generateAutomationJson(modelPrompt)
         } catch (e: Exception) {
             null
         }
@@ -424,7 +462,8 @@ class AiBuilderViewModel(
         val shortcutName = currentData.shortcutName
         currentData = currentData.copy(isTestRunning = true, stepResults = null)
         _uiState.value = UiState.Success(currentData)
-        viewModelScope.launch(Dispatchers.IO) {
+        activeJob?.cancel()
+        activeJob = viewModelScope.launch(Dispatchers.IO) {
             val result = if (actions.isEmpty()) null else executeDraftActions(context, actions, shortcutName)
             val alignedResults = alignResults(draft.steps, result?.steps.orEmpty())
             currentData = if (currentData.draft == draft) {
@@ -637,6 +676,8 @@ class AiBuilderViewModel(
     }
 
     private companion object {
+        /** How many earlier steps are replayed to the model as context for a follow-up turn. */
+        const val MAX_CONTEXT_STEPS = 4
         const val TIER_ONE_CONFIDENCE = 0.95f
         const val TIER_TWO_CONFIDENCE = 0.65f
         const val MANUAL_CONFIDENCE = 0.95f

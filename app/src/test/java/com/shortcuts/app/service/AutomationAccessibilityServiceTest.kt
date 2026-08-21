@@ -27,6 +27,8 @@ class AutomationAccessibilityServiceTest {
     @Before
     fun setup() {
         service = spyk(AutomationAccessibilityService())
+        // No real UI will ever appear in a JVM test, so skip the replay wait entirely.
+        service.nodeWaitTimeoutMillis = 0L
         mockRootNode = mockk(relaxed = true)
         every { service.getRootNode() } returns mockRootNode
     }

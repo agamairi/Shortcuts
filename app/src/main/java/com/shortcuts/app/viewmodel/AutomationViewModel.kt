@@ -134,6 +134,20 @@ class AutomationViewModel(private val repository: AutomationRepository) : ViewMo
         }
     }
 
+    /** Saves an edited shortcut over the existing row, keyed by its id. */
+    fun update(automation: Automation) {
+        viewModelScope.launch {
+            try {
+                repository.update(automation)
+            } catch (e: Exception) {
+                _errorState.value = e.localizedMessage ?: "Failed to update shortcut"
+            }
+        }
+    }
+
+    /** Loads one shortcut so the builder can open in edit mode preloaded with its steps. */
+    suspend fun getAutomationById(id: Int): Automation? = repository.getAutomationById(id)
+
     fun updateAppearance(automation: Automation, colorKey: WidgetColorKey, iconKey: WidgetIconKey) {
         viewModelScope.launch {
             try {

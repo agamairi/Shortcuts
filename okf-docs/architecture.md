@@ -36,9 +36,9 @@ The **Shortcuts** Android application is an automated widget and workflow engine
              v                                                  v
 +------------------------------------+             +--------------------------------+
 |         Data / Database            |             |      Background Services       |
-| Room DB v3 (5 DAOs & Entities)     |             | ModelDownloaderService         |
-| ActionConverter & Migration 1->2->3|             | AutomationAccessibilityService |
-+------------------------------------+             | ActionExecutorService          |
+| Room DB v7 (7 DAOs & Entities)     |             | ModelDownloaderService         |
+| ActionConverter & Migration 1->..->7|            | AutomationAccessibilityService |
++------------------------------------+             | AutomationExecutionService     |
                                                    | OnDeviceInferenceService       |
                                                    +--------------------------------+
 ```
@@ -81,7 +81,7 @@ The **Shortcuts** Android application is an automated widget and workflow engine
 ---
 
 ## 5. Room Database Schema
-- **Schema Version**: Version 6 with real, non-destructive migration objects (`MIGRATION_1_2`, `MIGRATION_2_3`, `MIGRATION_3_4`, `MIGRATION_4_5`, and `MIGRATION_5_6`) and exported KSP schema JSON files in `app/schemas/`.
+- **Schema Version**: Version 7 with real, non-destructive migration objects (`MIGRATION_1_2` through `MIGRATION_6_7`) and exported KSP schema JSON files in `app/schemas/`. MIGRATION_6_7 supports the consolidated adaptive widget.
 - **Entities**:
   - `Automation`: `id` (Int, PK, autoGenerate), `name` (String), `actionsJson` (String), `isActive` (Boolean), `triggerType` (String), `colorKey` (String?, default null), `iconKey` (String?, default null).
   - `WidgetBinding`: `widgetId` (Int, PK), `automationId` (Int).
@@ -100,16 +100,18 @@ The **Shortcuts** Android application is an automated widget and workflow engine
 - **Technology**: Jetpack Glance (`glance-appwidget:1.0.0`, `glance-material3:1.0.0`).
 - **Design Ethos**: Apple-Shortcuts-simple aesthetic without excessive Material chrome.
 - **Widget Types**:
-  1. **Quick Shortcut Tile** (`AutomationWidget`): Minimal single tile rendering a single bound automation.
-  2. **Shortcuts List Widget** (`ShortcutsListWidget`): Multi-row scrollable Glance widget rendering up to 4 shortcuts. Configured via `ShortcutsListWidgetConfigActivity`.
-  3. **Custom Widget** (`CustomWidget`): User-styled single Glance tile supporting all 14 background color keys (`WidgetColorKey`) and all 17 white vector drawables (`WidgetIconKey`). Configured via `CustomWidgetConfigActivity`.
-  4. **Shortcuts Grid Widget** (`GridWidget`): 2-column grid Glance widget displaying up to 6 independently tappable `CustomWidgetTemplate` tiles. Configured via `GridWidgetConfigActivity`.
-  5. **Greeting Widget** (`GreetingWidget`): Personalized, dynamic-content widget rendering a time-of-day-aware greeting with user name and an inner tappable shortcut button. Configured via `GreetingWidgetConfigActivity`.
+  - **Adaptive Shortcut Widget** (`ShortcutWidgetReceiver`): The current, unified widget provider supporting adaptive layouts. Configured via `ShortcutWidgetConfigActivity`.
+  - **Legacy Widgets** (maintained for compatibility with existing home screens):
+    1. **Quick Shortcut Tile** (`AutomationWidgetReceiver`)
+    2. **Shortcuts List Widget** (`ShortcutsListWidgetReceiver`)
+    3. **Custom Widget** (`CustomWidgetReceiver`)
+    4. **Shortcuts Grid Widget** (`GridWidgetReceiver`)
+    5. **Greeting Widget** (`GreetingWidgetReceiver`)
 
 ### 6.2 Execution Callback (`RunAutomationCallback`)
 - Extended `RunAutomationCallback` (`ActionCallback`) accepts an optional `AutomationIdParamKey` parameter (`actionParametersOf(AutomationIdParamKey to id)`).
 - When `AutomationIdParamKey` is present, it directly executes the specified automation; when absent, it falls back to single-tile `WidgetBinding` lookup.
-- Executes action pipelines via `ActionExecutorService` asynchronously on `Dispatchers.IO`.
+- Executes action pipelines via `AutomationExecutionService.start()`, a foreground service ensuring multi-step chains survive the tap and returning step results.
 
 ### 6.3 AI Widget Builder Flow
 - **Components**: `CreateWidgetScreen` and `CustomWidgetViewModel`.

@@ -36,11 +36,11 @@ This document details the background service infrastructure of the **Shortcuts**
 
 ### Capabilities
 1. **Node Traversal & Search**:
-   - `findNodeById(rootNode, resourceId)`
-   - `findNodeByText(rootNode, text)`
-   - `findNodeByTraversal(rootNode, depth = 0, maxDepth = 20)`
+   - Locates target nodes using multi-selector fallback (`targetText`, `targetContentDescription`, `targetNodeId`, `targetClassName`).
+   - If all semantic selectors miss, falls back to a coordinate tap (`screenX`, `screenY`).
+   - Replay waits up to 5 seconds for the target to show up.
 2. **Gesture & Input Simulation**:
-   - `performClick(node)`
+   - `performClick(node)` or coordinate tap
    - `performLongClick(node)`
    - `performScroll(node, direction)`
    - `performTextInput(node, text)`
@@ -74,12 +74,15 @@ they are available for review.
 
 ---
 
-## 3. ActionExecutorService
+## 3. AutomationExecutionService & ActionExecutorService
 
-`ActionExecutorService` acts as the orchestrator between high-level `Action` data objects and lower-level execution services.
+`AutomationExecutionService` is a foreground service that guarantees execution survives UI navigation and widget taps. It delegates to `ActionExecutorService`, which acts as the orchestrator between high-level `Action` data objects and lower-level execution services.
 
 ### Action Routing Pipeline
-1. `ActionType.SYSTEM_TOGGLE` -> Invokes `SystemSettingsManager` to switch WiFi/Bluetooth/Flashlight.
+1. `ActionType.SYSTEM_TOGGLE` -> Matches targets case-insensitively, honours state, invokes `SystemSettingsManager` to switch WiFi/Bluetooth/Flashlight.
 2. `ActionType.APP_INTENT` -> Formulates Android `Intent` and invokes `startActivity()`.
-3. `ActionType.HTTP_REQUEST` -> Dispatches async HTTP request via standard client.
+3. `ActionType.HTTP_REQUEST` -> Dispatches async HTTP request via standard client and records response code/body.
 4. `ActionType.UI_AUTOMATION` -> Formulates `AccessibilityNodeInfo` action and dispatches to `AutomationAccessibilityService`.
+5. `ActionType.WAIT` -> Pauses execution for the specified `delayMillis`.
+6. `ActionType.SEND_MESSAGE` -> Formulates and dispatches an `ACTION_SENDTO` intent for SMS.
+7. `ActionType.DIAL_NUMBER` -> Formulates and dispatches an `ACTION_DIAL` intent.

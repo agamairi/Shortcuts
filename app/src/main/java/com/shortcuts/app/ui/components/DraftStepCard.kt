@@ -254,6 +254,25 @@ private fun ActionParameterEditor(
     onChooseApp: () -> Unit
 ) {
     when (action.actionType) {
+        ActionType.WAIT -> {
+            val seconds = action.delayMillis?.let { millis ->
+                val value = millis / 1000.0
+                if (value % 1.0 == 0.0) value.toInt().toString() else value.toString()
+            }.orEmpty()
+            OutlinedTextField(
+                value = seconds,
+                onValueChange = { entered ->
+                    val millis = entered.trim().toDoubleOrNull()
+                        ?.takeIf { it > 0 }
+                        ?.let { (it * 1000).toLong() }
+                    onUpdateAction(action.copy(delayMillis = millis))
+                },
+                label = { Text("Wait (seconds)") },
+                placeholder = { Text("3") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+        }
         ActionType.SYSTEM_TOGGLE -> {
             OutlinedTextField(
                 value = action.target.orEmpty(),

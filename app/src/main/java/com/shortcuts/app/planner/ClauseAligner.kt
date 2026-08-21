@@ -69,6 +69,16 @@ class ClauseAligner(
             clause,
             action.targetText ?: action.targetNodeId ?: action.target
         )
+        ActionType.WAIT -> scoreWait(clause)
+    }
+
+    /**
+     * A pause carries no target to match on, so its only evidence is the clause naming a pause.
+     * Without this a WAIT would score 0 against every clause and be aligned arbitrarily.
+     */
+    private fun scoreWait(clause: String): Int {
+        val clauseTokens = tokens(clause)
+        return if (WAIT_WORDS.any { it in clauseTokens }) EXACT_SCORE else 0
     }
 
     private fun scoreApp(clause: String, packageName: String?): Int {
@@ -144,6 +154,9 @@ class ClauseAligner(
         const val PACKAGE_TOKEN_SCORE = 10
 
         val GENERIC_PACKAGE_TOKENS = setOf("com", "android", "google", "app", "apps", "mobile")
+
+        /** Clause tokens that are evidence the user asked for a pause. */
+        val WAIT_WORDS = setOf("wait", "pause", "delay", "hold", "sleep")
         val TOGGLE_ALIASES = mapOf(
             "wifi" to setOf("wifi", "wi-fi"),
             "bluetooth" to setOf("bluetooth"),

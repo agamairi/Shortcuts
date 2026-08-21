@@ -375,6 +375,7 @@ private fun chipColorForAction(action: Action): Color = when (action.actionType)
     ActionType.SEND_MESSAGE   -> TileColors.Green
     ActionType.DIAL_NUMBER    -> TileColors.Green
     ActionType.UI_AUTOMATION  -> TileColors.Purple
+    ActionType.WAIT           -> TileColors.BlueGrey
 }
 
 @Composable
@@ -386,6 +387,7 @@ private fun iconForAction(action: Action): androidx.compose.ui.graphics.vector.I
         ActionType.SEND_MESSAGE  -> Icons.Filled.Add      // placeholder for message icon
         ActionType.DIAL_NUMBER   -> Icons.Filled.Add
         ActionType.UI_AUTOMATION -> Icons.Filled.Add
+        ActionType.WAIT          -> Icons.Filled.Info
     }
 
 /**

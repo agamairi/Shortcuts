@@ -6,7 +6,12 @@ This file serves as the system rules for AI Agents working on this project.
 1. **Never commit directly to `main`.** `main` is protected and represents the stable release.
 2. **Never commit directly to `development`.** `development` is the integration branch.
 3. **Always use feature branches.** When assigned a task, checkout a new branch from `development` (e.g., `feat/feature-name` or `fix/bug-name`).
-4. **Update Changelog.** Every time you are about to merge a feature branch into `development`, you MUST update `changelog.md` with the changes and a version bump if necessary.
+4. **Update Changelog — every change, every time.** `changelog.md` at the repo root is the single running record of what changed in this app. It follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/) and [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+   - Log changes **as you make them**, not only at merge time. Every user-visible fix, feature, removal, or behaviour change goes under the `## [Unreleased]` heading, in the right `### Added` / `### Changed` / `### Fixed` / `### Removed` group.
+   - Write entries for the **user**, not for the compiler. Say what was broken and what now happens ("Toggles never toggled: the target was compared case-sensitively, so every toggle fell through to the generic Settings screen"), not "refactored `handleSystemToggle`". Name the file or symbol only when it genuinely helps.
+   - Pure internal refactors with no observable effect do not need an entry. If in doubt, log it.
+   - When a feature branch is ready to merge into `development`, promote `## [Unreleased]` to a real version heading with today's date and bump the version per SemVer.
+   - This applies to **delegated agents too** (Antigravity/agy, Codex). Any agent you hand work to must be told to add its changes to `changelog.md` under `## [Unreleased]`.
 5. **No commits or pushes during work hours.** Do not run `git commit` or `git push` (or any equivalent that mutates git history/remote) Monday–Friday between 9:00 AM and 5:00 PM local time, unless the user explicitly asks for it in that moment. The user is often at their day job during these hours and cannot review/authorize commits on their own repo. Instead, make the code changes as normal (uncommitted working-tree changes are fine) and record a suggested commit message/summary in `git_commits.md` at the repo root for the user to review and commit later themselves, or ask Claude to commit once they're free. This restriction applies to Claude directly and to any work delegated to Antigravity/agy — instruct delegated agents not to commit or push either.
 
 ## Knowledge System (OKF)
@@ -56,3 +61,19 @@ Pass the id exactly as printed by `agy models` — it's forwarded verbatim as `a
 - Keep delegated tasks **self-contained**: `agy` starts fresh with no memory of your conversation, so spell out file paths, the goal, and the acceptance check in the `task` itself.
 
 > Full connector docs (security notes, tool schemas, limitations): [mcp/agy-connector/README.md](mcp/agy-connector/README.md)
+
+## Delegating to Codex (codex-rescue)
+
+**Codex** (`codex-cli`, verified 0.147.0 at `/opt/homebrew/bin/codex`) is available as a second delegated executor, via the `codex:rescue` skill / `codex:codex-rescue` subagent. Use it the same way you use Antigravity: hand it a large, self-contained coding or diagnosis task with a machine-checkable acceptance check, and keep your own context small.
+
+### Choosing between them
+- Either one can take a substantial coding task. When you have two independent workstreams, run one on each rather than queuing both on the same executor.
+- **Do not run two executors against the same files at the same time.** Partition by file and say so explicitly in each brief, or run them sequentially.
+- **Do not run two executors against the connected phone at the same time.** Only one build can be installed on the device at a time; a second agent installing mid-test will corrupt the first agent's results. On-device work is exclusive — serialize it.
+
+### The same rules apply to both
+- Delegated agents **never** run `git commit` or `git push`. Say this in every brief. They leave changes uncommitted for the user to review.
+- Delegated agents must stay on the branch you already checked out; tell them the branch name and tell them not to create another.
+- Every brief must be **self-contained**: absolute repo path, the files the agent owns, the files it must not touch, the goal, and the acceptance check. Delegated agents start fresh with no memory of your conversation.
+- Every brief must tell the agent to log its user-facing changes in `changelog.md` under `## [Unreleased]` (rule 4).
+- **Verify independently.** Re-run the success criteria yourself. Do not accept a claimed fix — especially an on-device one — that you have not seen the output of.

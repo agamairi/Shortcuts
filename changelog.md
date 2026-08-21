@@ -7,6 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-08-20
+### Added
+- **Choose a widget layout.** The widget setup screen showed three previews — Single tile, Grid of
+  four, Scrolling list — that looked like options but had no click handler at all; the layout was
+  only ever inferred from the widget's size. There is now a real **Layout** picker with
+  **Automatic** (the old size-adaptive behaviour, still the default) plus the three explicit
+  layouts, and an explicit choice stays put however you resize the widget. Tapping a preview
+  selects that layout too. Stored via an additive Room migration 7→8; widgets placed before this
+  keep adapting to their size.
+- **Wait action.** "Wait" is now a step you can add like any other: pick 1, 2, 3, 5, 10, 15, 30 or 60
+  seconds and the shortcut pauses there, so a following step can wait for a screen to finish
+  loading. Previously a pause could only exist as an invisible property of another step, and the
+  pause after the *last* step was skipped entirely.
+- **Edit a shortcut.** The ⋮ menu on each shortcut now has an **Edit** item, which opens the builder
+  preloaded with that shortcut's name, colour, icon and steps. Saving updates the existing shortcut
+  rather than creating a duplicate, so any widget already pointing at it keeps working.
+- Recording now captures **scrolls**. Previously only taps and typing were recorded, so a recording
+  that involved scrolling could never replay correctly.
+
+### Fixed
+- **A pinned widget stayed stuck on "Tap to set up" forever.** Adding a widget from the app genuinely
+  worked — Android bound the widget and the app wrote its config row — but the follow-up redraw asked
+  Glance for the new widget's id before Glance knew about it. `getGlanceIdBy` *throws* in that window,
+  the throw vanished inside the broadcast receiver's coroutine, and the widget never re-rendered. The
+  refresh now retries briefly, falls back to redrawing every instance, and logs a failure instead of
+  swallowing it. Placed widgets are also redrawn on app launch so ones already stuck recover.
+- **"Place widget" appeared to do nothing.** Opening setup and pressing the button saved the
+  configuration and then threw while redrawing the widget — before the code that closes the screen.
+  So the button looked completely dead even though it had worked. The redraw is now best-effort and
+  can never block the screen from closing, and any remaining failure surfaces as a message instead
+  of silence.
+- **Dropping a widget from the launcher's picker skipped setup.** The widget now declares itself
+  `reconfigurable`, so the launcher initiates the setup flow when the widget is placed and the
+  widget can be reconfigured later via its pencil icon.
+- **The header always read "0 on homescreen".** The count was read once per change to the *shortcut
+  list*, but adding a widget changes the widget table and not the shortcut list, so the count never
+  refreshed. It now observes the widget table directly.
+- **Recorded shortcuts were unusable on replay.** Replay looked for its target once, at the instant
+  the step ran, and gave up if it wasn't there — but a replayed shortcut runs far faster than a
+  person tapped it, so the target routinely hadn't appeared yet. Replay now waits up to 5 seconds
+  for the target to show up.
+- **Recording dropped steps.** Unlabelled taps were discarded outright, and the accessibility config
+  throttled events (`notificationTimeout=100`) and never subscribed to scroll events. Each step now
+  stores several selectors — text, content description, view id, class name, and the screen point
+  actually tapped — and falls back through them at replay time, including a coordinate tap when
+  every selector misses.
+- **"This screen couldn't be automated" told you nothing.** A failed tap or type now says which
+  target it was looking for and why it failed: not on screen, no readable screen, nothing
+  scrollable, or found but unresponsive.
+- **A normal run said far less than Test Run.** Running a shortcut from the dashboard reported only
+  "Couldn't run 'X'", while Test Run named the failing step and the reason — backwards, since the
+  dashboard is where shortcuts are actually used. Both now describe a failure in the same words,
+  from one shared formatter.
+- **Test Run could freeze the app.** It ran the shortcut on the main thread; with a Wait step that is
+  an ANR. Execution now runs off the main thread.
+- **Web requests reported success without evidence.** The HTTP status code and a truncated response
+  body are now carried back from the request, so you can tell a webhook actually fired. The "Web
+  Request" action also describes what it is for in plain language — smart-home scenes, IFTTT, your
+  own server — instead of just "Call a URL or webhook".
+- "Describe to AI" now accepts multiple successive prompts, allowing users to build up a shortcut
+  turn by turn instead of starting over. Each turn is given the most recent steps as context so
+  follow-ups like "then close it" resolve, without letting the prompt grow unbounded on a small
+  on-device model.
+- Backing out of a builder route (AI builder, manual builder, or recorder) now correctly discards
+  that route's in-progress draft and cancels pending model downloads or executions. Builders now
+  guarantee a clean start upon re-entry.
+
+### Known issues
+- The launcher widget-picker flow and the widget layout picker have not been verified on hardware
+  for this release.
+
 ## [0.7.0] - 2026-08-20
 ### Fixed — execution correctness (the app's worst bugs)
 - **Device toggles never toggled anything.** `ActionExecutorService.handleSystemToggle` compared the
