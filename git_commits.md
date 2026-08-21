@@ -257,3 +257,32 @@ Not verified on hardware: multi-step record/replay reliability, per-target syste
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 ```
+
+---
+
+**Update 2026-08-21 09:02 EDT:** Committed as `613ae56` on `fix/app-reliability-v0.7.1`
+(user gave explicit go-ahead to commit/push/release right now), merged into `development`
+(fast-forward) and `main` (`e21c66d`), pushed, tagged `v0.7.1`, and published as a
+[GitHub release](https://github.com/agamairi/Shortcuts/releases/tag/v0.7.1) with a
+debug-signed APK attached. `versionCode` 4→5, `versionName` 0.7.0→0.7.1.
+
+---
+
+```
+Fix widget redraw reliability by isolating updates and nudging launchers
+
+Replacing `updateAll()` with a per-widget loop wrapped in `runCatching`
+prevents a single broken widget composition (e.g., deleted shortcut,
+corrupted config) from aborting the entire redraw sequence. 
+
+Additionally mitigates a known launcher-level caching issue where
+successfully pushed `RemoteViews` are visually ignored by the launcher 
+until a system event forces inflation. Calling `updateAppWidgetOptions` 
+after a successful update sends a low-risk nudge to invalidate the cache.
+
+- Replaced `updateAll` with `getGlanceIds` iteration in `MainActivity.kt`
+  and `ShortcutWidgetRefresh.kt`.
+- Added verbose per-widget success/failure logging to track down future
+  rendering faults on-device.
+- Appended `updateAppWidgetOptions` launcher nudge on update success.
+```

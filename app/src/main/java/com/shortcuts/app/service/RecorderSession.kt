@@ -47,6 +47,9 @@ class RecorderSessionOwner(
     private val lock = Any()
     private var store = initialStore
     private var stopRequestedAtMillis = Long.MAX_VALUE
+    private var lastSeenForegroundPackage: String? = null
+    private var lastAppBeforeLauncherPackage: String? = null
+    private var pendingLauncherClick: Action? = null
 
     private val _isRecording = MutableStateFlow(false)
     val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
@@ -69,6 +72,7 @@ class RecorderSessionOwner(
 
     fun start() = synchronized(lock) {
         stopRequestedAtMillis = Long.MAX_VALUE
+        resetForegroundTrackingLocked()
         _recordedActions.value = emptyList()
         _isRecording.value = true
         persistLocked()
@@ -80,58 +84,140 @@ class RecorderSessionOwner(
      */
     fun stop() = synchronized(lock) {
         stopRequestedAtMillis = nowMillis()
+        resetForegroundTrackingLocked()
         _isRecording.value = false
         persistLocked()
     }
 
     fun setRecordingForTest(isRecording: Boolean) = synchronized(lock) {
         stopRequestedAtMillis = if (isRecording) Long.MAX_VALUE else nowMillis()
+        resetForegroundTrackingLocked()
         _isRecording.value = isRecording
         persistLocked()
     }
 
     fun clear() = synchronized(lock) {
         stopRequestedAtMillis = Long.MAX_VALUE
+        resetForegroundTrackingLocked()
         _isRecording.value = false
         _recordedActions.value = emptyList()
         store.clear()
     }
 
-    fun processEvent(event: RecorderEvent, myPackageName: String) {
+    fun processEvent(
+        event: RecorderEvent,
+        myPackageName: String,
+        launcherPackage: String? = null
+    ) {
         synchronized(lock) {
             if (!_isRecording.value || event.occurredAtMillis >= stopRequestedAtMillis) return
+
+            if (event.eventType == RecorderEventType.APP_CHANGE) {
+                processAppChangeLocked(event, myPackageName, launcherPackage)
+                return
+            }
+
             if (event.packageName == myPackageName || event.packageName == SYSTEM_UI_PACKAGE) return
 
             val action = when (event.eventType) {
                 RecorderEventType.CLICK -> createClickAction(event)
                 RecorderEventType.TEXT_CHANGE -> createTypeAction(event)
                 RecorderEventType.SCROLL -> createScrollAction(event)
+                RecorderEventType.APP_CHANGE -> null
             } ?: return
 
-            val currentActions = _recordedActions.value
-            _recordedActions.value = if (
-                action.uiActionType == "TYPE_TEXT" &&
-                currentActions.lastOrNull()?.uiActionType == "TYPE_TEXT" &&
-                currentActions.last().targetNodeId == action.targetNodeId &&
-                currentActions.last().targetText == action.targetText
+            // Keep an ordinary launcher tap unless the next app-change proves it opened an app.
+            pendingLauncherClick = if (
+                event.eventType == RecorderEventType.CLICK && event.packageName == launcherPackage
             ) {
-                currentActions.dropLast(1) + action
+                action
             } else {
-                currentActions + action
+                null
             }
+            appendActionLocked(action)
+        }
+    }
+
+    private fun processAppChangeLocked(
+        event: RecorderEvent,
+        myPackageName: String,
+        launcherPackage: String?
+    ) {
+        val previousPackage = lastSeenForegroundPackage
+        val isIgnoredPackage = event.packageName == myPackageName || event.packageName == SYSTEM_UI_PACKAGE
+        val isLauncher = event.packageName == launcherPackage
+        val pendingClick = pendingLauncherClick
+        pendingLauncherClick = null
+
+        if (event.packageName.isBlank()) return
+        if (isIgnoredPackage) return
+        if (isLauncher) {
+            if (lastSeenForegroundPackage != null && lastSeenForegroundPackage != launcherPackage) {
+                lastAppBeforeLauncherPackage = lastSeenForegroundPackage
+            }
+            lastSeenForegroundPackage = event.packageName
+            return
+        }
+        if (event.packageName == previousPackage) return
+
+        val returnedToSameApp = previousPackage == launcherPackage &&
+            event.packageName == lastAppBeforeLauncherPackage
+        val launchedFromHome = !returnedToSameApp &&
+            (previousPackage == null || previousPackage == launcherPackage || pendingClick != null)
+        if (launchedFromHome) {
+            discardPendingLauncherClickLocked(pendingClick)
+            appendActionLocked(
+                Action(
+                    actionType = ActionType.APP_INTENT,
+                    packageName = event.packageName,
+                    delayMillis = 500L
+                )
+            )
+        } else if (returnedToSameApp && discardPendingLauncherClickLocked(pendingClick)) {
+            // Returning to the same app is not a replayable shortcut step.
             persistLocked()
         }
+        lastSeenForegroundPackage = event.packageName
+        lastAppBeforeLauncherPackage = event.packageName
+    }
+
+    private fun appendActionLocked(action: Action) {
+        val currentActions = _recordedActions.value
+        _recordedActions.value = if (
+            action.uiActionType == "TYPE_TEXT" &&
+            currentActions.lastOrNull()?.uiActionType == "TYPE_TEXT" &&
+            currentActions.last().targetNodeId == action.targetNodeId &&
+            currentActions.last().targetText == action.targetText
+        ) {
+            currentActions.dropLast(1) + action
+        } else {
+            currentActions + action
+        }
+        persistLocked()
     }
 
     private fun restoreLocked() {
         val saved = store.read()
         stopRequestedAtMillis = if (saved?.isRecording == true) Long.MAX_VALUE else nowMillis()
+        resetForegroundTrackingLocked()
         _isRecording.value = saved?.isRecording ?: false
         _recordedActions.value = saved?.recordedActions ?: emptyList()
     }
 
     private fun persistLocked() {
         store.write(PersistedRecorderSession(_isRecording.value, _recordedActions.value))
+    }
+
+    private fun resetForegroundTrackingLocked() {
+        lastSeenForegroundPackage = null
+        lastAppBeforeLauncherPackage = null
+        pendingLauncherClick = null
+    }
+
+    private fun discardPendingLauncherClickLocked(pendingClick: Action?): Boolean {
+        if (pendingClick == null || _recordedActions.value.lastOrNull() != pendingClick) return false
+        _recordedActions.value = _recordedActions.value.dropLast(1)
+        return true
     }
 
     private fun createClickAction(event: RecorderEvent): Action? {

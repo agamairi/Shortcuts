@@ -60,8 +60,13 @@ class MainActivity : ComponentActivity() {
         // its config row is fine, but the launcher caches the last RemoteViews and never asks for
         // another render on its own. Redrawing every instance on launch lets those self-heal.
         lifecycleScope.launch {
-            runCatching { ShortcutWidget().updateAll(applicationContext) }
-                .onFailure { Log.w("MainActivity", "Could not refresh placed widgets", it) }
+            val manager = androidx.glance.appwidget.GlanceAppWidgetManager(applicationContext)
+            val glanceIds = runCatching { manager.getGlanceIds(ShortcutWidget::class.java) }.getOrElse { emptyList() }
+            for (id in glanceIds) {
+                runCatching { ShortcutWidget().update(applicationContext, id) }
+                    .onSuccess { Log.i("MainActivity", "Placed widget redraw succeeded for glanceId=$id") }
+                    .onFailure { Log.w("MainActivity", "Placed widget redraw failed for glanceId=$id", it) }
+            }
         }
         val startDestination = intent?.getStringExtra(EXTRA_START_DESTINATION) ?: "dashboard"
         val themePreferences = ThemePreferences(applicationContext)

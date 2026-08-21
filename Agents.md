@@ -71,9 +71,18 @@ Pass the id exactly as printed by `agy models` — it's forwarded verbatim as `a
 - **Do not run two executors against the same files at the same time.** Partition by file and say so explicitly in each brief, or run them sequentially.
 - **Do not run two executors against the connected phone at the same time.** Only one build can be installed on the device at a time; a second agent installing mid-test will corrupt the first agent's results. On-device work is exclusive — serialize it.
 
+### You create the branch or worktree — never the delegated agent
+Both `agy` and `codex-cli` are invoked against a plain `cwd`, not a sandboxed copy — they operate directly on whatever is checked out there. If you tell a delegated agent to `git checkout -b` its own branch, it shares your literal working directory to do it: two agents told to do this at the same time (or a delegated agent and you) end up mutating the SAME repository's HEAD from underneath each other. This has already gone wrong twice: once when a delegated agent ran `git stash` and wiped another agent's uncommitted work, and again when two agents were each told to "check out a fresh branch" and their edits landed interleaved on whichever one branch happened to be checked out when each got around to writing files.
+
+The fix is that **you** (Claude Code) own all branch/worktree creation, never the delegated agent:
+- Prefer `Agent`'s `isolation: "worktree"` parameter whenever you delegate to `antigravity:antigravity-rescue` or `codex:codex-rescue`. It creates a real, separate git worktree — its own directory and branch — so the delegated agent's file writes and git state genuinely cannot collide with yours or with another agent's parallel worktree. This is the default for any delegation, not an opt-in for special cases.
+- If you cannot use `isolation` for some reason, create the branch yourself first (`git checkout -b <name> <base>` or `git worktree add <path> -b <name> <base>`) before dispatching, then tell the agent the branch/path already exists and to `cd` into or simply use it — never to run `git checkout -b`, `git worktree add`, or any other branch-creating command itself.
+- Either way, state explicitly in the brief: "Do not create a branch or worktree — one already exists for you at `<path/branch>`. Do not run `git checkout -b`, `git worktree add`, or `git stash` under any circumstances."
+- When the agent finishes, review its diff from that isolated location, then merge/cherry-pick it into your own working branch yourself. Clean up the worktree once you're done with it (`git worktree remove <path>`) — the `Agent` tool auto-cleans an unused one, but not one that has changes.
+
 ### The same rules apply to both
 - Delegated agents **never** run `git commit` or `git push`. Say this in every brief. They leave changes uncommitted for the user to review.
-- Delegated agents must stay on the branch you already checked out; tell them the branch name and tell them not to create another.
+- Delegated agents never create their own branch or worktree — see above. You create it; they just use it.
 - Every brief must be **self-contained**: absolute repo path, the files the agent owns, the files it must not touch, the goal, and the acceptance check. Delegated agents start fresh with no memory of your conversation.
 - Every brief must tell the agent to log its user-facing changes in `changelog.md` under `## [Unreleased]` (rule 4).
 - **Verify independently.** Re-run the success criteria yourself. Do not accept a claimed fix — especially an on-device one — that you have not seen the output of.

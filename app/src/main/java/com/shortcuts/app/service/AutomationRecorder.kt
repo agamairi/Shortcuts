@@ -1,6 +1,8 @@
 package com.shortcuts.app.service
 
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
@@ -11,7 +13,7 @@ import com.shortcuts.app.util.AccessibilityStatusChecker
 import kotlinx.coroutines.flow.StateFlow
 import kotlin.collections.ArrayDeque
 
-enum class RecorderEventType { CLICK, TEXT_CHANGE, SCROLL }
+enum class RecorderEventType { CLICK, TEXT_CHANGE, SCROLL, APP_CHANGE }
 
 data class RecorderEvent(
     val eventType: RecorderEventType,
@@ -39,6 +41,8 @@ object AutomationRecorder {
     private val sessionOwner = RecorderSessionOwner(nowMillis = { android.os.SystemClock.uptimeMillis() })
     private var usesPersistentStore = false
     private var disconnectMonitor: AccessibilityServiceDisconnectMonitor? = null
+    private var hasResolvedLauncherPackage = false
+    private var launcherPackage: String? = null
 
     val isRecording: StateFlow<Boolean> = sessionOwner.isRecording
     val recordedActions = sessionOwner.recordedActions
@@ -103,19 +107,34 @@ object AutomationRecorder {
 
     fun onAccessibilityEvent(event: AccessibilityEvent, context: Context) {
         configureStore(context)
-        val rawNode = event.source ?: return
-        
         val eventType = when (event.eventType) {
             AccessibilityEvent.TYPE_VIEW_CLICKED -> RecorderEventType.CLICK
             AccessibilityEvent.TYPE_VIEW_TEXT_CHANGED,
             AccessibilityEvent.TYPE_VIEW_TEXT_SELECTION_CHANGED -> RecorderEventType.TEXT_CHANGE
             AccessibilityEvent.TYPE_VIEW_SCROLLED -> RecorderEventType.SCROLL
-            else -> {
-                rawNode.recycle()
-                return
-            }
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> RecorderEventType.APP_CHANGE
+            else -> return
         }
 
+        val packageName = event.packageName?.toString() ?: ""
+        if (eventType == RecorderEventType.APP_CHANGE) {
+            sessionOwner.processEvent(
+                RecorderEvent(
+                    eventType = eventType,
+                    packageName = packageName,
+                    sourceText = null,
+                    sourceContentDescription = null,
+                    sourceViewId = null,
+                    enteredText = "",
+                    occurredAtMillis = event.eventTime
+                ),
+                context.packageName,
+                resolveLauncherPackage(context)
+            )
+            return
+        }
+
+        val rawNode = event.source ?: return
         val node = AndroidRecorderNode(rawNode)
         val sourceText: String?
         val sourceContentDescription: String?
@@ -146,7 +165,7 @@ object AutomationRecorder {
 
         val recorderEvent = RecorderEvent(
             eventType = eventType,
-            packageName = event.packageName?.toString() ?: "",
+            packageName = packageName,
             sourceText = sourceText,
             sourceContentDescription = sourceContentDescription,
             sourceViewId = sourceViewId,
@@ -156,11 +175,15 @@ object AutomationRecorder {
             screenY = screenY,
             occurredAtMillis = event.eventTime
         )
-        sessionOwner.processEvent(recorderEvent, context.packageName)
+        sessionOwner.processEvent(recorderEvent, context.packageName, resolveLauncherPackage(context))
     }
 
-    fun processEvent(event: RecorderEvent, myPackageName: String) {
-        sessionOwner.processEvent(event, myPackageName)
+    fun processEvent(
+        event: RecorderEvent,
+        myPackageName: String,
+        launcherPackage: String? = null
+    ) {
+        sessionOwner.processEvent(event, myPackageName, launcherPackage)
     }
 
     @Synchronized
@@ -169,6 +192,20 @@ object AutomationRecorder {
             sessionOwner.replaceStore(RecorderSessionStorePreferences(context.applicationContext))
             usesPersistentStore = true
         }
+    }
+
+    /** Resolves once per app process because the default launcher rarely changes mid-recording. */
+    @Synchronized
+    private fun resolveLauncherPackage(context: Context): String? {
+        if (!hasResolvedLauncherPackage) {
+            val homeIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+            launcherPackage = context.applicationContext.packageManager
+                .resolveActivity(homeIntent, PackageManager.MATCH_DEFAULT_ONLY)
+                ?.activityInfo
+                ?.packageName
+            hasResolvedLauncherPackage = true
+        }
+        return launcherPackage
     }
 
     @Synchronized

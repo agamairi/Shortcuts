@@ -29,7 +29,16 @@ internal suspend fun refreshShortcutWidget(context: Context, appWidgetId: Int) {
 
         if (glanceId != null) {
             runCatching { ShortcutWidget().update(context, glanceId) }
-                .onFailure { Log.e(TAG, "Redrawing widget $appWidgetId failed", it) }
+                .onSuccess {
+                    Log.i(TAG, "Redrawing widget $appWidgetId (glanceId=$glanceId) succeeded")
+                    // Mitigation: Some launchers cache the old RemoteViews and don't visually refresh
+                    // until forced. Re-applying the options can act as a no-op nudge to re-inflate.
+                    runCatching {
+                        val awm = android.appwidget.AppWidgetManager.getInstance(context)
+                        awm.updateAppWidgetOptions(appWidgetId, awm.getAppWidgetOptions(appWidgetId))
+                    }.onFailure { Log.w(TAG, "Launcher nudge failed for widget $appWidgetId", it) }
+                }
+                .onFailure { Log.e(TAG, "Redrawing widget $appWidgetId (glanceId=$glanceId) failed", it) }
             return
         }
         if (attempt < GLANCE_ID_ATTEMPTS - 1) {
@@ -38,6 +47,11 @@ internal suspend fun refreshShortcutWidget(context: Context, appWidgetId: Int) {
     }
 
     Log.w(TAG, "No GlanceId for appWidgetId=$appWidgetId after $GLANCE_ID_ATTEMPTS attempts; updating all instances")
-    runCatching { ShortcutWidget().updateAll(context) }
-        .onFailure { Log.e(TAG, "Falling back to updateAll failed", it) }
+    val manager = GlanceAppWidgetManager(context)
+    val glanceIds = runCatching { manager.getGlanceIds(ShortcutWidget::class.java) }.getOrElse { emptyList() }
+    for (id in glanceIds) {
+        runCatching { ShortcutWidget().update(context, id) }
+            .onSuccess { Log.i(TAG, "Fallback redraw succeeded for glanceId=$id") }
+            .onFailure { Log.e(TAG, "Fallback redraw failed for glanceId=$id", it) }
+    }
 }

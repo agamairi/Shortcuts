@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Widget redraw was occasionally unreliable.** Sometimes, after configuring a widget or editing a shortcut, the widget on the home screen wouldn't visually update until the phone screen was turned off and on, or until several other apps were opened. This was caused by two compounding issues: first, if updating one widget failed (e.g. it pointed to a deleted shortcut), the system stopped updating the rest of the widgets in the batch. Second, some phone launchers aggressively cache the widget view and ignore background updates. We now update each widget individually so one broken widget can't block the rest, we log precisely which ones fail to help with future debugging, and we send a "nudge" to the launcher to force it to invalidate its cache and show the new widget right away.
+- **Recorder app launches are now replayable.** Opening an app from the home screen was recorded as
+  a brittle tap on that launcher's icon, which can move or differ between devices. It now records
+  the app itself, so the shortcut opens the intended app by package name; simply going home or
+  moving between screens within the same app does not add a fake step.
+- **The recording controls no longer hide in Silent notifications.** The ongoing recorder
+  notification and its Stop button now appear in the normal notification section while remaining
+  free of sound and vibration.
+
 ## [0.7.1] - 2026-08-20
 ### Added
 - **Choose a widget layout.** The widget setup screen showed three previews — Single tile, Grid of
