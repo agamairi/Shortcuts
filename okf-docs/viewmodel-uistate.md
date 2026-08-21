@@ -39,12 +39,14 @@ sealed class UiState<out T> {
   - `runAutomation(automation: Automation)`
 
 ### 2. AiBuilderViewModel
-- **Responsibility**: Processes natural language user prompts and converts them into executable `Action` lists via on-device AI model output. It supports multi-turn conversations by retaining recent steps as context. Scoped to its `NavBackStackEntry`, so backing out discards drafts.
-- **Exposes**: `uiState: StateFlow<UiState<AiBuilderData>>`
-- **Key Operations & Defenses**:
-  - `updatePrompt(prompt: String)`
-  - `downloadModelAndGenerate(context)`: Validates model status, triggers `OnDeviceInferenceService`, strips Markdown code block wrappers, parses JSON, and emits `UiState.Success` or `UiState.Error`.
-  - Supports slot-based madlib builder mode alongside free-text mode.
+- **Responsibility**: Processes natural-language prompts into an editable `DraftShortcut` and its executable `Action` list via on-device inference. It supports follow-up turns by retaining recent draft steps as model context. Scoped to its `NavBackStackEntry`, so backing out discards the route's in-progress builder state.
+- **Exposes**: Separate `prompt: StateFlow<String>` and `uiState: StateFlow<UiState<AiBuilderData>>`. `AiBuilderData` carries download/generation progress, the nullable draft, save/test results, and selected tile appearance; it carries no AI-builder mode or slot-template state ([`AiBuilderViewModel.kt:34-56`](../app/src/main/java/com/shortcuts/app/viewmodel/AiBuilderViewModel.kt)).
+- **Key Operations & State Transitions**:
+  - `updatePrompt(prompt: String)` updates both prompt flows used by the initial prompt field and the review screen's follow-up field ([`AiBuilderViewModel.kt:101-105`](../app/src/main/java/com/shortcuts/app/viewmodel/AiBuilderViewModel.kt)).
+  - `downloadModelAndGenerate(context)` rejects blank input, starts or observes model download, then invokes inference after `DownloadState.Completed` ([`AiBuilderViewModel.kt:113-158`](../app/src/main/java/com/shortcuts/app/viewmodel/AiBuilderViewModel.kt)).
+  - `performInference(prompt)` segments the request, passes the response through the function-call/JSON parsing path, and, when it produces draft steps, appends resolved or unresolved steps to the existing draft and clears the prompt for the next turn ([`AiBuilderViewModel.kt:165-250`](../app/src/main/java/com/shortcuts/app/viewmodel/AiBuilderViewModel.kt)). It does not own a separate madlib/free-text mode.
+  - `contextualizedPrompt(request)` supplies at most four prior step source texts when a draft exists, allowing references such as “then close it” without unbounded on-device-model context ([`AiBuilderViewModel.kt:261-272`](../app/src/main/java/com/shortcuts/app/viewmodel/AiBuilderViewModel.kt)).
+  - Draft changes and persistence are review-stage operations: `updateStep`, `replaceUnresolvedStep`, `deleteStep`, `addStep`, `testRun`, and `saveGeneratedAutomation` ([`AiBuilderViewModel.kt:409-503`](../app/src/main/java/com/shortcuts/app/viewmodel/AiBuilderViewModel.kt)).
 
 ### 3. CustomWidgetViewModel
 - **Responsibility**: Manages state for the custom widget builder, including AI generation of widget specifications. Scoped to its `NavBackStackEntry`.
