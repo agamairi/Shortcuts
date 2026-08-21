@@ -95,7 +95,9 @@ class RecorderSessionService : Service() {
 }
 
 object RecorderSessionNotifier {
-    private const val CHANNEL_ID = "recorder_channel"
+    // Channels are immutable after creation. A new id ensures existing installs receive the
+    // alerting-but-audibly-silent channel rather than retaining the old Silent channel settings.
+    private const val CHANNEL_ID = "recorder_channel_v2"
     const val RECORDING_NOTIFICATION_ID = 1337
     private const val DISCONNECT_NOTIFICATION_ID = 1338
 
@@ -159,9 +161,15 @@ object RecorderSessionNotifier {
     private fun notificationManager(context: Context): NotificationManager {
         val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
-            manager.createNotificationChannel(
-                NotificationChannel(CHANNEL_ID, "Shortcut Recorder", NotificationManager.IMPORTANCE_LOW)
-            )
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "Shortcut Recorder",
+                NotificationManager.IMPORTANCE_DEFAULT
+            ).apply {
+                setSound(null, null)
+                enableVibration(false)
+            }
+            manager.createNotificationChannel(channel)
         }
         return manager
     }

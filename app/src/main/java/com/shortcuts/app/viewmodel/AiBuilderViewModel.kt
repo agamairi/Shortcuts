@@ -21,11 +21,6 @@ import com.shortcuts.app.service.ModelDownloaderService
 import com.shortcuts.app.service.OnDeviceInferenceService
 import com.shortcuts.app.service.RunResult
 import com.shortcuts.app.service.StepResult
-import com.shortcuts.app.ui.screens.MadlibSlot
-import com.shortcuts.app.ui.screens.MadlibState
-import com.shortcuts.app.ui.screens.MadlibTemplate
-import com.shortcuts.app.ui.screens.defaultMadlibState
-import com.shortcuts.app.ui.screens.withRandomSlots
 import com.shortcuts.app.ui.state.UiState
 import com.shortcuts.app.widget.WidgetColorKey
 import com.shortcuts.app.widget.WidgetIconKey
@@ -35,9 +30,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.launch
-
-/** Whether the AI builder shows the madlib slot UI or the free-text prompt. */
-enum class MadlibBuilderMode { MADLIB, FREE_TEXT }
 
 data class AiBuilderData(
     val prompt: String = "",
@@ -52,10 +44,6 @@ data class AiBuilderData(
     /** Results are aligned with [draft.steps], including visible unresolved placeholders. */
     val stepResults: List<StepResult>? = null,
     val isTestRunning: Boolean = false,
-    /** Controls whether the madlib slot UI or the free-text prompt is shown. */
-    val builderMode: MadlibBuilderMode = MadlibBuilderMode.MADLIB,
-    /** Current state of the slot-based madlib builder. */
-    val madlibState: MadlibState = defaultMadlibState(),
     /**
      * The tile-colour key chosen once for this editing session.
      * Used as both the builder/describe screen background tint and the saved Automation.colorKey
@@ -561,118 +549,6 @@ class AiBuilderViewModel(
                 StepResult.Skipped("Fix this step before testing it.")
             }
         }
-    }
-
-    // -----------------------------------------------------------------------
-    // Madlib slot-based builder functions
-    // -----------------------------------------------------------------------
-
-    fun switchToMadlib() {
-        currentData = currentData.copy(builderMode = MadlibBuilderMode.MADLIB)
-        _uiState.value = UiState.Success(currentData)
-    }
-
-    fun switchToFreeText() {
-        currentData = currentData.copy(builderMode = MadlibBuilderMode.FREE_TEXT)
-        _uiState.value = UiState.Success(currentData)
-    }
-
-    /** Updates the installed-app list available to app slots (called once on screen entry). */
-    fun loadInstalledApps(apps: List<InstalledApp>) {
-        val refreshed = currentData.madlibState.let { ms ->
-            ms.copy(
-                installedApps = apps,
-                firstSlot = if (ms.firstSlot is MadlibSlot.App) ms.firstSlot.copy(apps = apps) else ms.firstSlot,
-                secondSlot = if (ms.secondSlot is MadlibSlot.App) ms.secondSlot.copy(apps = apps) else ms.secondSlot
-            )
-        }
-        currentData = currentData.copy(madlibState = refreshed)
-        _uiState.value = UiState.Success(currentData)
-    }
-
-    /** Cycles to the next template and resets slots to their defaults. */
-    fun updateMadlibTemplate(template: MadlibTemplate) {
-        val newState = defaultMadlibState(template, currentData.madlibState.installedApps)
-        currentData = currentData.copy(madlibState = newState)
-        _uiState.value = UiState.Success(currentData)
-    }
-
-    /** Cycles the first slot to its next valid value. */
-    fun advanceFirstSlot() {
-        currentData = currentData.copy(
-            madlibState = currentData.madlibState.copy(
-                firstSlot = currentData.madlibState.firstSlot.next()
-            )
-        )
-        _uiState.value = UiState.Success(currentData)
-    }
-
-    /** Cycles the second slot to its next valid value. */
-    fun advanceSecondSlot() {
-        currentData = currentData.copy(
-            madlibState = currentData.madlibState.copy(
-                secondSlot = currentData.madlibState.secondSlot.next()
-            )
-        )
-        _uiState.value = UiState.Success(currentData)
-    }
-
-    fun setFirstSlotIndex(index: Int) {
-        currentData = currentData.copy(
-            madlibState = currentData.madlibState.copy(
-                firstSlot = currentData.madlibState.firstSlot.withIndex(index)
-            )
-        )
-        _uiState.value = UiState.Success(currentData)
-    }
-
-    fun setSecondSlotIndex(index: Int) {
-        currentData = currentData.copy(
-            madlibState = currentData.madlibState.copy(
-                secondSlot = currentData.madlibState.secondSlot.withIndex(index)
-            )
-        )
-        _uiState.value = UiState.Success(currentData)
-    }
-
-    /** Randomises both slots while keeping only valid values. */
-    fun inspireMe() {
-        currentData = currentData.copy(
-            madlibState = currentData.madlibState.withRandomSlots()
-        )
-        _uiState.value = UiState.Success(currentData)
-    }
-
-    /**
-     * Builds an [Automation] directly from the chosen slots — no model call needed —
-     * then transitions to the draft review screen so the user can inspect before saving.
-     */
-    fun confirmMadlib() {
-        val madlib = currentData.madlibState
-        val automation = madlib.buildAutomation()
-        if (automation == null) {
-            _uiState.value = UiState.Error("Fill in every slot before saving.")
-            return
-        }
-        val colorKey = currentData.tileColorKey
-        val iconKey = currentData.tileIconKey
-        val tintedAutomation = automation.copy(colorKey = colorKey, iconKey = iconKey)
-        val actions = ActionConverter().toActionList(tintedAutomation.actionsJson)
-        val draftSteps = actions.mapIndexed { idx, action ->
-            DraftStep.Resolved(
-                sourceText = "Step ${idx + 1}",
-                action = action,
-                confidence = MANUAL_CONFIDENCE
-            )
-        }
-        val draft = DraftShortcut(steps = draftSteps, originalPrompt = tintedAutomation.name)
-        currentData = currentData.copy(
-            generatedAutomation = tintedAutomation,
-            shortcutName = tintedAutomation.name,
-            draft = draft,
-            stepResults = null
-        )
-        _uiState.value = UiState.Success(currentData)
     }
 
     private companion object {
