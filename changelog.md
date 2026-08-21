@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [0.7.2] - 2026-08-21
 ### Changed
 - **Merged the AI builder into a single screen.** The AI builder flow used to start with a slot-based template screen that could only branch into a separate free-text mode. The initial screen now combines the visual identity of the template layout with the real text input and quick-start example chips, removing the confusing two-screen split and dead ends.
 
