@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Changed
+- **Merged the AI builder into a single screen.** The AI builder flow used to start with a slot-based template screen that could only branch into a separate free-text mode. The initial screen now combines the visual identity of the template layout with the real text input and quick-start example chips, removing the confusing two-screen split and dead ends.
 
 ### Fixed
 - **Widget redraw was occasionally unreliable.** Sometimes, after configuring a widget or editing a shortcut, the widget on the home screen wouldn't visually update until the phone screen was turned off and on, or until several other apps were opened. This was caused by two compounding issues: first, if updating one widget failed (e.g. it pointed to a deleted shortcut), the system stopped updating the rest of the widgets in the batch. Second, some phone launchers aggressively cache the widget view and ignore background updates. We now update each widget individually so one broken widget can't block the rest, we log precisely which ones fail to help with future debugging, and we send a "nudge" to the launcher to force it to invalidate its cache and show the new widget right away.

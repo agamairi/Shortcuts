@@ -866,3 +866,29 @@ fun AppPickerDialog(
         }
     }
 }
+
+val SUPPORTED_DEVICE_CONTROLS: List<DeviceControl> = listOf(
+    DeviceControl("flashlight", "Flashlight"),
+    DeviceControl("donotdisturb", "Do Not Disturb"),
+    DeviceControl("volume", "Volume"),
+    DeviceControl("ringmode", "Ring Mode"),
+    DeviceControl("autorotate", "Auto-Rotate"),
+    DeviceControl("wifi", "Wi-Fi"),
+    DeviceControl("bluetooth", "Bluetooth"),
+    DeviceControl("airplanemode", "Airplane Mode"),
+    DeviceControl("location", "Location")
+)
+
+/** A device toggle the executor can handle — (normalizedId, displayLabel). */
+data class DeviceControl(
+    /** Normalized key accepted by the executor — lowercase, no underscores. */
+    val id: String,
+    val displayLabel: String
+)
+
+/** The three states accepted by ActionExecutorService.normalizedToggleState. */
+enum class ToggleStateOption(val value: String, val displayLabel: String) {
+    ON("on", "On"),
+    OFF("off", "Off"),
+    TOGGLE("toggle", "Toggle")
+}
