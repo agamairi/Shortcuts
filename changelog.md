@@ -12,6 +12,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Merged the AI builder into a single screen.** The AI builder flow used to start with a slot-based template screen that could only branch into a separate free-text mode. The initial screen now combines the visual identity of the template layout with the real text input and quick-start example chips, removing the confusing two-screen split and dead ends.
 
 ### Fixed
+- **Replayed shortcuts are much more reliable.** Replay now waits for a screen to finish loading before attempting to click or type. Steps configure a "wait up to" duration as a timeout (replacing the old behavior of blindly waiting the entire duration), meaning a fast-loading screen can be tapped immediately without a fixed sleep.
+- **Improved target finding during replay.** Replay no longer selects the first element that blindly matches text. It now scores all potential candidates based on text match, class name, View ID, and proximity to the original tapped location, reliably clicking the correct target in lists and dynamic layouts.
+- **Lightweight tracing for automations.** A diagnostic trace now keeps an in-memory record of all candidate nodes found for a target, which one was picked and its score, and how long a step waited for a screen to be ready.
+- **Recording no longer saves noisy accessibility events as extra steps.** Repeated click callbacks on
+  the same control are ignored, a swipe's many raw scroll callbacks become one step after the
+  gesture settles, and upward/backward swipes now replay in the direction actually recorded.
+  Keyboard, permission, resolver, and other transient system windows no longer masquerade as an
+  app launch while recording.
 - **Widget redraw was occasionally unreliable.** Sometimes, after configuring a widget or editing a shortcut, the widget on the home screen wouldn't visually update until the phone screen was turned off and on, or until several other apps were opened. This was caused by two compounding issues: first, if updating one widget failed (e.g. it pointed to a deleted shortcut), the system stopped updating the rest of the widgets in the batch. Second, some phone launchers aggressively cache the widget view and ignore background updates. We now update each widget individually so one broken widget can't block the rest, we log precisely which ones fail to help with future debugging, and we send a "nudge" to the launcher to force it to invalidate its cache and show the new widget right away.
 - **Recorder app launches are now replayable.** Opening an app from the home screen was recorded as
   a brittle tap on that launcher's icon, which can move or differ between devices. It now records
