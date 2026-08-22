@@ -371,12 +371,13 @@ class AutomationAccessibilityServiceTest {
     }
 
     @Test
-    fun `findNodeByTraversal stops searching when depth exceeds maxDepth`() {
+    fun `findAllNodesByTraversal stops searching when depth exceeds maxDepth`() {
         val deepChild = mockk<AccessibilityNodeInfo>(relaxed = true)
         every { deepChild.text } returns "Deep Target"
 
-        val found = service.findNodeByTraversal(deepChild, "Deep Target", depth = 21, maxDepth = 20)
-        org.junit.Assert.assertNull(found)
+        val found = mutableListOf<AccessibilityNodeInfo>()
+        service.findAllNodesByTraversal(deepChild, "Deep Target", found, depth = 21, maxDepth = 20)
+        assertTrue(found.isEmpty())
     }
 
     @Test
@@ -395,5 +396,111 @@ class AutomationAccessibilityServiceTest {
 
         val found = service.findScrollableNode(node, depth = 21, maxDepth = 20)
         org.junit.Assert.assertNull(found)
+    }
+    @Test
+    fun `matcher picks the best candidate based on class and position`() {
+        val rootNode = mockk<AccessibilityNodeInfo>(relaxed = true)
+        every { service.getRootNode() } returns rootNode
+
+        val badNode1 = mockk<AccessibilityNodeInfo>(relaxed = true)
+        every { badNode1.text } returns "Submit"
+        every { badNode1.className } returns "android.widget.TextView"
+        every { badNode1.getBoundsInScreen(any()) } answers {
+            firstArg<android.graphics.Rect>().set(0, 0, 100, 100)
+        }
+
+        val goodNode = mockk<AccessibilityNodeInfo>(relaxed = true)
+        every { goodNode.text } returns "Submit"
+        every { goodNode.className } returns "android.widget.Button"
+        every { goodNode.getBoundsInScreen(any()) } answers {
+            firstArg<android.graphics.Rect>().set(500, 500, 600, 600)
+        }
+
+        val badNode2 = mockk<AccessibilityNodeInfo>(relaxed = true)
+        every { badNode2.text } returns "Submit"
+        every { badNode2.className } returns "android.widget.Button"
+        every { badNode2.getBoundsInScreen(any()) } answers {
+            firstArg<android.graphics.Rect>().set(1000, 1000, 1100, 1100)
+        }
+
+        every { rootNode.findAccessibilityNodeInfosByText("Submit") } returns listOf(badNode1, goodNode, badNode2)
+
+        val action = Action(
+            actionType = ActionType.UI_AUTOMATION,
+            uiActionType = "CLICK",
+            targetText = "Submit",
+            targetClassName = "android.widget.Button",
+            screenX = 550,
+            screenY = 550
+        )
+
+        AutomationAccessibilityService.AutomationTrace.clear()
+        val resultNode = service.findTargetNode(action)
+
+        assertEquals(goodNode, resultNode)
+        
+        val trace = AutomationAccessibilityService.AutomationTrace.matches.last()
+        assertEquals(3, trace.candidates.size)
+        assertEquals(1, trace.pickedIndex)
+    }
+
+    @Test
+    fun `readiness wait succeeds when target appears after a delay`() {
+        service.nodeWaitTimeoutMillis = 1000L
+        val rootNode = mockk<AccessibilityNodeInfo>(relaxed = true)
+        every { service.getRootNode() } returns rootNode
+        
+        val targetNode = mockk<AccessibilityNodeInfo>(relaxed = true)
+        every { targetNode.text } returns "Delayed Target"
+        every { targetNode.isClickable } returns true
+        every { targetNode.performAction(AccessibilityNodeInfo.ACTION_CLICK) } returns true
+
+        var callCount = 0
+        every { rootNode.findAccessibilityNodeInfosByText("Delayed Target") } answers {
+            if (callCount++ < 3) emptyList() else listOf(targetNode)
+        }
+
+        val action = Action(
+            actionType = ActionType.UI_AUTOMATION,
+            uiActionType = "CLICK",
+            targetText = "Delayed Target"
+        )
+
+        AutomationAccessibilityService.AutomationTrace.clear()
+        val result = service.executeAction(action)
+        
+        assertTrue(result)
+        verify { targetNode.performAction(AccessibilityNodeInfo.ACTION_CLICK) }
+        
+        val trace = AutomationAccessibilityService.AutomationTrace.waits.last()
+        assertTrue(trace.success)
+        assertTrue("Wait time should be positive", trace.waitTimeMs > 0)
+    }
+
+    @Test
+    fun `readiness wait fails cleanly when target never appears within timeout`() {
+        service.nodeWaitTimeoutMillis = 500L
+        val rootNode = mockk<AccessibilityNodeInfo>(relaxed = true)
+        every { service.getRootNode() } returns rootNode
+        every { rootNode.findAccessibilityNodeInfosByText("Ghost Target") } returns emptyList()
+
+        val action = Action(
+            actionType = ActionType.UI_AUTOMATION,
+            uiActionType = "CLICK",
+            targetText = "Ghost Target"
+        )
+
+        AutomationAccessibilityService.AutomationTrace.clear()
+        
+        val startTime = System.currentTimeMillis()
+        val result = service.executeAction(action)
+        val elapsed = System.currentTimeMillis() - startTime
+        
+        assertFalse(result)
+        assertTrue("Should wait at least 500ms", elapsed >= 500)
+        assertTrue("Should not hang forever", elapsed < 2000)
+        
+        val trace = AutomationAccessibilityService.AutomationTrace.waits.last()
+        assertFalse(trace.success)
     }
 }

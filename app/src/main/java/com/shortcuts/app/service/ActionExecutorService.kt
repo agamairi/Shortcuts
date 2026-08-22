@@ -47,7 +47,13 @@ class ActionExecutorService(
 
             action.delayMillis
                 ?.takeIf { it > 0 && index < actions.lastIndex }
-                ?.let { Thread.sleep(it) }
+                ?.let { delay ->
+                    if (action.actionType == ActionType.UI_AUTOMATION && accessibilityService != null) {
+                        accessibilityService.waitForScreenToSettle(delay)
+                    } else if (action.actionType != ActionType.WAIT) {
+                        Thread.sleep(delay)
+                    }
+                }
         }
         return RunResult(shortcutName, results, details)
     }
