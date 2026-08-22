@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-08-21
+### Fixed
+- **Replayed shortcuts are much more reliable.** Replay now waits for the screen to actually settle before clicking or typing — trying the target immediately first (so an already-ready screen isn't slowed down), then giving a genuinely transitioning screen a bounded moment to settle, instead of either a blind fixed sleep or a wait that could burn its entire budget on a screen with harmless background activity (a live ticker, a typing indicator) and fail even though the target was there the whole time.
+- **Improved target finding during replay.** Replay no longer selects the first element that blindly matches text. It now scores all potential candidates based on text match, class name, View ID, and proximity to the original tapped location, reliably clicking the correct target in lists and dynamic layouts.
+- **Lightweight tracing for automations.** A diagnostic trace now keeps an in-memory record of all candidate nodes found for a target, which one was picked and its score, and how long a step waited for a screen to be ready.
+- **Recording no longer saves noisy accessibility events as extra steps.** Repeated click callbacks on
+  the same control are ignored, a swipe's many raw scroll callbacks become one step after the
+  gesture settles, and upward/backward swipes now replay in the direction actually recorded.
+  Keyboard, permission, resolver, and other transient system windows no longer masquerade as an
+  app launch while recording.
+
+### Known issues
+- If the very first app touched during a recording is opened by something other than tapping its
+  launcher icon (e.g. a notification), that open won't be captured as a step.
+
 ## [0.7.2] - 2026-08-21
 ### Changed
 - **Merged the AI builder into a single screen.** The AI builder flow used to start with a slot-based template screen that could only branch into a separate free-text mode. The initial screen now combines the visual identity of the template layout with the real text input and quick-start example chips, removing the confusing two-screen split and dead ends.

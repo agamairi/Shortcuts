@@ -1,12 +1,16 @@
 package com.shortcuts.app.service
 
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Rect
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.provider.Settings
 import android.util.Log
+import android.view.inputmethod.InputMethodManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.shortcuts.app.util.AccessibilityStatusChecker
@@ -26,7 +30,14 @@ data class RecorderEvent(
     val screenX: Int? = null,
     val screenY: Int? = null,
     /** AccessibilityEvent.eventTime when available; used to exclude the stop action. */
-    val occurredAtMillis: Long = Long.MIN_VALUE
+    val occurredAtMillis: Long = Long.MIN_VALUE,
+    /** Scroll metadata copied from AccessibilityEvent so direction can be recorded accurately. */
+    val fromIndex: Int? = null,
+    val toIndex: Int? = null,
+    val scrollX: Int? = null,
+    val scrollY: Int? = null,
+    val scrollDeltaX: Int? = null,
+    val scrollDeltaY: Int? = null
 )
 
 /**
@@ -47,6 +58,9 @@ object AutomationRecorder {
     val isRecording: StateFlow<Boolean> = sessionOwner.isRecording
     val recordedActions = sessionOwner.recordedActions
 
+    private var scrollFinalizerHandler: Handler? = null
+    private var pendingScrollFinalizer: Runnable? = null
+
     fun restoreSession(context: Context) {
         configureStore(context)
         sessionOwner.restore()
@@ -54,6 +68,7 @@ object AutomationRecorder {
 
     fun setRecordingForTest(isRecording: Boolean) {
         disconnectMonitor?.cancelPendingDisconnect()
+        cancelPendingScrollFinalizer()
         sessionOwner.replaceStore(InMemoryRecorderSessionStore())
         sessionOwner.setRecordingForTest(isRecording)
     }
@@ -61,6 +76,7 @@ object AutomationRecorder {
     fun startRecording(context: Context) {
         configureStore(context)
         disconnectMonitor?.cancelPendingDisconnect()
+        cancelPendingScrollFinalizer()
         Log.d(TAG, "Starting recording")
         sessionOwner.start()
         RecorderSessionService.start(context)
@@ -68,6 +84,7 @@ object AutomationRecorder {
 
     fun stopRecording(context: Context) {
         disconnectMonitor?.cancelPendingDisconnect()
+        cancelPendingScrollFinalizer()
         Log.d(TAG, "Stopping recording")
         sessionOwner.stop()
         RecorderSessionService.stop(context)
@@ -102,6 +119,7 @@ object AutomationRecorder {
 
     fun clearRecording() {
         disconnectMonitor?.cancelPendingDisconnect()
+        cancelPendingScrollFinalizer()
         sessionOwner.clear()
     }
 
@@ -129,7 +147,8 @@ object AutomationRecorder {
                     occurredAtMillis = event.eventTime
                 ),
                 context.packageName,
-                resolveLauncherPackage(context)
+                resolveLauncherPackage(context),
+                resolveTransientPackages(context)
             )
             return
         }
@@ -173,17 +192,32 @@ object AutomationRecorder {
             sourceClassName = sourceClassName,
             screenX = screenX,
             screenY = screenY,
-            occurredAtMillis = event.eventTime
+            occurredAtMillis = event.eventTime,
+            fromIndex = event.fromIndex.takeIf { it >= 0 },
+            toIndex = event.toIndex.takeIf { it >= 0 },
+            scrollX = event.scrollX.takeIf { it >= 0 },
+            scrollY = event.scrollY.takeIf { it >= 0 },
+            scrollDeltaX = event.scrollDeltaXOrNull(),
+            scrollDeltaY = event.scrollDeltaYOrNull()
         )
-        sessionOwner.processEvent(recorderEvent, context.packageName, resolveLauncherPackage(context))
+        sessionOwner.processEvent(
+            recorderEvent,
+            context.packageName,
+            resolveLauncherPackage(context),
+            resolveTransientPackages(context)
+        )
+        if (eventType == RecorderEventType.SCROLL) {
+            scheduleScrollFinalizer()
+        }
     }
 
     fun processEvent(
         event: RecorderEvent,
         myPackageName: String,
-        launcherPackage: String? = null
+        launcherPackage: String? = null,
+        transientPackages: Set<String> = emptySet()
     ) {
-        sessionOwner.processEvent(event, myPackageName, launcherPackage)
+        sessionOwner.processEvent(event, myPackageName, launcherPackage, transientPackages)
     }
 
     @Synchronized
@@ -208,6 +242,52 @@ object AutomationRecorder {
         return launcherPackage
     }
 
+    /** The active IME is resolved dynamically because keyboard package names vary by device. */
+    private fun resolveTransientPackages(context: Context): Set<String> {
+        return setOfNotNull(resolveCurrentInputMethodPackage(context))
+    }
+
+    private fun resolveCurrentInputMethodPackage(context: Context): String? {
+        val fromSettings = runCatching {
+            Settings.Secure.getString(
+                context.contentResolver,
+                Settings.Secure.DEFAULT_INPUT_METHOD
+            )
+        }.getOrNull()
+            ?.let(ComponentName::unflattenFromString)
+            ?.packageName
+        if (!fromSettings.isNullOrBlank()) return fromSettings
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            return runCatching {
+                context.getSystemService(InputMethodManager::class.java)
+                    ?.currentInputMethodInfo
+                    ?.packageName
+            }.getOrNull()
+        }
+        return null
+    }
+
+    @Synchronized
+    private fun scheduleScrollFinalizer() {
+        val handler = scrollFinalizerHandler ?: Handler(Looper.getMainLooper())
+            .also { scrollFinalizerHandler = it }
+        pendingScrollFinalizer?.let(handler::removeCallbacks)
+        val finalizer = Runnable {
+            sessionOwner.flushPendingScroll()
+            synchronized(this) { pendingScrollFinalizer = null }
+        }
+        pendingScrollFinalizer = finalizer
+        handler.postDelayed(finalizer, SCROLL_QUIET_PERIOD_MS)
+    }
+
+    @Synchronized
+    private fun cancelPendingScrollFinalizer() {
+        val handler = scrollFinalizerHandler ?: return
+        pendingScrollFinalizer?.let(handler::removeCallbacks)
+        pendingScrollFinalizer = null
+    }
+
     @Synchronized
     private fun accessibilityDisconnectMonitor(): AccessibilityServiceDisconnectMonitor {
         return disconnectMonitor ?: AccessibilityServiceDisconnectMonitor(
@@ -215,6 +295,14 @@ object AutomationRecorder {
             isRecording = { isRecording.value }
         ).also { disconnectMonitor = it }
     }
+
+    private fun AccessibilityEvent.scrollDeltaXOrNull(): Int? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) scrollDeltaX else null
+
+    private fun AccessibilityEvent.scrollDeltaYOrNull(): Int? =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) scrollDeltaY else null
+
+    private const val SCROLL_QUIET_PERIOD_MS = 250L
 }
 
 /** Android scheduling adapter; the disconnect policy itself remains pure Kotlin. */

@@ -30,6 +30,14 @@ open class AutomationAccessibilityService : AccessibilityService() {
         private const val TAP_DURATION_MS = 60L
         private const val GESTURE_TIMEOUT_MS = 2_000L
 
+        /**
+         * Upper bound on the settle wait inside [awaitTargetNode]. Deliberately well under
+         * [NODE_WAIT_TIMEOUT_MS] so a screen with continuous background events (a live ticker,
+         * a typing indicator) — which never goes quiet long enough to "settle" — can't burn the
+         * whole per-step budget here and starve the polling loop that follows it.
+         */
+        private const val SETTLE_WAIT_CAP_MS = 1_000L
+
         @Volatile
         var instance: AutomationAccessibilityService? = null
             internal set
@@ -61,8 +69,43 @@ open class AutomationAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event != null) {
             AutomationRecorder.onAccessibilityEvent(event, this)
+            lastEventTimeMs = System.currentTimeMillis()
         }
         // Handle UI Automation feedback here
+    }
+
+    @Volatile
+    internal var lastEventTimeMs: Long = 0
+
+    object AutomationTrace {
+        data class CandidateInfo(
+            val viewId: String?,
+            val text: String?,
+            val className: String?,
+            val bounds: android.graphics.Rect,
+            val score: Int
+        )
+        
+        data class MatchTrace(
+            val targetDesc: String,
+            val candidates: List<CandidateInfo>,
+            val pickedIndex: Int,
+            val pickedScore: Int?
+        )
+        
+        data class WaitTrace(
+            val targetDesc: String,
+            val waitTimeMs: Long,
+            val success: Boolean
+        )
+        
+        val matches = mutableListOf<MatchTrace>()
+        val waits = mutableListOf<WaitTrace>()
+        
+        fun clear() {
+            matches.clear()
+            waits.clear()
+        }
     }
 
     override fun onInterrupt() {
@@ -323,19 +366,68 @@ open class AutomationAccessibilityService : AccessibilityService() {
      * Blocks the calling thread, so it must run off the main thread — every caller of
      * [ActionExecutorService.executeActions] dispatches to IO for exactly this reason.
      */
-    private fun awaitTargetNode(action: Action): AccessibilityNodeInfo? {
-        findTargetNode(action)?.let { return it }
+    fun waitForScreenToSettle(timeoutMs: Long) {
+        val settleTimeMs = 300L
+        val maxRetries = (timeoutMs / 50L).coerceAtLeast(1L).toInt()
+        
+        for (i in 0 until maxRetries) {
+            val idleTime = System.currentTimeMillis() - lastEventTimeMs
+            if (idleTime >= settleTimeMs) {
+                break
+            }
+            try {
+                Thread.sleep(50)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                break
+            }
+        }
+    }
 
-        val retries = (nodeWaitTimeoutMillis / NODE_POLL_INTERVAL_MS).toInt()
+    private fun awaitTargetNode(action: Action): AccessibilityNodeInfo? {
+        val start = System.currentTimeMillis()
+
+        // Fast path first: the target may already be on screen and stable (e.g. a static
+        // screen, or one with harmless background chatter that never truly goes quiet) — do
+        // not force every step to pay a settle wait before even attempting to find it.
+        findTargetNode(action)?.let {
+            AutomationTrace.waits.add(AutomationTrace.WaitTrace(action.describeTarget(), System.currentTimeMillis() - start, true))
+            return it
+        }
+
+        // Only now give a genuinely transitioning screen (e.g. a navigation animation) a
+        // moment to settle before polling. Capped well below the full timeout so a screen
+        // with continuous background events (a live ticker, a typing indicator) can't burn
+        // the whole budget here and starve the polling loop below.
+        waitForScreenToSettle(minOf(nodeWaitTimeoutMillis, SETTLE_WAIT_CAP_MS))
+
+        findTargetNode(action)?.let {
+            AutomationTrace.waits.add(AutomationTrace.WaitTrace(action.describeTarget(), System.currentTimeMillis() - start, true))
+            return it
+        }
+
+        val elapsed = System.currentTimeMillis() - start
+        val remaining = nodeWaitTimeoutMillis - elapsed
+        if (remaining <= 0) {
+            AutomationTrace.waits.add(AutomationTrace.WaitTrace(action.describeTarget(), System.currentTimeMillis() - start, false))
+            return null
+        }
+
+        val retries = ((remaining + NODE_POLL_INTERVAL_MS - 1) / NODE_POLL_INTERVAL_MS).toInt()
         repeat(retries) {
             try {
                 Thread.sleep(NODE_POLL_INTERVAL_MS)
             } catch (_: InterruptedException) {
                 Thread.currentThread().interrupt()
+                AutomationTrace.waits.add(AutomationTrace.WaitTrace(action.describeTarget(), System.currentTimeMillis() - start, false))
                 return null
             }
-            findTargetNode(action)?.let { return it }
+            findTargetNode(action)?.let { 
+                AutomationTrace.waits.add(AutomationTrace.WaitTrace(action.describeTarget(), System.currentTimeMillis() - start, true))
+                return it 
+            }
         }
+        AutomationTrace.waits.add(AutomationTrace.WaitTrace(action.describeTarget(), System.currentTimeMillis() - start, false))
         return null
     }
 
@@ -380,18 +472,17 @@ open class AutomationAccessibilityService : AccessibilityService() {
     fun findTargetNode(action: Action): AccessibilityNodeInfo? {
         val root = getRootNode() ?: return null
 
+        val candidates = mutableSetOf<AccessibilityNodeInfo>()
+
         // 1. Search by View ID
         action.targetNodeId?.takeIf { it.isNotEmpty() }?.let { viewId ->
             val nodes = root.findAccessibilityNodeInfosByViewId(viewId)
             if (!nodes.isNullOrEmpty()) {
-                return nodes[0]
+                candidates.addAll(nodes)
             }
         }
 
         // 2. Search by Text
-        // The recorder stores several selectors per step because the one that fires a click is
-        // often an unlabelled container. Trying them in order of specificity is what makes a
-        // replayed step survive a UI that renders slightly differently than when it was recorded.
         val searchTerms = listOfNotNull(
             action.targetText,
             action.targetContentDescription,
@@ -402,29 +493,94 @@ open class AutomationAccessibilityService : AccessibilityService() {
         for (term in searchTerms) {
             val nodes = root.findAccessibilityNodeInfosByText(term)
             if (!nodes.isNullOrEmpty()) {
-                return nodes[0]
+                candidates.addAll(nodes)
             }
         }
 
         // 3. Fallback: Robust Recursive Traversal
         for (term in searchTerms) {
-            val traversedNode = findNodeByTraversal(root, term)
-            if (traversedNode != null) {
-                return traversedNode
-            }
+            findAllNodesByTraversal(root, term, candidates)
         }
 
-        return null
+        if (candidates.isEmpty()) {
+            AutomationTrace.matches.add(AutomationTrace.MatchTrace(action.describeTarget(), emptyList(), -1, null))
+            return null
+        }
+
+        val candidateInfos = mutableListOf<AutomationTrace.CandidateInfo>()
+        
+        val scoredCandidates = candidates.map { node ->
+            val score = scoreNode(node, action)
+            val rect = android.graphics.Rect()
+            node.getBoundsInScreen(rect)
+            candidateInfos.add(AutomationTrace.CandidateInfo(
+                viewId = node.viewIdResourceName,
+                text = node.text?.toString() ?: node.contentDescription?.toString(),
+                className = node.className?.toString(),
+                bounds = rect,
+                score = score
+            ))
+            node to score
+        }.sortedByDescending { it.second }
+
+        val bestMatch = scoredCandidates.first().first
+        val bestScore = scoredCandidates.first().second
+        
+        // Find index of bestMatch in candidateInfos by matching identity or just using the sorted order
+        // Actually, candidateInfos is in original order, but the trace should reflect the sorted or just which one was picked
+        val pickedIndex = candidateInfos.indexOfFirst { it.score == bestScore } 
+        
+        AutomationTrace.matches.add(AutomationTrace.MatchTrace(action.describeTarget(), candidateInfos.toList(), pickedIndex, bestScore))
+        return bestMatch
     }
 
-    internal fun findNodeByTraversal(
+    private fun scoreNode(node: AccessibilityNodeInfo, action: Action): Int {
+        var score = 0
+        
+        // 1. Class name match is a strong signal
+        if (!action.targetClassName.isNullOrEmpty() && node.className?.toString() == action.targetClassName) {
+            score += 100
+        }
+
+        // 2. View ID exact match
+        if (!action.targetNodeId.isNullOrEmpty() && node.viewIdResourceName == action.targetNodeId) {
+            score += 50
+        }
+
+        // 3. Text exact match (vs substring)
+        val termMatchesExact = listOfNotNull(action.targetText, action.targetContentDescription, action.target).any { term ->
+            node.text?.toString() == term || node.contentDescription?.toString() == term
+        }
+        if (termMatchesExact) {
+            score += 50
+        }
+
+        // 4. Proximity to screenX/screenY (tiebreaker)
+        if (action.screenX != null && action.screenY != null) {
+            val rect = android.graphics.Rect()
+            node.getBoundsInScreen(rect)
+            val centerX = rect.centerX()
+            val centerY = rect.centerY()
+            val dx = centerX - action.screenX
+            val dy = centerY - action.screenY
+            val distanceSq = dx * dx + dy * dy
+            val dist = Math.sqrt(distanceSq.toDouble()).toInt()
+            val proximityScore = Math.max(0, 40 - (dist / 50))
+            score += proximityScore
+        }
+
+        return score
+    }
+
+    internal fun findAllNodesByTraversal(
         node: AccessibilityNodeInfo,
         searchTerm: String,
+        outNodes: MutableCollection<AccessibilityNodeInfo>,
         depth: Int = 0,
         maxDepth: Int = 20
-    ): AccessibilityNodeInfo? {
+    ) {
         if (depth > maxDepth) {
-            return null
+            return
         }
 
         val termLower = searchTerm.lowercase()
@@ -434,18 +590,13 @@ open class AutomationAccessibilityService : AccessibilityService() {
         val descMatch = node.contentDescription?.toString()?.lowercase()?.contains(termLower) == true
 
         if (viewIdMatch || textMatch || descMatch) {
-            return node
+            outNodes.add(node)
         }
 
         for (i in 0 until node.childCount) {
             val child = node.getChild(i) ?: continue
-            val result = findNodeByTraversal(child, searchTerm, depth + 1, maxDepth)
-            if (result != null) {
-                return result
-            }
+            findAllNodesByTraversal(child, searchTerm, outNodes, depth + 1, maxDepth)
         }
-
-        return null
     }
 
     internal fun findEditableNode(
