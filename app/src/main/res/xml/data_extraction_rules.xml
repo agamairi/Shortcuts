@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<data-extraction-rules>
+    <cloud-backup>
+        <exclude domain="database" path="automation_database" />
+        <exclude domain="database" path="automation_database-wal" />
+        <exclude domain="database" path="automation_database-shm" />
+        <exclude domain="sharedpref" path="recorder_session.xml" />
+        <exclude domain="sharedpref" path="http_secrets.xml" />
+        <exclude domain="file" path="functiongemma.litertlm" />
+    </cloud-backup>
+    <device-transfer>
+        <exclude domain="database" path="automation_database" />
+        <exclude domain="database" path="automation_database-wal" />
+        <exclude domain="database" path="automation_database-shm" />
+        <exclude domain="sharedpref" path="recorder_session.xml" />
+        <exclude domain="sharedpref" path="http_secrets.xml" />
+        <exclude domain="file" path="functiongemma.litertlm" />
+    </device-transfer>
+</data-extraction-rules>

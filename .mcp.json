@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "agy-connector": {
+      "command": "node",
+      "args": ["mcp/agy-connector/server.mjs"]
+    }
+  }
+}

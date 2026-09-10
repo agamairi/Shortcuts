@@ -1,0 +1,133 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700&display=swap">
+  <style>
+    body { margin: 0; font-family: 'Schibsted Grotesk', system-ui, sans-serif; }
+    a { color: #1A73E8; } a:hover { color: #1557b0; }
+  </style>
+</helmet>
+<div style="width: 400px; height: 860px; background: #FAF8F5; display: flex; flex-direction: column; overflow: hidden;">
+
+  <div style="display: flex; align-items: center; justify-content: space-between; padding: 20px 20px 12px 20px;">
+    <div style="display: flex; flex-direction: column; gap: 2px;">
+      <div style="font-size: 28px; font-weight: 700; color: #16130F; letter-spacing: -0.5px;">Shortcuts</div>
+      <div style="font-size: 13px; color: #7A736B;">6 shortcuts &middot; 3 on homescreen</div>
+    </div>
+    <div style="display: flex; gap: 4px;">
+      <div style="width: 44px; height: 44px; border-radius: 22px; display: flex; align-items: center; justify-content: center;">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#16130F" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1"></rect><rect x="14" y="3" width="7" height="7" rx="1"></rect><rect x="3" y="14" width="7" height="7" rx="1"></rect><rect x="14" y="14" width="7" height="7" rx="1"></rect></svg>
+      </div>
+      <div style="width: 44px; height: 44px; border-radius: 22px; display: flex; align-items: center; justify-content: center;">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#16130F" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6h.09A1.65 1.65 0 0 0 10.6 3.09V3a2 2 0 1 1 4 0v.09A1.65 1.65 0 0 0 16.11 4.6a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+      </div>
+    </div>
+  </div>
+
+  <div style="display: flex; gap: 8px; padding: 4px 20px 16px 20px;">
+    <div style="padding: 8px 14px; border-radius: 18px; background: #16130F; color: #FAF8F5; font-size: 13px; font-weight: 600;">All</div>
+    <div style="padding: 8px 14px; border-radius: 18px; background: #FFFFFF; color: #4A443D; font-size: 13px; font-weight: 500; border: 1px solid #E8E2DA;">On homescreen</div>
+    <div style="padding: 8px 14px; border-radius: 18px; background: #FFFFFF; color: #4A443D; font-size: 13px; font-weight: 500; border: 1px solid #E8E2DA;">Recent</div>
+  </div>
+
+  <div style="flex-grow: 1; overflow: hidden; padding: 0 20px;">
+    <div style="display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px;">
+
+      <div style="background: #F57C00; border-radius: 24px; padding: 16px; height: 132px; display: flex; flex-direction: column; justify-content: space-between; box-shadow: 0 1px 2px rgba(22,19,15,0.06);">
+        <div style="display: flex; align-items: flex-start; justify-content: space-between;">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="5"></circle><path d="M12 1v2M12 21v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M1 12h2M21 12h2M4.2 19.8l1.4-1.4M18.4 5.6l1.4-1.4"></path></svg>
+          <div style="width: 22px; height: 22px; border-radius: 11px; background: rgba(255,255,255,0.28); display: flex; align-items: center; justify-content: center;">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"></path></svg>
+          </div>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 3px;">
+          <div style="font-size: 17px; font-weight: 700; color: #FFFFFF;">Wake up</div>
+          <div style="font-size: 12px; color: rgba(255,255,255,0.85);">3 steps</div>
+        </div>
+      </div>
+
+      <div style="background: #00897B; border-radius: 24px; padding: 16px; height: 132px; display: flex; flex-direction: column; justify-content: space-between; box-shadow: 0 1px 2px rgba(22,19,15,0.06);">
+        <div style="display: flex; align-items: flex-start; justify-content: space-between;">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round"><path d="M12 2v20M2 12h20" opacity="0"></path><path d="M18 8a6 6 0 0 1 0 8M6 16a6 6 0 0 1 0-8"></path><circle cx="12" cy="12" r="3"></circle></svg>
+          <div style="width: 22px; height: 22px; border-radius: 11px; background: rgba(255,255,255,0.28); display: flex; align-items: center; justify-content: center;">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"></path></svg>
+          </div>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 3px;">
+          <div style="font-size: 17px; font-weight: 700; color: #FFFFFF;">Commute</div>
+          <div style="font-size: 12px; color: rgba(255,255,255,0.85);">2 steps</div>
+        </div>
+      </div>
+
+      <div style="background: #9C27B0; border-radius: 24px; padding: 16px; height: 132px; display: flex; flex-direction: column; justify-content: space-between; box-shadow: 0 1px 2px rgba(22,19,15,0.06);">
+        <div style="display: flex; align-items: flex-start; justify-content: space-between;">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round"><path d="M18.6 5.4a9 9 0 1 1-12.7 0"></path><path d="M12 2v8"></path></svg>
+          <div style="width: 22px; height: 22px; border-radius: 11px; background: rgba(255,255,255,0.28); display: flex; align-items: center; justify-content: center;">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"></path></svg>
+          </div>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 3px;">
+          <div style="font-size: 17px; font-weight: 700; color: #FFFFFF;">Wind down</div>
+          <div style="font-size: 12px; color: rgba(255,255,255,0.85);">2 steps</div>
+        </div>
+      </div>
+
+      <div style="background: #1A73E8; border-radius: 24px; padding: 16px; height: 132px; display: flex; flex-direction: column; justify-content: space-between; box-shadow: 0 1px 2px rgba(22,19,15,0.06);">
+        <div style="display: flex; align-items: flex-start; justify-content: space-between;">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round"><path d="M5 12.55a11 11 0 0 1 14 0M8.5 16.1a6 6 0 0 1 7 0"></path><circle cx="12" cy="20" r="1"></circle></svg>
+          <div style="width: 22px; height: 22px; border-radius: 11px; background: rgba(255,255,255,0.28); display: flex; align-items: center; justify-content: center;">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"></path></svg>
+          </div>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 3px;">
+          <div style="font-size: 17px; font-weight: 700; color: #FFFFFF;">Guest Wi-Fi</div>
+          <div style="font-size: 12px; color: rgba(255,255,255,0.85);">1 step</div>
+        </div>
+      </div>
+
+      <div style="background: #D32F2F; border-radius: 24px; padding: 16px; height: 132px; display: flex; flex-direction: column; justify-content: space-between; box-shadow: 0 1px 2px rgba(22,19,15,0.06);">
+        <div style="display: flex; align-items: flex-start; justify-content: space-between;">
+          <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="2" stroke-linecap="round"><path d="M13 2 3 14h9l-1 8 10-12h-9z"></path></svg>
+          <div style="width: 22px; height: 22px; border-radius: 11px; background: rgba(255,255,255,0.28); display: flex; align-items: center; justify-content: center;">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round"><path d="M4 6h16M4 12h16M4 18h16"></path></svg>
+          </div>
+        </div>
+        <div style="display: flex; flex-direction: column; gap: 3px;">
+          <div style="font-size: 17px; font-weight: 700; color: #FFFFFF;">Torch</div>
+          <div style="font-size: 12px; color: rgba(255,255,255,0.85);">1 step</div>
+        </div>
+      </div>
+
+      <div style="background: #FFFFFF; border: 1.5px dashed #D6CEC3; border-radius: 24px; padding: 16px; height: 132px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;">
+        <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#7A736B" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg>
+        <div style="font-size: 14px; font-weight: 600; color: #7A736B;">New shortcut</div>
+      </div>
+
+    </div>
+  </div>
+
+  <div style="display: flex; gap: 10px; padding: 16px 20px 24px 20px;">
+    <div style="flex-grow: 1; height: 52px; border-radius: 26px; background: #16130F; display: flex; align-items: center; justify-content: center; gap: 8px;">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#FAF8F5" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"></path></svg>
+      <div style="font-size: 15px; font-weight: 600; color: #FAF8F5;">Describe a shortcut</div>
+    </div>
+    <div style="width: 52px; height: 52px; border-radius: 26px; background: #FFFFFF; border: 1px solid #E8E2DA; display: flex; align-items: center; justify-content: center;">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#16130F" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"></path></svg>
+    </div>
+  </div>
+
+</div>
+</x-dc>
+<script data-dc-script data-props='{}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>

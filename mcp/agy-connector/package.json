@@ -1,0 +1,11 @@
+{
+  "name": "agy-connector",
+  "version": "0.2.1",
+  "private": true,
+  "type": "module",
+  "description": "MCP connector exposing the Antigravity (agy) CLI as a background executor/research agent.",
+  "main": "server.mjs",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  }
+}

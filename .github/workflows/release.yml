@@ -1,0 +1,74 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+# REQUIRED GITHUB SECRETS FOR THIS WORKFLOW:
+# - RELEASE_KEYSTORE_BASE64: The base64-encoded release keystore file.
+# - RELEASE_STORE_PASSWORD: The password for the release keystore.
+# - RELEASE_KEY_ALIAS: The key alias for the release keystore.
+# - RELEASE_KEY_PASSWORD: The password for the specific release key.
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Cache Gradle
+        uses: actions/cache@v3
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: ${{ runner.os }}-gradle-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            ${{ runner.os }}-gradle-
+
+      - name: Setup Gradle permissions
+        run: chmod +x gradlew
+
+      - name: Run Lint
+        run: ./gradlew lintRelease
+
+      - name: Run Unit Tests
+        run: ./gradlew testReleaseUnitTest
+
+      - name: Decode Keystore
+        run: |
+          echo "${{ secrets.RELEASE_KEYSTORE_BASE64 }}" | base64 --decode > /tmp/release.keystore
+
+      - name: Build Release Bundle and APK
+        env:
+          ORG_GRADLE_PROJECT_RELEASE_STORE_FILE: /tmp/release.keystore
+          ORG_GRADLE_PROJECT_RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          ORG_GRADLE_PROJECT_RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          ORG_GRADLE_PROJECT_RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          ./gradlew bundleRelease assembleRelease
+
+      - name: Rename Artifacts for Release
+        run: |
+          cp app/build/outputs/bundle/release/app-release.aab Shortcuts-${{ github.ref_name }}.aab
+          cp app/build/outputs/apk/release/app-release.apk Shortcuts-${{ github.ref_name }}.apk
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            Shortcuts-${{ github.ref_name }}.aab
+            Shortcuts-${{ github.ref_name }}.apk
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

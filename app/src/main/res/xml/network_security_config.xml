@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Cleartext is disabled app-wide. The executor also requires an explicit action-level opt-in
+     before attempting HTTP, so an accidental http:// URL cannot silently transmit data. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>
