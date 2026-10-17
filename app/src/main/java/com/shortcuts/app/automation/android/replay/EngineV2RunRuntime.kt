@@ -243,11 +243,9 @@ class EngineV2RunRuntime(
         )
 
         val sink = InMemoryTraceSink()
-        cancellation.enterExecution()
         val replayResult = try {
             engine.run(workflow, sink)
         } finally {
-            cancellation.leaveExecution()
             writeDebugTraceIfEnabled(sink)
         }
 

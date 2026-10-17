@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- **Replay now keeps each screen snapshot's element IDs in their proper snapshot.** If a list or screen changes just before an action, RepeatKit re-finds the selected control and refuses stale dispatches instead of tapping whichever row inherited an old ID.
+- **Replay never taps a control twice after an uncertain result.** Once Android accepts a tap, a failed verification now stops that step rather than retrying it as a gesture; only a proven pre-delivery movement rejection can be retried.
+- **Stopping a shortcut now cancels that shortcut's own coroutine.** Stop no longer interrupts an unrelated worker that happens to reuse a pooled thread.
+
 ### Changed
 - **Shortcut safety and preflight for Engine v2.** `ShortcutRunner` and `ShortcutRunSafety` now inspect version 2 workflows via `WorkflowCodec`. Screen steps requiring accessibility are verified prior to admission, and irreversible screen steps properly request user confirmation.
 - **Recording now catches every tap.** While recording, RepeatKit briefly holds each touch, notes exactly what you tapped, and passes it on to the app — so taps in apps built with Compose, Flutter or web views are no longer silently lost. Scrolling lists move once you lift your finger.

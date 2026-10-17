@@ -238,12 +238,13 @@ class DefaultReplayEngine(
         // Target Locating with event-driven retry until step deadline
         val target = locateTarget(step, window, stepDeadline, sink)
         target.failure?.let { return it }
-        val node = target.node ?: return failure(ReplayFailureCode.TARGET_LOW_CONFIDENCE, step.id, "No accepted target")
-        var currentWindow = freshSelectedWindow(step.expectedWindow) ?: window
-        var beforeFingerprint = fingerprint(currentWindow)
-        var beforeNode = currentWindow.node(node.nodeId) ?: node
+        target.node ?: return failure(ReplayFailureCode.TARGET_LOW_CONFIDENCE, step.id, "No accepted target")
+        var actionTarget = freshActionTarget(step, sink)
+            ?: return failure(ReplayFailureCode.TARGET_LOW_CONFIDENCE, step.id, "Target changed before dispatch")
+        var currentWindow = actionTarget.window
+        var beforeNode = actionTarget.node
 
-        var first = act(step, currentWindow, beforeNode, sink, forceGesture = false)
+        var first = act(step, currentWindow, beforeNode, sink)
 
         val maxMovementRetries = 2
         var movementRetries = 0
@@ -261,43 +262,22 @@ class DefaultReplayEngine(
             val settle = waitForContainerSettle(
                 step = step,
                 initialWindow = currentWindow,
-                containerNodeId = findScrollContainer(step, currentWindow, sink)?.nodeId,
                 deadline = stepDeadline,
                 sink = sink
             )
             if (settle.failure != null) return settle.failure
-            currentWindow = settle.window ?: freshSelectedWindow(step.expectedWindow) ?: currentWindow
-
-            val relocated = if (step.element != null) {
-                locate(step, currentWindow, sink)
-            } else {
-                LocatedTarget(currentWindow.node(currentWindow.rootId), null)
-            }
-            if (relocated.failure != null || relocated.node == null) {
-                return relocated.failure ?: failure(ReplayFailureCode.TARGET_LOW_CONFIDENCE, step.id, "No accepted target on retry")
-            }
-            beforeNode = relocated.node
-            beforeFingerprint = fingerprint(currentWindow)
-            first = act(step, currentWindow, beforeNode, sink, forceGesture = false)
+            actionTarget = freshActionTarget(step, sink)
+                ?: return failure(ReplayFailureCode.TARGET_LOW_CONFIDENCE, step.id, "No accepted target on retry")
+            currentWindow = actionTarget.window
+            beforeNode = actionTarget.node
+            first = act(step, currentWindow, beforeNode, sink)
         }
 
         first.failure?.let { return it }
         transition(sink, step.id, ReplayState.VERIFYING)
-        var verification = verify(step, beforeNode, beforeFingerprint, sink)
-        if (verification == null) return null
-
-        if (step.operation == UiOperation.TAP && step.safety == StepSafety.REVERSIBLE && first.usedSemantic &&
-            retryIsSafe(step, beforeNode, beforeFingerprint, currentWindow)
-        ) {
-            transition(sink, step.id, ReplayState.ACTING)
-            val retryWindow = freshSelectedWindow(step.expectedWindow) ?: currentWindow
-            val retryNode = retryWindow.node(beforeNode.nodeId) ?: return verification
-            val retry = act(step, retryWindow, retryNode, sink, forceGesture = true)
-            retry.failure?.let { return it }
-            transition(sink, step.id, ReplayState.VERIFYING)
-            verification = verify(step, beforeNode, beforeFingerprint, sink)
-        }
-        return verification
+        // Accepted dispatches are never replayed after verification fails. A failed postcondition
+        // is evidence we cannot safely infer whether the original action took effect.
+        return verify(step, beforeNode, sink)
     }
 
     private suspend fun waitForSoftFingerprint(
@@ -386,6 +366,17 @@ class DefaultReplayEngine(
         return decision.asLocated(step.id)
     }
 
+    /** Re-select and re-match from the newest snapshot immediately before every target action. */
+    private fun freshActionTarget(step: UiStep, sink: TraceSink): ActionTarget? {
+        val currentWindow = freshSelectedWindow(step.expectedWindow) ?: return null
+        val node = if (step.element != null) {
+            locate(step, currentWindow, sink).node
+        } else {
+            currentWindow.node(currentWindow.rootId)
+        } ?: return null
+        return ActionTarget(currentWindow, node)
+    }
+
     private suspend fun scrollToFind(step: UiStep, initialWindow: WindowSnapshot, sink: TraceSink): LocatedTarget {
         val targetSelector = step.element ?: return LocatedTarget(null, failure(ReplayFailureCode.SCROLL_CONTAINER_NOT_FOUND, step.id, "No target selector"))
         val reveal = step.reveal ?: RevealPolicy(RevealDirection.FORWARD, timeouts.scrollMaxAttempts, 2)
@@ -420,7 +411,7 @@ class DefaultReplayEngine(
             if (dispatch is DispatchResult.Rejected) return LocatedTarget(null,
                 failure(ReplayFailureCode.DISPATCH_REJECTED, step.id, dispatch.reason))
 
-            val settle = waitForContainerSettle(step, window, container.nodeId, deadline, sink)
+            val settle = waitForContainerSettle(step, window, deadline, sink)
             if (settle.failure != null) return LocatedTarget(null, settle.failure)
             window = settle.window ?: freshSelectedWindow(step.expectedWindow) ?: window
 
@@ -531,7 +522,6 @@ class DefaultReplayEngine(
     )
 
     private data class NodeContentSignature(
-        val nodeId: Int,
         val text: String?,
         val contentDescription: String?,
         val resourceId: String?,
@@ -547,7 +537,6 @@ class DefaultReplayEngine(
             .filter { it.visibleToUser }
             .map {
                 NodeContentSignature(
-                    nodeId = it.nodeId,
                     text = it.text?.trim(),
                     contentDescription = it.contentDescription?.trim(),
                     resourceId = it.resourceId,
@@ -564,15 +553,12 @@ class DefaultReplayEngine(
     private suspend fun waitForContainerSettle(
         step: UiStep,
         initialWindow: WindowSnapshot,
-        containerNodeId: Int?,
         deadline: Long,
         sink: TraceSink
     ): SettleResult {
         val settleDeadline = minOf(deadline, clock() + timeouts.scrollSettleCapMs)
         var currentWindow = freshSelectedWindow(step.expectedWindow) ?: initialWindow
-        var resolvedContainerId = containerNodeId
-        var container = resolvedContainerId?.let { currentWindow.node(it) }
-            ?: findScrollContainer(step, currentWindow, sink)?.also { resolvedContainerId = it.nodeId }
+        var container = findScrollContainer(step, currentWindow, sink)
             ?: currentWindow.node(currentWindow.rootId)
 
         var stableSignature = container?.let { containerContentSignature(currentWindow, it) }
@@ -594,8 +580,7 @@ class DefaultReplayEngine(
             val nextWindow = freshSelectedWindow(step.expectedWindow)
             if (nextWindow != null) {
                 currentWindow = nextWindow
-                val nextContainer = resolvedContainerId?.let { currentWindow.node(it) }
-                    ?: findScrollContainer(step, currentWindow, sink)?.also { resolvedContainerId = it.nodeId }
+                val nextContainer = findScrollContainer(step, currentWindow, sink)
                     ?: currentWindow.node(currentWindow.rootId)
                 val observed = nextContainer?.let { containerContentSignature(currentWindow, it) }
                 if (observed != null) {
@@ -630,81 +615,82 @@ class DefaultReplayEngine(
         step: UiStep,
         window: WindowSnapshot,
         node: NodeSnapshot,
-        sink: TraceSink,
-        forceGesture: Boolean
+        sink: TraceSink
     ): ActionAttempt {
         transition(sink, step.id, ReplayState.ACTING)
-        if (cancelled()) return ActionAttempt(false, cancelledFailure(step.id))
+        if (cancelled()) return ActionAttempt(cancelledFailure(step.id))
         return when (val operation = step.operation) {
-            UiOperation.TAP -> clickAttempt(step, window, node, NodeAction.CLICK, forceGesture, sink)
-            UiOperation.LONG_PRESS -> clickAttempt(step, window, node, NodeAction.LONG_CLICK, forceGesture, sink)
+            UiOperation.TAP -> clickAttempt(step, window, node, NodeAction.CLICK, sink)
+            UiOperation.LONG_PRESS -> clickAttempt(step, window, node, NodeAction.LONG_CLICK, sink)
             UiOperation.SWIPE -> gestureAttempt(step, window, node, step.gesture, sink)
             is UiOperation.SET_TEXT -> setTextAttempt(step, window, node, operation.text, sink)
             is UiOperation.IME_ACTION -> imeAttempt(step, window, node, operation.kind, sink)
             is UiOperation.GLOBAL_ACTION -> {
                 val result = dispatch(step, UiActionRequest(operation, null, null, globalAction = operation.kind,
                     dispatchMethod = DispatchMethod.GLOBAL_ACTION), sink)
-                ActionAttempt(false, result.toFailure(step.id))
+                ActionAttempt(result.toFailure(step.id))
             }
         }
     }
 
     private suspend fun clickAttempt(step: UiStep, window: WindowSnapshot, node: NodeSnapshot, action: NodeAction,
-        forceGesture: Boolean, sink: TraceSink): ActionAttempt {
-        if (!forceGesture && action in node.actions) {
+        sink: TraceSink): ActionAttempt {
+        if (action in node.actions) {
             val result = dispatch(step, UiActionRequest(step.operation, window.windowId, node.nodeId,
                 semanticAction = action, dispatchMethod = DispatchMethod.SEMANTIC_ACTION), sink)
-            if (result is DispatchResult.Accepted) return ActionAttempt(true, null)
-            if (result is DispatchResult.Rejected && isMovementRejection(result.reason)) {
-                return ActionAttempt(true, result.toFailure(step.id))
-            }
+            return ActionAttempt(result.toFailure(step.id))
         }
         return gestureAttempt(step, window, node, step.gesture, sink)
     }
 
     private suspend fun gestureAttempt(step: UiStep, window: WindowSnapshot, node: NodeSnapshot,
         recorded: CapturedGesture?, sink: TraceSink): ActionAttempt {
+        // A gesture is just as dangerous as a semantic action: obtain a new snapshot and match
+        // the selector again instead of carrying a snapshot-local node ID across this boundary.
         val fresh = environment.snapshotWindows()
-        val currentWindow = fresh.window(window.windowId) ?: return ActionAttempt(false,
-            failure(ReplayFailureCode.DISPATCH_REJECTED, step.id, "Selected window disappeared before gesture"))
-        val currentNode = currentWindow.node(node.nodeId) ?: return ActionAttempt(false,
-            failure(ReplayFailureCode.DISPATCH_REJECTED, step.id, "Target disappeared before gesture"))
+        val currentWindow = selectedWindow(fresh, step.expectedWindow)
+            ?: return ActionAttempt(failure(ReplayFailureCode.DISPATCH_REJECTED, step.id, "Selected window disappeared before gesture"))
+        val currentNode = (if (step.element != null) locate(step, currentWindow, sink).node else currentWindow.node(currentWindow.rootId))
+            ?: return ActionAttempt(failure(ReplayFailureCode.DISPATCH_REJECTED, step.id, "Target changed before gesture"))
         val points = gesturePoints(step, currentWindow, currentNode, recorded)
-        val point = points.firstOrNull() ?: return ActionAttempt(false, failure(ReplayFailureCode.DISPATCH_REJECTED, step.id, "Gesture has no point"))
+        val point = points.firstOrNull() ?: return ActionAttempt(failure(ReplayFailureCode.DISPATCH_REJECTED, step.id, "Gesture has no point"))
         val hit = fresh.hitTest(point.x, point.y)
         val descendants = currentWindow.descendants(currentNode).map { it.nodeId }.toSet()
         if (hit == null || hit.window.windowId != currentWindow.windowId ||
             (hit.leaf.nodeId != currentNode.nodeId && hit.leaf.nodeId !in descendants)
-        ) return ActionAttempt(false, failure(ReplayFailureCode.DISPATCH_REJECTED, step.id, "Gesture point no longer hits the recorded target"))
+        ) {
+            return ActionAttempt(failure(ReplayFailureCode.DISPATCH_REJECTED, step.id, "Gesture point no longer hits the recorded target"))
+        }
         val result = dispatch(step, UiActionRequest(step.operation, currentWindow.windowId, currentNode.nodeId,
             gesture = recorded ?: tapGesture(points), gesturePoints = points, dispatchMethod = DispatchMethod.GESTURE), sink)
-        return ActionAttempt(false, result.toFailure(step.id))
+        return ActionAttempt(result.toFailure(step.id))
     }
 
     private suspend fun setTextAttempt(step: UiStep, window: WindowSnapshot, node: NodeSnapshot, text: String,
         sink: TraceSink): ActionAttempt {
-        if (!node.editable) return ActionAttempt(false, failure(ReplayFailureCode.DISPATCH_REJECTED, step.id, "Target is not editable"))
+        if (!node.editable) return ActionAttempt(failure(ReplayFailureCode.DISPATCH_REJECTED, step.id, "Target is not editable"))
         val focus = dispatch(step, UiActionRequest(step.operation, window.windowId, node.nodeId,
             semanticAction = NodeAction.FOCUS, dispatchMethod = DispatchMethod.SEMANTIC_ACTION), sink)
-        if (focus is DispatchResult.Rejected) return ActionAttempt(false, focus.toFailure(step.id))
-        val focused = environment.snapshotWindows().window(window.windowId)?.node(node.nodeId)?.focused == true
-        if (!focused) return ActionAttempt(false, failure(ReplayFailureCode.DISPATCH_REJECTED, step.id, "Text target did not gain focus"))
-        val set = dispatch(step, UiActionRequest(step.operation, window.windowId, node.nodeId, text = text,
+        if (focus is DispatchResult.Rejected) return ActionAttempt(focus.toFailure(step.id))
+        val focusedTarget = freshActionTarget(step, sink)
+            ?: return ActionAttempt(failure(ReplayFailureCode.DISPATCH_REJECTED, step.id, "Text target changed after focus"))
+        if (!focusedTarget.node.focused) return ActionAttempt(failure(ReplayFailureCode.DISPATCH_REJECTED, step.id, "Text target did not gain focus"))
+        val set = dispatch(step, UiActionRequest(step.operation, focusedTarget.window.windowId, focusedTarget.node.nodeId, text = text,
             semanticAction = NodeAction.SET_TEXT, dispatchMethod = DispatchMethod.SEMANTIC_ACTION), sink)
-        return ActionAttempt(true, set.toFailure(step.id))
+        return ActionAttempt(set.toFailure(step.id))
     }
 
     private suspend fun imeAttempt(step: UiStep, window: WindowSnapshot, node: NodeSnapshot, kind: ImeActionKind,
         sink: TraceSink): ActionAttempt {
-        val current = environment.snapshotWindows().window(window.windowId)?.node(node.nodeId)
-        if (current == null || !current.editable || !current.focused) return ActionAttempt(false,
+        val current = freshActionTarget(step, sink)
+        if (current == null || !current.node.editable || !current.node.focused) return ActionAttempt(
             failure(ReplayFailureCode.DISPATCH_REJECTED, step.id, "IME action requires the exact editable field to be focused"))
-        val result = dispatch(step, UiActionRequest(step.operation, window.windowId, node.nodeId, imeAction = kind,
+        val result = dispatch(step, UiActionRequest(step.operation, current.window.windowId, current.node.nodeId, imeAction = kind,
             semanticAction = NodeAction.IME_ENTER, dispatchMethod = DispatchMethod.SEMANTIC_ACTION), sink)
-        return ActionAttempt(true, result.toFailure(step.id))
+        return ActionAttempt(result.toFailure(step.id))
     }
 
-    private suspend fun verify(step: UiStep, beforeNode: NodeSnapshot, beforeFingerprint: ScreenFingerprint,
+    private suspend fun verify(step: UiStep, beforeNode: NodeSnapshot,
         sink: TraceSink): ReplayFailure? {
         if (step.verification.postconditions.isEmpty() && step.verification.allowBestEffort) return null
         val duration = if (step.operation is UiOperation.SET_TEXT) timeouts.textMs else timeouts.postActionMs
@@ -714,7 +700,7 @@ class DefaultReplayEngine(
             if (cancelled()) return cancelledFailure(step.id)
             val snapshot = environment.snapshotWindows()
             val passed = step.verification.postconditions.all { condition ->
-                val ok = evaluate(condition, snapshot, step.expectedWindow, beforeNode, beforeFingerprint)
+                val ok = evaluate(condition, snapshot, step.expectedWindow, step.element, beforeNode)
                 sink.append(PostconditionRecorded(clock(), step.id, condition.javaClass.simpleName, ok))
                 if (!ok) lastFailed = condition.javaClass.simpleName
                 ok
@@ -731,7 +717,7 @@ class DefaultReplayEngine(
     }
 
     private fun evaluate(condition: VerificationPostcondition, snapshot: WindowSetSnapshot, expectedWindow: WindowSelector,
-        beforeNode: NodeSnapshot, beforeFingerprint: ScreenFingerprint): Boolean = when (condition) {
+        targetSelector: ElementSelector?, beforeNode: NodeSnapshot): Boolean = when (condition) {
         is VerificationPostcondition.ExpectedScreen -> snapshot.windows.any { fingerprint(it) similarityAtLeast condition.fingerprint }
         is VerificationPostcondition.ExpectedWindow -> windowMatcher.match(snapshot, condition.selector,
             currentActivity(snapshot, condition.selector)).let { it is WindowDecision.Selected }
@@ -743,7 +729,7 @@ class DefaultReplayEngine(
             accepted == condition.shouldBePresent
         }
         is VerificationPostcondition.BooleanStateChanged -> {
-            snapshot.window(beforeNode.windowId)?.node(beforeNode.nodeId)?.let { current ->
+            rematchedTarget(snapshot, expectedWindow, targetSelector)?.let { current ->
                 val value = when (condition.state) {
                     NodeBooleanState.CHECKED -> current.checked
                     NodeBooleanState.SELECTED -> current.selected
@@ -753,7 +739,8 @@ class DefaultReplayEngine(
             } ?: false
         }
         is VerificationPostcondition.RangeValueChanged -> false // Snapshot deliberately has no range value yet.
-        is VerificationPostcondition.TextEquals -> snapshot.window(beforeNode.windowId)?.node(beforeNode.nodeId)?.text == condition.value
+        is VerificationPostcondition.TextEquals ->
+            rematchedTarget(snapshot, expectedWindow, targetSelector)?.text == condition.value
         is VerificationPostcondition.FocusMoved -> snapshot.windows.any { window ->
             val decision = selectorMatcher.match(window, condition.selector, MatchOptions(isTextTarget = true, allowGestureFallback = true))
             (decision as? MatchDecision.Accepted)?.target?.node?.focused == true
@@ -765,12 +752,15 @@ class DefaultReplayEngine(
         }
     }
 
-    private fun retryIsSafe(step: UiStep, beforeNode: NodeSnapshot, beforeFingerprint: ScreenFingerprint,
-        expectedWindow: WindowSnapshot): Boolean {
-        val current = freshSelectedWindow(step.expectedWindow) ?: expectedWindow
-        val currentNode = current.node(beforeNode.nodeId) ?: return false
-        return fingerprint(current) == beforeFingerprint && currentNode.checked == beforeNode.checked &&
-            currentNode.selected == beforeNode.selected
+    private fun rematchedTarget(
+        snapshot: WindowSetSnapshot,
+        expectedWindow: WindowSelector,
+        targetSelector: ElementSelector?
+    ): NodeSnapshot? {
+        val selector = targetSelector ?: return null
+        val window = selectedWindow(snapshot, expectedWindow) ?: return null
+        return (selectorMatcher.match(window, selector, MatchOptions(allowGestureFallback = true)) as? MatchDecision.Accepted)
+            ?.target?.node
     }
 
     private suspend fun waitForExpectedWindow(stepId: String, selector: WindowSelector, expected: ScreenFingerprint?,
@@ -844,7 +834,10 @@ class DefaultReplayEngine(
     }
 
     private suspend fun dispatch(step: UiStep, request: UiActionRequest, sink: TraceSink): DispatchResult {
-        val result = environment.perform(request)
+        val result = environment.perform(request.copy(
+            snapshotGeneration = environment.snapshotGeneration(),
+            targetSelector = request.targetSelector ?: step.element
+        ))
         when (result) {
             is DispatchResult.Accepted -> sink.append(DispatchRecorded(clock(), step.id, result.method.name, true))
             is DispatchResult.Rejected -> sink.append(DispatchRecorded(clock(), step.id, request.dispatchMethod.name, false, result.reason))
@@ -977,6 +970,7 @@ class DefaultReplayEngine(
 
     private data class SelectedWait(val window: WindowSnapshot?, val failure: ReplayFailure?)
     private data class LocatedTarget(val node: NodeSnapshot?, val failure: ReplayFailure?)
-    private data class ActionAttempt(val usedSemantic: Boolean, val failure: ReplayFailure?)
+    private data class ActionTarget(val window: WindowSnapshot, val node: NodeSnapshot)
+    private data class ActionAttempt(val failure: ReplayFailure?)
     private sealed interface AwaitSignal { data object Poll : AwaitSignal; data object Event : AwaitSignal; data object Cancelled : AwaitSignal; data object Disconnected : AwaitSignal }
 }

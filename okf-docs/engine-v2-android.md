@@ -64,10 +64,11 @@ flowchart TD
 ### 1. `AccessibilitySnapshotAdapter`
 - **Role**: Implements `WindowSnapshotSource`.
 - **Traversal**: Walks `service.windows` in descending layer order. Extracts each window root into an immutable `WindowSnapshot` and `NodeSnapshot` hierarchy.
-- **Node IDs**: Generates globally unique sequential integer IDs (1..N) across all windows in a snapshot.
+- **Node IDs**: Generates globally unique sequential integer IDs (1..N) across all windows in a snapshot. Each published snapshot also has an adapter-local generation; node IDs are valid only with that generation and are never carried into a later snapshot.
 - **Caps & Safeguards**: Bounded at 3000 nodes total and depth 60 per snapshot to eliminate memory bloat on large web views or list hierarchies.
 - **Recycling**: Calls `safeRecycle()` on every platform `AccessibilityNodeInfo` obtained during traversal on API < 33.
-- **Live Node Re-resolution**: Maintains a snapshot-scoped map `nodeId -> NodeLocator(windowId, childPath)` storing the zero-based child index path from the root. Enables `AndroidUiEnvironment` to re-resolve the live node for action dispatch without maintaining persistent node references.
+- **Live Node Re-resolution**: Maintains a generation-scoped map `nodeId -> NodeLocator(windowId, childPath)` storing the zero-based child index path from the root. `AndroidUiEnvironment` rejects an action unless its request generation is still current, then validates the re-resolved node's class, resource ID, package, and any selector text/description identity before dispatch. This prevents an inserted row from reusing an old ID to target a different control.
+- **Thread contract**: Snapshot creation may run from a background worker. Publication and generation/locator state are synchronized; callers only receive immutable values and no Android node is retained across calls. The adapter deliberately uses no main-thread-only API.
 - **Registration**: Registered in `EngineV2.snapshotSource` in `AutomationAccessibilityService.onServiceConnected` and cleared in `onDestroy`.
 
 ### 2. `AndroidUiEnvironment`
@@ -79,7 +80,7 @@ flowchart TD
   - Service `onDestroy` -> `UiEnvironmentEvent.AccessibilityDisconnected`
 - **Observed Activity**: Tracks the latest Activity className seen per package via `TYPE_WINDOW_STATE_CHANGED`, filtering out standard framework views and dialog wrappers.
 - **Action Dispatch**:
-  - `SEMANTIC_ACTION`: Re-resolves the live node via `AccessibilitySnapshotAdapter.findLiveNode(nodeId)`. Validates that the live node class equals expected class and live screen bounds intersect expected screen bounds. Executes action (`SET_TEXT` with CharSequence argument bundle, `IME_ENTER` on API 30+, directional scrolls, click, focus). Always recycles the live node in a `finally` block.
+  - `SEMANTIC_ACTION`: Re-resolves the live node via `AccessibilitySnapshotAdapter.findLiveNode(generation, nodeId)`. A stale generation is rejected before delivery. The live node must match snapshot class, resource ID, package, and selector text/content-description identity when supplied; it is then dispatched (`SET_TEXT` with CharSequence argument bundle, `IME_ENTER` on API 30+, directional scrolls, click, focus). Always recycles the live node in a `finally` block.
   - `GESTURE`: Computes a `GesturePlan` via pure `buildGesturePlan`:
     - 1 point: 50 ms tap (or 600 ms hold for `LONG_PRESS`).
     - Multiple points: path through points over recorded duration (default 300 ms).

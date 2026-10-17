@@ -26,6 +26,7 @@ import java.net.URI
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.Job
 
 /**
  * The one product-level request to run a saved shortcut.
@@ -643,36 +644,41 @@ class ShortcutRunLease internal constructor(
 )
 
 /**
- * Cooperative cancellation shared by the foreground service and executor. Cancellation interrupts
- * a cancellable delay immediately and is checked before each subsequent action.
+ * Cooperative cancellation shared by the foreground service and executor. The foreground service
+ * binds the accepted run's coroutine [Job], so Stop cancels the structured execution rather than
+ * interrupting an arbitrary pooled worker thread.
  */
 interface ExecutionCancellation {
     val isCancellationRequested: Boolean
 
     fun enterExecution()
     fun leaveExecution()
+    fun bindRunJob(job: Job) = Unit
+    fun clearRunJob(job: Job) = Unit
 }
 
-private class ActiveRunCancellation : ExecutionCancellation {
+internal class ActiveRunCancellation : ExecutionCancellation {
     private val cancelled = AtomicBoolean(false)
-    private val executingThread = AtomicReference<Thread?>(null)
+    private val runJob = AtomicReference<Job?>(null)
 
     override val isCancellationRequested: Boolean
         get() = cancelled.get()
 
     fun cancel() {
         cancelled.set(true)
-        executingThread.get()?.interrupt()
+        runJob.get()?.cancel()
     }
 
-    override fun enterExecution() {
-        val thread = Thread.currentThread()
-        executingThread.set(thread)
-        if (cancelled.get()) thread.interrupt()
+    override fun enterExecution() = Unit
+    override fun leaveExecution() = Unit
+
+    override fun bindRunJob(job: Job) {
+        runJob.set(job)
+        if (cancelled.get()) job.cancel()
     }
 
-    override fun leaveExecution() {
-        executingThread.compareAndSet(Thread.currentThread(), null)
+    override fun clearRunJob(job: Job) {
+        runJob.compareAndSet(job, null)
     }
 }
 

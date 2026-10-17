@@ -90,19 +90,15 @@ class DefaultReplayEngineTest {
         assertEquals(ReplayFailureCode.DISPATCH_REJECTED, (result as ReplayResult.Failed).failure.code)
     }
 
-    @Test fun `reversible semantic click retries once through gesture when unchanged`() = runTest {
-        var semanticCalls = 0
-        var gestureCalls = 0
+    @Test fun `accepted but unverified reversible click is never dispatched twice`() = runTest {
+        var dispatches = 0
         val env = FakeEnvironment(screen(withTarget = true)) { request ->
-            when (request.dispatchMethod) {
-                DispatchMethod.SEMANTIC_ACTION -> { semanticCalls++; DispatchResult.Accepted(DispatchMethod.SEMANTIC_ACTION) }
-                DispatchMethod.GESTURE -> { gestureCalls++; snapshot = screen(withTarget = false); DispatchResult.Accepted(DispatchMethod.GESTURE) }
-                DispatchMethod.GLOBAL_ACTION -> DispatchResult.Rejected("unexpected")
-            }
+            dispatches++
+            DispatchResult.Accepted(request.dispatchMethod)
         }
-        assertEquals(ReplayResult.Success(1), engine(env, { testScheduler.currentTime }).run(workflow(tapStep()), RecordingSink()))
-        assertEquals(1, semanticCalls)
-        assertEquals(1, gestureCalls)
+        val result = engine(env, { testScheduler.currentTime }).run(workflow(tapStep()), RecordingSink()) as ReplayResult.Failed
+        assertEquals(ReplayFailureCode.VERIFICATION_FAILED, result.failure.code)
+        assertEquals(1, dispatches)
     }
 
     @Test fun `irreversible click is never retried`() = runTest {
@@ -221,6 +217,51 @@ class DefaultReplayEngineTest {
         assertEquals(ReplayResult.Success(1), engine(env, { testScheduler.currentTime }).run(workflow(step), RecordingSink()))
     }
 
+    @Test fun `fresh dispatch re-matches a target after an inserted row changes node ids`() = runTest {
+        val initial = screen(withTarget = true)
+        val insertedRow = windowSet(window("app") {
+            node("Root") {
+                node("TextView", id = 2, resourceId = "app:id/new-row", bounds = com.shortcuts.app.automation.core.tree.r(100, 100, 900, 180))
+                node("Button", id = 3, resourceId = "app:id/target", bounds = com.shortcuts.app.automation.core.tree.r(100, 200, 900, 600),
+                    clickable = true, actions = setOf(NodeAction.CLICK))
+            }
+        })
+        val env = FakeEnvironment(initial) { request ->
+            assertEquals(3, request.nodeId)
+            snapshot = screen(withTarget = false)
+            DispatchResult.Accepted(DispatchMethod.SEMANTIC_ACTION)
+        }
+        var snapshots = 0
+        env.onSnapshot = {
+            snapshots++
+            // The first accepted locate has already happened before the final pre-dispatch snapshot.
+            if (snapshots == 4) env.snapshot = insertedRow
+        }
+
+        assertEquals(ReplayResult.Success(1), engine(env, { testScheduler.currentTime }).run(workflow(tapStep()), RecordingSink()))
+        assertTrue(env.requests.single().snapshotGeneration > 0)
+    }
+
+    @Test fun `boolean verification re-matches the target in its post-action snapshot`() = runTest {
+        val env = FakeEnvironment(toggleScreen(false)) { request ->
+            if (request.semanticAction == NodeAction.CLICK) {
+                snapshot = windowSet(window("app") {
+                    node("Root") {
+                        node("TextView", id = 2, resourceId = "app:id/inserted", bounds = com.shortcuts.app.automation.core.tree.r(0, 0, 100, 100))
+                        node("Switch", id = 3, resourceId = "app:id/target", bounds = com.shortcuts.app.automation.core.tree.r(100, 200, 900, 600),
+                            clickable = true, checkable = true, checked = true, actions = setOf(NodeAction.CLICK))
+                    }
+                })
+            }
+            DispatchResult.Accepted(DispatchMethod.SEMANTIC_ACTION)
+        }
+        val step = tapStep(
+            element = selector().copy(expectedClass = "Switch"),
+            verification = VerificationSpec(listOf(VerificationPostcondition.BooleanStateChanged(NodeBooleanState.CHECKED)))
+        )
+        assertEquals(ReplayResult.Success(1), engine(env, { testScheduler.currentTime }).run(workflow(step), RecordingSink()))
+    }
+
     @Test fun `expected window verifies a cross app tap`() = runTest {
         val browser = WindowSelector("browser", null, WindowType.APPLICATION, null, NormalizedRect(0f, 0f, 1f, 1f), 0, null)
         val env = FakeEnvironment(screen(withTarget = true)) { request ->
@@ -231,13 +272,13 @@ class DefaultReplayEngineTest {
         assertEquals(ReplayResult.Success(1), engine(env, { testScheduler.currentTime }).run(workflow(step), RecordingSink()))
     }
 
-    @Test fun `semantic rejection falls back to a gesture`() = runTest {
+    @Test fun `semantic rejection is not retried as a gesture`() = runTest {
         val env = FakeEnvironment(screen(withTarget = true)) { request ->
-            if (request.dispatchMethod == DispatchMethod.GESTURE) snapshot = screen(withTarget = false)
-            if (request.dispatchMethod == DispatchMethod.SEMANTIC_ACTION) DispatchResult.Rejected("no") else DispatchResult.Accepted(DispatchMethod.GESTURE)
+            DispatchResult.Rejected("no")
         }
-        assertEquals(ReplayResult.Success(1), engine(env, { testScheduler.currentTime }).run(workflow(tapStep()), RecordingSink()))
-        assertEquals(listOf(DispatchMethod.SEMANTIC_ACTION, DispatchMethod.GESTURE), env.requests.map { it.dispatchMethod })
+        val result = engine(env, { testScheduler.currentTime }).run(workflow(tapStep()), RecordingSink()) as ReplayResult.Failed
+        assertEquals(ReplayFailureCode.DISPATCH_REJECTED, result.failure.code)
+        assertEquals(listOf(DispatchMethod.SEMANTIC_ACTION), env.requests.map { it.dispatchMethod })
     }
 
     @Test fun `long press uses long click semantic action`() = runTest {
@@ -490,8 +531,10 @@ class DefaultReplayEngineTest {
         val requests = mutableListOf<UiActionRequest>()
         val activities = mutableMapOf<Int, String?>()
         var onSnapshot: (() -> Unit)? = null
+        private var generation = 0L
         private val eventFlow = MutableSharedFlow<UiEnvironmentEvent>(extraBufferCapacity = 8)
-        override fun snapshotWindows(): WindowSetSnapshot { onSnapshot?.invoke(); return snapshot }
+        override fun snapshotWindows(): WindowSetSnapshot { generation++; onSnapshot?.invoke(); return snapshot }
+        override fun snapshotGeneration(): Long = generation
         override fun events(): Flow<UiEnvironmentEvent> = eventFlow.asSharedFlow()
         override fun currentActivityClass(windowId: Int) = activities[windowId]
         override suspend fun perform(request: UiActionRequest): DispatchResult { requests += request; return handler(request) }
