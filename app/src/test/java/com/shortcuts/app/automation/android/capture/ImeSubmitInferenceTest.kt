@@ -157,11 +157,22 @@ class ImeSubmitInferenceTest {
     }
 
     @Test
-    fun testClearWithoutMatchingNodeIdDoesNotInferSubmit() {
+    fun testClearWithoutMatchingFieldDoesNotInferSubmit() {
         val field = createFieldNode(nodeId = 22, text = "Hello", hintText = "Message")
         val window = createWindow(nodes = mapOf(22 to field))
         inference.onTextCommit(createCapturedTextCommit(field, "Hello", window, 2_000L)!!, "com.example.app.ChatActivity")
-        assertNull(inference.onFieldCleared(fieldNodeId = null, resourceId = field.resourceId, uptimeMs = 2_100L))
+        assertNull(inference.onFieldCleared(fieldNodeId = null, resourceId = "other.field.id", uptimeMs = 2_100L))
+    }
+
+    @Test
+    fun testClearMatchingResourceIdWithoutNodeIdInfersSubmit() {
+        val field = createFieldNode(nodeId = 22, resourceId = "com.example.app:id/edit_message", text = "Hello", hintText = "Message")
+        val window = createWindow(nodes = mapOf(22 to field))
+        inference.onTextCommit(createCapturedTextCommit(field, "Hello", window, 2_000L)!!, "com.example.app.ChatActivity")
+        val result = inference.onFieldCleared(fieldNodeId = null, resourceId = field.resourceId, uptimeMs = 2_100L)
+        assertNotNull(result)
+        assertEquals(ImeActionKind.SEND, result?.action?.kind)
+        assertTrue(result?.action?.inferred == true)
     }
 
     @Test
@@ -454,5 +465,98 @@ class ImeSubmitInferenceTest {
         )
 
         assertNull(inferred)
+    }
+
+    @Test
+    fun testTrackFieldAcrossSnapshotsByResourceIdAndBoundsNeverByNodeId() {
+        val field1 = createFieldNode(
+            nodeId = 10,
+            resourceId = "com.example.app:id/search_query",
+            text = "kotlin",
+            hintText = "Search"
+        )
+        val window1 = createWindow(windowId = 1, nodes = mapOf(10 to field1))
+        val commit = createCapturedTextCommit(field1, "kotlin", window1, 1_000L)!!
+        inference.onTextCommit(commit, "com.example.app.SearchActivity")
+
+        // Snapshot 2 re-renders: node id changed from 10 to 999, but resourceId and bounds match
+        val field2 = field1.copy(nodeId = 999, text = null, focused = true)
+        val window2 = createWindow(windowId = 1, nodes = mapOf(999 to field2))
+
+        val result = inference.onFieldTextChanged(field2, "", 1_500L, window2)
+        assertNotNull(result)
+        assertEquals(ImeActionKind.SEARCH, result!!.action.kind)
+        assertTrue(result.action.inferred)
+        assertEquals(10, result.action.fieldNode.nodeId)
+    }
+
+    @Test
+    fun testCommittedTextLengthLessThanTwoDoesNotInferSend() {
+        val field = createFieldNode(
+            nodeId = 20,
+            resourceId = "com.example.app:id/edit_msg",
+            text = "a",
+            hintText = "Message"
+        )
+        val window = createWindow(windowId = 1, nodes = mapOf(20 to field))
+        val commit = createCapturedTextCommit(field, "a", window, 1_000L)!!
+        inference.onTextCommit(commit, "com.example.app.ChatActivity")
+
+        val result = inference.onFieldTextChanged(field.copy(text = null, focused = true), "", 1_200L, window)
+        assertNull("Single character clear must not infer submit", result)
+    }
+
+    @Test
+    fun testTapInsideFieldBoundsDoesNotInferSend() {
+        val field = createFieldNode(
+            nodeId = 20,
+            resourceId = "com.example.app:id/edit_msg",
+            text = "hello world",
+            hintText = "Message"
+        )
+        val window = createWindow(windowId = 1, nodes = mapOf(20 to field))
+        val commit = createCapturedTextCommit(field, "hello world", window, 1_000L)!!
+        inference.onTextCommit(commit, "com.example.app.ChatActivity")
+
+        // User taps inside the field bounds (e.g. clear "X" icon at x=450, y=140)
+        inference.onOverlayInteraction(x = 450, y = 140, uptimeMs = 1_200L)
+
+        // Then field is cleared
+        val result = inference.onFieldTextChanged(field.copy(text = null, focused = true), "", 1_400L, window)
+        assertNull("Tap inside field bounds (clear icon) must cancel submit inference", result)
+    }
+
+    @Test
+    fun testInferredFlagOnCapturedImeActionProducesCompilerWarning() {
+        val field = createFieldNode(
+            nodeId = 20,
+            resourceId = "com.example.app:id/edit_msg",
+            text = "hello world",
+            hintText = "Message"
+        )
+        val window = createWindow(windowId = 1, nodes = mapOf(20 to field))
+        val commit = createCapturedTextCommit(field, "hello world", window, 1_000L)!!
+        inference.onTextCommit(commit, "com.example.app.ChatActivity")
+
+        val inferred = inference.onFieldTextChanged(field.copy(text = null, focused = true), "", 1_400L, window)
+        assertNotNull(inferred)
+        assertTrue(inferred!!.action.inferred)
+
+        val compiler = com.shortcuts.app.automation.capture.RecordingCompiler(
+            launcherPackageNames = setOf("com.example.launcher"),
+            recorderPackageName = "com.shortcuts.app",
+            screenFingerprinter = com.shortcuts.app.automation.capture.fakeFingerprinter,
+            textTokenizer = com.shortcuts.app.automation.capture.fakeTokenizer,
+            deviceMetadata = com.shortcuts.app.automation.capture.RecordingDeviceMetadata("Google", "Pixel", 36),
+            imePackageNames = setOf("com.example.ime")
+        )
+        compiler.start(com.shortcuts.app.automation.capture.CaptureScreenContext("wf-test", snapshot(window, 1_000L)))
+        compiler.accept(commit)
+        compiler.accept(inferred.action)
+        val workflow = compiler.finish()
+        val imeStep = workflow.steps.filterIsInstance<com.shortcuts.app.automation.model.UiStep>()
+            .firstOrNull { it.operation is com.shortcuts.app.automation.model.UiOperation.IME_ACTION }
+        assertNotNull(imeStep)
+        assertTrue("Workflow step must contain INFERRED_IME_ACTION warning", imeStep!!.migrationWarnings.contains("INFERRED_IME_ACTION"))
     }
 }

@@ -30,6 +30,7 @@ import com.shortcuts.app.service.RecorderEventType
 import com.shortcuts.app.service.captureDisplaySnapshotForRecording
 import com.shortcuts.app.service.deriveNodeLabel
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.Executors
 import java.util.concurrent.Future
 
@@ -85,13 +86,14 @@ object TouchCaptureOverlay {
             state = fresh
             handler.post {
                 synchronized(lock) {
-                    if (state !== fresh || !AutomationRecorder.isRecording.value) return@synchronized
-                    recomputeLocked(fresh)
-                    runCatching {
-                        fresh.windowManager.addView(fresh.view, fresh.params)
-                        fresh.added = true
+                    if (state === fresh && AutomationRecorder.isRecording.value) {
                         recomputeLocked(fresh)
-                    }.onFailure { Log.e(TAG, "Unable to add capture overlay", it) }
+                        runCatching {
+                            fresh.windowManager.addView(fresh.view, fresh.params)
+                            fresh.added = true
+                            recomputeLocked(fresh)
+                        }.onFailure { Log.e(TAG, "Unable to add capture overlay", it) }
+                    }
                 }
             }
         }
@@ -300,8 +302,11 @@ object TouchCaptureOverlay {
             }
             fun startRelay(snapshot: com.shortcuts.app.automation.core.tree.WindowSetSnapshot?, availability: SnapshotAvailability) {
                 if (!startedRelay.compareAndSet(false, true)) return
-                hit = snapshot?.hitTest(classified.down?.x?.toInt() ?: 0, classified.down?.y?.toInt() ?: 0)
+                val downX = classified.down?.x?.toInt() ?: 0
+                val downY = classified.down?.y?.toInt() ?: 0
+                hit = snapshot?.hitTest(downX, downY)
                     ?.let { result -> HitSnapshot(result.window.packageName, result.target.text, result.target.contentDescription, result.target.resourceId, result.target.className, result.target.editable, result.window.windowId) }
+                    ?: hitTest(owner.service, downX, downY)
                 rippleX = localX; rippleY = localY; feedbackUntil = SystemClock.uptimeMillis() + 300L; invalidate()
                 pendingV2 = snapshot to availability
                 beginRelay(owner, classified, hit) {
@@ -311,6 +316,12 @@ object TouchCaptureOverlay {
                     relayDispatched.set(true)
                     deliverToCompilerIfRelayed()
                 }
+            }
+            if (snapshotFuture?.isDone == true) {
+                val snapshot = try { snapshotFuture.get() } catch (_: Exception) { null }
+                val availability = classifySnapshotAvailability(snapshot != null, SystemClock.uptimeMillis(), upAt)
+                startRelay(snapshot, availability)
+                return
             }
             val remaining = (upAt + 120L - SystemClock.uptimeMillis()).coerceAtLeast(0L)
             handler.postDelayed({
@@ -354,18 +365,50 @@ object TouchCaptureOverlay {
         }
     }
 
-    private data class HitSnapshot(val packageName: String, val text: String?, val description: String?, val viewId: String?, val className: String?, val editable: Boolean, val windowId: Int?)
+    internal data class HitSnapshot(val packageName: String, val text: String?, val description: String?, val viewId: String?, val className: String?, val editable: Boolean, val windowId: Int?)
     private data class WindowInput(val width: Int, val height: Int, val insets: CaptureInsets, val imeBounds: CaptureRect?, val shadeOpen: Boolean, val topAppPackage: String?)
 
-    private fun record(gesture: ClassifiedGesture, hit: HitSnapshot?) {
+    internal fun record(gesture: ClassifiedGesture, hit: HitSnapshot?) {
         val down = gesture.down ?: return
         val up = gesture.up ?: down
-        val type = when (gesture.kind) { CapturedGestureKind.TAP -> RecorderEventType.CLICK; CapturedGestureKind.LONG_PRESS -> RecorderEventType.LONG_PRESS; CapturedGestureKind.SWIPE -> RecorderEventType.SCROLL; CapturedGestureKind.CANCELLED -> return }
-        val event = RecorderEvent(type, hit?.packageName.orEmpty(), hit?.text, hit?.description, hit?.viewId, "", hit?.className, hit?.editable ?: false, down.x.toInt(), down.y.toInt(), captureDisplaySnapshotForRecording(AutomationAccessibilityService.instance ?: return), up.uptimeMs, scrollDeltaX = if (type == RecorderEventType.SCROLL) RecorderGestureMapper.scrollDelta(down.x, up.x) else null, scrollDeltaY = if (type == RecorderEventType.SCROLL) RecorderGestureMapper.scrollDelta(down.y, up.y) else null, windowId = hit?.windowId)
+        val type = when (gesture.kind) {
+            CapturedGestureKind.TAP -> RecorderEventType.CLICK
+            CapturedGestureKind.LONG_PRESS -> RecorderEventType.LONG_PRESS
+            CapturedGestureKind.SWIPE -> RecorderEventType.SCROLL
+            CapturedGestureKind.CANCELLED -> return
+        }
+        val service = AutomationAccessibilityService.instance
+        val topAppPkg = service?.let { s ->
+            val windows = s.windows.orEmpty()
+            OverlayRegionPolicy.topAppPackage(
+                windows.asSequence()
+                    .filter { it.type == AccessibilityWindowInfo.TYPE_APPLICATION }
+                    .map { CaptureApplicationWindow(it.layer, windowPackage(it)) }
+                    .toList()
+            )
+        }.orEmpty()
+        val pkg = hit?.packageName?.takeIf { it.isNotEmpty() } ?: topAppPkg
+        val event = RecorderEvent(
+            type,
+            pkg,
+            hit?.text,
+            hit?.description,
+            hit?.viewId,
+            "",
+            hit?.className,
+            hit?.editable ?: false,
+            down.x.toInt(),
+            down.y.toInt(),
+            service?.let { captureDisplaySnapshotForRecording(it) },
+            up.uptimeMs,
+            scrollDeltaX = if (type == RecorderEventType.SCROLL) RecorderGestureMapper.scrollDelta(down.x, up.x) else null,
+            scrollDeltaY = if (type == RecorderEventType.SCROLL) RecorderGestureMapper.scrollDelta(down.y, up.y) else null,
+            windowId = hit?.windowId
+        )
         AutomationRecorder.recordCapturedGesture(event)
     }
 
-    private fun hitTest(service: AutomationAccessibilityService, x: Int, y: Int): HitSnapshot? {
+    internal fun hitTest(service: AutomationAccessibilityService, x: Int, y: Int): HitSnapshot? {
         val window = service.windows.orEmpty().filter { candidate ->
             val bounds = Rect().also(candidate::getBoundsInScreen)
             candidate.type != AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY &&
@@ -393,14 +436,21 @@ object TouchCaptureOverlay {
     }
 
     private fun windowArea(window: AccessibilityWindowInfo): Long { val r = Rect().also(window::getBoundsInScreen); return r.width().toLong() * r.height().toLong() }
-    private fun findDeepestReverse(node: AccessibilityNodeInfo, x: Int, y: Int): AccessibilityNodeInfo? {
+    internal fun findDeepestReverse(
+        node: AccessibilityNodeInfo,
+        x: Int,
+        y: Int,
+        visitedCount: AtomicInteger = AtomicInteger(0)
+    ): AccessibilityNodeInfo? {
+        if (visitedCount.incrementAndGet() > 300) return null
         val bounds = Rect().also(node::getBoundsInScreen)
         if (!node.isVisibleToUser) return null
         val containsPoint = bounds.contains(x, y)
         if (!containsPoint && node.childCount == 0) return null
         for (index in node.childCount - 1 downTo 0) {
+            if (visitedCount.get() >= 300) break
             val child = node.getChild(index) ?: continue
-            val match = findDeepestReverse(child, x, y)
+            val match = findDeepestReverse(child, x, y, visitedCount)
             if (match != null) { if (match !== child) child.recycle(); return match }
             child.recycle()
         }

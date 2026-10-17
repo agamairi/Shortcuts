@@ -16,6 +16,7 @@ import com.shortcuts.app.automation.core.tree.WindowSnapshot
 import com.shortcuts.app.automation.model.GestureKind
 import com.shortcuts.app.automation.model.ImeActionKind
 import com.shortcuts.app.automation.model.IntPoint
+import com.shortcuts.app.automation.model.ScreenFingerprint
 import com.shortcuts.app.automation.model.TextTokenizer
 import com.shortcuts.app.automation.model.TimedPoint
 import com.shortcuts.app.data.Action
@@ -72,6 +73,30 @@ fun looksLikeActivityClass(className: CharSequence?): Boolean {
     if (str.startsWith("android.view.") || str.startsWith("android.widget.")) return false
     val simpleName = str.substringAfterLast('.')
     return simpleName.endsWith("Activity")
+}
+
+/**
+ * Checks whether a class name represents a transient UI overlay, dialog, popup, snackbar,
+ * or toast that should not overwrite the recorded activity class.
+ */
+fun isIgnoredUiClass(className: CharSequence?): Boolean {
+    if (className.isNullOrBlank()) return true
+    val str = className.toString().trim()
+    val simpleName = str.substringAfterLast('.')
+    if (simpleName.contains("Dialog", ignoreCase = true) ||
+        simpleName.contains("Popup", ignoreCase = true) ||
+        simpleName.contains("Snackbar", ignoreCase = true) ||
+        simpleName.contains("Toast", ignoreCase = true) ||
+        simpleName.contains("BottomSheet", ignoreCase = true)
+    ) {
+        return true
+    }
+    if (str.startsWith("android.view.") || str.startsWith("android.widget.") ||
+        str.startsWith("androidx.compose.") || str.startsWith("com.google.android.material.")
+    ) {
+        if (!simpleName.endsWith("Activity")) return true
+    }
+    return false
 }
 
 /**
@@ -134,7 +159,8 @@ fun createCapturedInteraction(
     kind: GestureKind,
     samples: List<TouchSample>,
     beforeSnapshot: WindowSetSnapshot,
-    ownPackage: String
+    ownPackage: String,
+    precomputedFingerprint: ScreenFingerprint? = null
 ): CapturedInteraction {
     val downTime = samples.firstOrNull()?.uptimeMs ?: 0L
     val upTime = samples.lastOrNull { it.action == TouchAction.UP }?.uptimeMs
@@ -158,7 +184,8 @@ fun createCapturedInteraction(
         upUptimeMs = upTime,
         beforeSnapshot = beforeSnapshot,
         hitNodeId = hitResult?.target?.nodeId,
-        hitWindowId = hitResult?.window?.windowId
+        hitWindowId = hitResult?.window?.windowId,
+        precomputedFingerprint = precomputedFingerprint
     )
 }
 
@@ -169,14 +196,16 @@ fun createCapturedTextCommit(
     fieldNode: NodeSnapshot,
     finalText: String,
     windowSnapshot: WindowSnapshot,
-    committedAtUptimeMs: Long
+    committedAtUptimeMs: Long,
+    precomputedFingerprint: ScreenFingerprint? = null
 ): CapturedTextCommit? {
     if (fieldNode.password) return null
     return CapturedTextCommit(
         fieldNode = fieldNode,
         finalText = finalText,
         windowSnapshot = windowSnapshot,
-        committedAtUptimeMs = committedAtUptimeMs
+        committedAtUptimeMs = committedAtUptimeMs,
+        precomputedFingerprint = precomputedFingerprint
     )
 }
 
@@ -187,13 +216,17 @@ fun createCapturedImeAction(
     fieldNode: NodeSnapshot,
     kind: ImeActionKind,
     windowSnapshot: WindowSnapshot,
-    actionAtUptimeMs: Long
+    actionAtUptimeMs: Long,
+    inferred: Boolean = false,
+    precomputedFingerprint: ScreenFingerprint? = null
 ): CapturedImeAction {
     return CapturedImeAction(
         fieldNode = fieldNode,
         kind = kind,
         windowSnapshot = windowSnapshot,
-        actionAtUptimeMs = actionAtUptimeMs
+        actionAtUptimeMs = actionAtUptimeMs,
+        inferred = inferred,
+        precomputedFingerprint = precomputedFingerprint
     )
 }
 
@@ -205,14 +238,16 @@ fun createCapturedAppSwitch(
     toPackage: String,
     activityClass: String?,
     snapshot: WindowSetSnapshot,
-    switchedAtUptimeMs: Long
+    switchedAtUptimeMs: Long,
+    precomputedFingerprint: ScreenFingerprint? = null
 ): CapturedAppSwitch {
     return CapturedAppSwitch(
         fromPackageName = fromPackage,
         toPackageName = toPackage,
         observedActivityClass = activityClass,
         snapshot = snapshot,
-        switchedAtUptimeMs = switchedAtUptimeMs
+        switchedAtUptimeMs = switchedAtUptimeMs,
+        precomputedFingerprint = precomputedFingerprint
     )
 }
 
@@ -222,11 +257,13 @@ fun createCapturedAppSwitch(
 fun createCapturedGlobalAction(
     kind: String,
     snapshot: WindowSetSnapshot,
-    actionAtUptimeMs: Long
+    actionAtUptimeMs: Long,
+    precomputedFingerprint: ScreenFingerprint? = null
 ): CapturedGlobalAction {
     return CapturedGlobalAction(
         kind = kind,
         snapshot = snapshot,
-        actionAtUptimeMs = actionAtUptimeMs
+        actionAtUptimeMs = actionAtUptimeMs,
+        precomputedFingerprint = precomputedFingerprint
     )
 }

@@ -17,6 +17,7 @@ import com.shortcuts.app.automation.core.tree.NodeSnapshot
 import com.shortcuts.app.automation.core.tree.WindowSetSnapshot
 import com.shortcuts.app.automation.core.tree.WindowSnapshot
 import com.shortcuts.app.automation.core.tree.r
+import com.shortcuts.app.automation.core.tree.window
 import com.shortcuts.app.automation.model.GestureKind
 import com.shortcuts.app.automation.model.ImeActionKind
 import com.shortcuts.app.automation.model.NodeAction
@@ -291,6 +292,7 @@ class V2CaptureBridgeTest {
         )
 
         V2CaptureBridge.onTextCommit(event)
+        V2CaptureBridge.awaitCaptureIdleForTest()
 
         // Verify compiler.accept(CapturedTextCommit) was NEVER called
         io.mockk.verify(exactly = 0) { mockCompiler.accept(any<com.shortcuts.app.automation.capture.CapturedTextCommit>()) }
@@ -307,11 +309,13 @@ class V2CaptureBridgeTest {
 
         // 1. App switch to real activity
         V2CaptureBridge.onAppSwitch("com.example.app", "com.example.app.MainActivity", 1_000L)
+        V2CaptureBridge.awaitCaptureIdleForTest()
         assertEquals(1, capturedSwitches.size)
         assertEquals("com.example.app.MainActivity", capturedSwitches[0].observedActivityClass)
 
         // 2. Dialog appears (e.g. AlertDialog)
         V2CaptureBridge.onAppSwitch("com.example.app", "androidx.appcompat.app.AlertDialog", 2_000L)
+        V2CaptureBridge.awaitCaptureIdleForTest()
         assertEquals(2, capturedSwitches.size)
         // Dialog class must be rejected and last real activity retained
         assertEquals("com.example.app.MainActivity", capturedSwitches[1].observedActivityClass)
@@ -395,6 +399,7 @@ class V2CaptureBridgeTest {
 
         // 3. Activity switch to SearchResultsActivity within 2s
         V2CaptureBridge.onAppSwitch("com.example.app", "com.example.app.SearchResultsActivity", 2_000L)
+        V2CaptureBridge.awaitCaptureIdleForTest()
 
         // Verify order: text_commit -> ime_action -> app_switch
         assertEquals(listOf("app_switch", "text_commit", "ime_action", "app_switch"), eventOrder)
@@ -482,8 +487,87 @@ class V2CaptureBridgeTest {
             occurredAtMillis = 1_800L
         )
         V2CaptureBridge.onTextChanged(clearedEvent)
+        V2CaptureBridge.awaitCaptureIdleForTest()
 
         assertEquals(1, capturedImeActions.size)
         assertEquals(ImeActionKind.SEND, capturedImeActions[0].kind)
+    }
+
+    @Test
+    fun testQueueOrderingPreservedAcrossIngestionMethods() {
+        val eventOrder = java.util.Collections.synchronizedList(mutableListOf<String>())
+        val mockCompiler = mockk<RecordingCompiler>(relaxed = true)
+        every { mockCompiler.accept(any<com.shortcuts.app.automation.capture.CapturedInteraction>()) } answers { eventOrder.add("interaction") }
+        every { mockCompiler.accept(any<com.shortcuts.app.automation.capture.CapturedTextCommit>()) } answers { eventOrder.add("text_commit") }
+        every { mockCompiler.accept(any<com.shortcuts.app.automation.capture.CapturedImeAction>()) } answers { eventOrder.add("ime_action") }
+        every { mockCompiler.accept(any<com.shortcuts.app.automation.capture.CapturedAppSwitch>()) } answers { eventOrder.add("app_switch") }
+        every { mockCompiler.accept(any<com.shortcuts.app.automation.capture.CapturedGlobalAction>()) } answers { eventOrder.add("global_action") }
+        V2CaptureBridge.setCompilerForTest(mockCompiler)
+
+        val editableWindow = window("com.example.app") {
+            node("android.widget.FrameLayout", id = 1) {
+                node(
+                    className = "android.widget.EditText",
+                    id = 10,
+                    resourceId = "com.example.app:id/search",
+                    text = "Search",
+                    bounds = r(100, 200, 300, 400),
+                    focused = true,
+                    editable = true,
+                    actions = setOf(NodeAction.CLICK)
+                )
+            }
+        }
+        val orderSnapshot = snapshot(editableWindow, 1_000L)
+        EngineV2.snapshotSource = WindowSnapshotSource { orderSnapshot }
+
+        // 1. Gesture
+        V2CaptureBridge.onGestureClassified(
+            kind = GestureKind.TAP,
+            samples = listOf(TouchSample(TouchAction.DOWN, 150f, 250f, 1_100L)),
+            beforeSnapshot = orderSnapshot,
+            ownPackage = "com.shortcuts.app"
+        )
+        // 2. Text commit
+        V2CaptureBridge.onTextCommit(
+            RecorderEvent(
+                eventType = RecorderEventType.TEXT_CHANGE,
+                packageName = "com.example.app",
+                sourceText = null,
+                sourceContentDescription = null,
+                sourceViewId = "com.example.app:id/search",
+                enteredText = "order test",
+                occurredAtMillis = 1_200L
+            )
+        )
+        // 3. IME action
+        V2CaptureBridge.onImeAction("search", 1_300L)
+        // 4. App switch
+        V2CaptureBridge.onAppSwitch("com.example.app", "com.example.app.OtherActivity", 1_400L)
+        // 5. Key event (BACK)
+        val keyEvent = mockk<KeyEvent>()
+        every { keyEvent.action } returns KeyEvent.ACTION_UP
+        every { keyEvent.keyCode } returns KeyEvent.KEYCODE_BACK
+        every { keyEvent.eventTime } returns 1_500L
+        V2CaptureBridge.onKeyEvent(keyEvent)
+
+        V2CaptureBridge.awaitCaptureIdleForTest()
+
+        assertEquals(
+            listOf("interaction", "text_commit", "ime_action", "app_switch", "global_action"),
+            eventOrder
+        )
+    }
+
+    @Test
+    fun testConfirmedActivityFilteringAndCaching() {
+        // Ignored UI classes always rejected
+        assertTrue(!V2CaptureBridge.isConfirmedActivity("com.example.app", "androidx.appcompat.app.AlertDialog"))
+        assertTrue(!V2CaptureBridge.isConfirmedActivity("com.example.app", "android.widget.Toast"))
+        assertTrue(!V2CaptureBridge.isConfirmedActivity("com.example.app", "com.google.android.material.snackbar.Snackbar"))
+        assertTrue(!V2CaptureBridge.isConfirmedActivity("com.example.app", "android.widget.PopupWindow"))
+
+        // Activity class verified
+        assertTrue(V2CaptureBridge.isConfirmedActivity("com.example.app", "com.example.app.MainActivity"))
     }
 }

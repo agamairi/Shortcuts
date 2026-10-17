@@ -74,7 +74,8 @@ class SelectorExtractor(
     fun windowSelector(
         window: WindowSnapshot,
         snapshot: WindowSetSnapshot,
-        activityClass: String?
+        activityClass: String?,
+        precomputedFingerprint: com.shortcuts.app.automation.model.ScreenFingerprint? = null
     ): WindowSelector {
         val displayBounds = IntRect(0, 0, snapshot.displayWidth, snapshot.displayHeight)
         val normalizedTitle = TextNormalizer.normalize(window.title)
@@ -85,7 +86,7 @@ class SelectorExtractor(
             titleToken = normalizedTitle?.let(textTokenizer::tokenize),
             boundsOnDisplay = NormalizedGeometry.normalize(window.boundsInScreen, displayBounds),
             displayId = 0,
-            fingerprint = screenFingerprinter.fingerprint(window, activityClass)
+            fingerprint = precomputedFingerprint ?: screenFingerprinter.fingerprint(window, activityClass)
         )
     }
 

@@ -306,6 +306,13 @@ class RecordingCompiler(
                 is AcceptedEvent.AppSwitch -> primaryWindow(snapshot, event.value.toPackageName, null)
                 is AcceptedEvent.GlobalAction -> primaryWindow(snapshot, null, null)
             }
+            val precomputedFp = when (event) {
+                is AcceptedEvent.Interaction -> event.value.precomputedFingerprint
+                is AcceptedEvent.TextCommit -> event.value.precomputedFingerprint
+                is AcceptedEvent.ImeAction -> event.value.precomputedFingerprint
+                is AcceptedEvent.AppSwitch -> event.value.precomputedFingerprint
+                is AcceptedEvent.GlobalAction -> event.value.precomputedFingerprint
+            }
             EventContext(
                 event = event,
                 snapshot = snapshot,
@@ -313,7 +320,8 @@ class RecordingCompiler(
                 packageName = window?.packageName ?: (event as? AcceptedEvent.AppSwitch)?.value?.toPackageName,
                 activityClass = window?.packageName?.let(activities::get),
                 timestamp = event.timestamp,
-                eventIndex = index
+                eventIndex = index,
+                precomputedFingerprint = precomputedFp
             )
         }
     }
@@ -328,7 +336,7 @@ class RecordingCompiler(
             id = idGenerator(),
             eventIndex = context.eventIndex,
             timestamp = context.timestamp,
-            expectedWindow = selectorExtractor.windowSelector(window, context.snapshot, activityClass),
+            expectedWindow = selectorExtractor.windowSelector(window, context.snapshot, activityClass, context.precomputedFingerprint),
             policy = policy
         )
     }
@@ -368,7 +376,7 @@ class RecordingCompiler(
             eventIndex = context.eventIndex,
             timestamp = context.timestamp,
             operation = operation,
-            expectedWindow = selectorExtractor.windowSelector(window, context.snapshot, activityClass),
+            expectedWindow = selectorExtractor.windowSelector(window, context.snapshot, activityClass, context.precomputedFingerprint),
             element = elementSelector,
             gesture = gestureAssembler.assemble(interaction, window),
             reveal = reveal,
@@ -399,7 +407,7 @@ class RecordingCompiler(
             eventIndex = context.eventIndex,
             timestamp = context.timestamp,
             operation = UiOperation.SET_TEXT(commit.finalText),
-            expectedWindow = selectorExtractor.windowSelector(beforeWindow, beforeSnapshot, activityClass),
+            expectedWindow = selectorExtractor.windowSelector(beforeWindow, beforeSnapshot, activityClass, context.precomputedFingerprint),
             element = selector,
             gesture = null,
             reveal = null,
@@ -427,7 +435,7 @@ class RecordingCompiler(
             eventIndex = context.eventIndex,
             timestamp = context.timestamp,
             operation = UiOperation.IME_ACTION(action.kind),
-            expectedWindow = selectorExtractor.windowSelector(action.windowSnapshot, context.snapshot, activityClass),
+            expectedWindow = selectorExtractor.windowSelector(action.windowSnapshot, context.snapshot, activityClass, context.precomputedFingerprint),
             element = selector,
             gesture = null,
             reveal = null,
@@ -435,7 +443,7 @@ class RecordingCompiler(
             beforeSnapshot = context.snapshot,
             beforeWindow = action.windowSnapshot,
             safety = safetyForIme(action.kind),
-            warnings = mutableListOf()
+            warnings = if (action.inferred) mutableListOf("INFERRED_IME_ACTION") else mutableListOf()
         )
     }
 
@@ -450,7 +458,7 @@ class RecordingCompiler(
             eventIndex = context.eventIndex,
             timestamp = context.timestamp,
             operation = UiOperation.GLOBAL_ACTION(action.kind),
-            expectedWindow = selectorExtractor.windowSelector(window, context.snapshot, activityClass),
+            expectedWindow = selectorExtractor.windowSelector(window, context.snapshot, activityClass, context.precomputedFingerprint),
             element = null,
             gesture = null,
             reveal = null,
@@ -478,7 +486,7 @@ class RecordingCompiler(
         }
         val afterActivity = nextEventContext?.activityClass
             ?: afterWindow?.packageName?.let(activities::get)
-        val afterFingerprint = afterWindow?.let { screenFingerprinter.fingerprint(it, afterActivity) }
+        val afterFingerprint = nextEventContext?.precomputedFingerprint ?: afterWindow?.let { screenFingerprinter.fingerprint(it, afterActivity) }
 
         when (draft) {
             is LaunchDraft -> LaunchAppStep(
@@ -971,7 +979,8 @@ class RecordingCompiler(
         val packageName: String?,
         val activityClass: String?,
         val timestamp: Long,
-        val eventIndex: Int
+        val eventIndex: Int,
+        val precomputedFingerprint: ScreenFingerprint? = null
     )
 
     private sealed interface Draft {
