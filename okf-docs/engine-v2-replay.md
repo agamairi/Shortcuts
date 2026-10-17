@@ -21,6 +21,7 @@ stateDiagram-v2
     LOCATING --> SCROLLING: target unavailable + reveal
     SCROLLING --> LOCATING: content/scroll event
     LOCATING --> ACTING: accepted target
+    ACTING --> LOCATING: movement rejection retry
     ACTING --> VERIFYING: dispatch accepted
     VERIFYING --> ACTING: safe gesture retry
     VERIFYING --> FINISHED: postconditions pass
@@ -65,6 +66,13 @@ Target element locating is non-terminal during the step timeout (default 7 s):
    - `FORWARD` / `DOWN`: Reveals later content (finger moves up). Prefers `SCROLL_FORWARD` or `SCROLL_DOWN` semantic action; falls back to a gesture swipe from 75% to 25% of container height (300 ms) inside container visible bounds.
    - `BACKWARD` / `UP`: Reveals earlier content (finger moves down). Prefers `SCROLL_BACKWARD` or `SCROLL_UP` semantic action; falls back to a gesture swipe from 25% to 75% of container height (300 ms).
    - `LEFT` / `RIGHT`: Horizontal reveal gestures within container visible bounds.
+4. **Container settle before locating**:
+   - After any scroll performed by scroll-to-find (semantic scroll or swipe), the engine waits for the scroll container to settle before locating or acting: re-snapshots on events or every 100 ms until two consecutive container content signatures are identical at least 150 ms apart, capped at 1200 ms.
+
+### Acting & Movement retry phase
+1. **Movement rejection retry**: If acting fails with `DISPATCH_REJECTED` for a movement reason (live-node bounds no longer overlap, hit-test mismatch, node no longer present), and the step is not `IRREVERSIBLE`: wait for settle (as above), re-locate the target from a fresh snapshot, and retry the action—at most 2 retries—before failing.
+2. **Trace diagnostics**: Each retry records an `ActionRetryRecorded(retryReason)` event with the exact rejection reason.
+3. **Safety rules**: Never retry `IRREVERSIBLE` steps; never retry when the rejection reason is not movement-related.
 
 ## Default timeouts
 
@@ -76,6 +84,9 @@ Target element locating is non-terminal during the step timeout (default 7 s):
 | Post-action verification | 5 s |
 | Text/focus verification | 2 s |
 | Scroll-to-find | 10 s / 12 attempts |
+| Scroll / movement settle cap | 1.2 s |
+| Settle stable snapshot gap | 150 ms |
+| Settle poll interval | 100 ms |
 | Stable quiet window | 300 ms |
 | Safety poll | 250 ms |
 
