@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   package ID `com.shortcuts.app.dev`, and an adb-only control activity can record, save, list,
   delete, dump, and run shortcuts while writing machine-readable receipts under private debug
   files. This control surface is excluded from release builds.
+- **Test fixture app for on-device record/replay tests.** A separate `:fixtures` module (RK Fixtures) provides known screens — Views, Compose, long lists, dialogs, text fields, a WebView — that log every interaction, so recorder and replay reliability can be measured automatically.
 - **Live recording feedback without blocking the app underneath.** A small recording HUD now shows the current captured-step count while taps, scrolling, and keyboard input continue to go directly to the foreground app.
 - **App shortcuts discovery.** Picking an app in the builder now also offers its long-press shortcuts, so you can start Chrome straight into a new incognito tab.
 - **Recorder documentation update.** Updated `okf-docs/recorder.md` to detail `TapMarkOverlay` and `MarkTapReceiver` and document the Mark-a-tap overlay fallback mechanism alongside the passive accessibility event capture path.

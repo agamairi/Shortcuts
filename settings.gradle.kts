@@ -14,3 +14,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "Shortcuts"
 include(":app")
+include(":fixtures")
