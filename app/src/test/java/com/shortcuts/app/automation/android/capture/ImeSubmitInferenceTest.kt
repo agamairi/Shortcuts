@@ -646,6 +646,67 @@ class ImeSubmitInferenceTest {
         assertNull(inference.onScreenEffect(snapshot(after, 1_300L), 1_300L))
     }
 
+    private fun commitSearchWithKeyboard(text: String, atMs: Long): NodeSnapshot {
+        inference = ImeSubmitInference(screenFingerprinter = fakeFingerprinter)
+        val field = createFieldNode(text = text)
+            .copy(actions = setOf(NodeAction.SET_TEXT, NodeAction.IME_ENTER))
+        val before = createWindow(nodes = mapOf(field.nodeId to field))
+        val keyboard = createWindow(windowId = 9, nodes = emptyMap(), packageName = "example.ime")
+            .copy(type = WindowType.INPUT_METHOD)
+        inference.onTextCommit(
+            createCapturedTextCommit(field, text, before, atMs)!!,
+            "com.example.app.SearchActivity",
+            snapshot(before, atMs).copy(windows = listOf(before, keyboard))
+        )
+        return field
+    }
+
+    private fun resultsScreen(field: NodeSnapshot): WindowSnapshot = createWindow(
+        nodes = mapOf(
+            11 to field.copy(
+                nodeId = 11,
+                resourceId = "com.example.app:id/result_list",
+                className = "androidx.recyclerview.widget.RecyclerView",
+                text = null,
+                editable = false,
+                focused = false,
+                actions = emptySet()
+            )
+        )
+    )
+
+    @Test
+    fun `pausing in the field before pressing Search still infers the submit`() {
+        val field = commitSearchWithKeyboard("lofi beats", atMs = 1_000L)
+
+        // Still focused with the keyboard up while reading suggestions, then Search 3.6 s after typing.
+        inference.onFieldStillFocused("lofi beats", 3_200L)
+        val inferred = inference.onScreenEffect(snapshot(resultsScreen(field), 4_600L), 4_600L)
+
+        assertNotNull(inferred)
+        assertEquals("focus_loss_with_screen_change", inferred?.reason)
+        assertEquals("lofi beats", inferred?.action?.fieldNode?.text)
+        assertTrue(inference.lastEffectDiagnostics!!.contains("msSinceSeenTyping=1400"))
+        assertTrue(!inference.lastEffectDiagnostics!!.contains("lofi"))
+    }
+
+    @Test
+    fun `a sighting with a different value does not keep an older commit alive`() {
+        val field = commitSearchWithKeyboard("lofi", atMs = 1_000L)
+
+        inference.onFieldStillFocused("lofi beats", 3_200L)
+
+        assertNull(inference.onScreenEffect(snapshot(resultsScreen(field), 4_600L), 4_600L))
+    }
+
+    @Test
+    fun `without a sighting the submit window still closes two seconds after typing`() {
+        val field = commitSearchWithKeyboard("lofi beats", atMs = 1_000L)
+
+        assertNull(inference.onScreenEffect(snapshot(resultsScreen(field), 4_600L), 4_600L))
+        assertNull(inference.candidate)
+    }
+
     @Test
     fun testInferredFlagOnCapturedImeActionProducesCompilerWarning() {
         val field = createFieldNode(

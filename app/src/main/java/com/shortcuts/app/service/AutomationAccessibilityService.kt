@@ -184,10 +184,17 @@ open class AutomationAccessibilityService : AccessibilityService() {
         // Handle UI Automation feedback here
     }
 
-    /** Debug builds: `dumpsys activity service <this> rk-ui` prints the screen for the E2E harness. */
+    /**
+     * Debug builds: `dumpsys activity service <this> rk-ui` prints the screen for the E2E harness;
+     * `rk-ime` prints only the keyboard, so the harness can type by tapping its keys like a person.
+     */
     override fun dump(fd: java.io.FileDescriptor?, writer: java.io.PrintWriter, args: Array<out String>?) {
         if (com.shortcuts.app.BuildConfig.DEBUG && args?.contains("rk-ui") == true) {
             DebugUiDump.write(runCatching { windows }.getOrNull().orEmpty(), writer)
+            return
+        }
+        if (com.shortcuts.app.BuildConfig.DEBUG && args?.contains("rk-ime") == true) {
+            DebugUiDump.write(runCatching { windows }.getOrNull().orEmpty(), writer, inputMethodOnly = true)
             return
         }
         super.dump(fd, writer, args)

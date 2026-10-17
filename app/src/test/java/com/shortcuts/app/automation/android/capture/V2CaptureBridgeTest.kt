@@ -529,6 +529,177 @@ class V2CaptureBridgeTest {
         assertEquals(ImeActionKind.SEARCH, imeActions.single().kind)
     }
 
+    private val musicPackage = "com.google.android.apps.youtube.music"
+    private val musicFieldId = "com.google.android.apps.youtube.music:id/search_edit_text"
+
+    private fun musicTypingSnapshot(text: String, atMs: Long): WindowSetSnapshot {
+        val app = window(musicPackage) {
+            node("android.widget.FrameLayout", id = 1) {
+                node(
+                    className = "android.widget.EditText",
+                    id = 10,
+                    resourceId = musicFieldId,
+                    text = text,
+                    hintText = "Search songs, artists, podcasts",
+                    bounds = r(150, 120, 950, 240),
+                    focused = true,
+                    editable = true,
+                    actions = setOf(NodeAction.SET_TEXT, NodeAction.IME_ENTER)
+                )
+                node("android.widget.TextView", id = 11, resourceId = "$musicPackage:id/suggestion", text = "suggestion", bounds = r(0, 260, 1080, 380))
+            }
+        }
+        val keyboard = app.copy(
+            windowId = 9, type = WindowType.INPUT_METHOD, layer = 5, isActive = false, isFocused = false,
+            packageName = "com.google.android.inputmethod.latin", rootId = Int.MIN_VALUE, nodes = emptyMap()
+        )
+        return snapshot(app, atMs).copy(windows = listOf(keyboard, app))
+    }
+
+    private fun musicResultsSnapshot(atMs: Long): WindowSetSnapshot {
+        val app = window(musicPackage) {
+            node("android.widget.FrameLayout", id = 1) {
+                node(
+                    className = "android.widget.EditText",
+                    id = 10,
+                    resourceId = musicFieldId,
+                    text = "lofi beats",
+                    bounds = r(150, 120, 950, 240),
+                    focused = false,
+                    editable = true,
+                    actions = setOf(NodeAction.SET_TEXT, NodeAction.IME_ENTER)
+                )
+                node("androidx.recyclerview.widget.RecyclerView", id = 20, resourceId = "$musicPackage:id/results", bounds = r(0, 260, 1080, 2300))
+                node("android.widget.TextView", id = 21, text = "Songs", bounds = r(0, 260, 200, 340))
+                node("android.widget.TextView", id = 22, text = "Albums", bounds = r(200, 260, 400, 340))
+            }
+        }
+        return snapshot(app, atMs)
+    }
+
+    private fun musicText(text: String, atMs: Long, focused: Boolean? = true) = RecorderEvent(
+        eventType = RecorderEventType.TEXT_CHANGE,
+        packageName = musicPackage,
+        sourceText = text,
+        sourceContentDescription = null,
+        sourceViewId = musicFieldId,
+        enteredText = text,
+        sourceClassName = "android.widget.EditText",
+        sourceIsEditable = true,
+        occurredAtMillis = atMs,
+        windowId = 1,
+        sourceIsFocused = focused
+    )
+
+    private fun recordingCompiler(order: MutableList<String>): RecordingCompiler {
+        val compiler = mockk<RecordingCompiler>(relaxed = true)
+        every { compiler.accept(any<com.shortcuts.app.automation.capture.CapturedTextCommit>()) } answers {
+            order.add("text:" + firstArg<com.shortcuts.app.automation.capture.CapturedTextCommit>().finalText)
+        }
+        every { compiler.accept(any<com.shortcuts.app.automation.capture.CapturedImeAction>()) } answers {
+            val action = firstArg<com.shortcuts.app.automation.capture.CapturedImeAction>()
+            order.add("ime:" + action.kind + if (action.inferred) ",inferred" else "")
+        }
+        return compiler
+    }
+
+    @Test
+    fun `a commit judged while the queue is behind never submits a partial query`() {
+        // Real Gboard typing: the capture queue fell behind, so commits for "lo" and "lof" were judged
+        // against a live screen that already showed the results, and "lo" was recorded as the search.
+        var current = musicTypingSnapshot("lo", 1_000L)
+        EngineV2.snapshotSource = WindowSnapshotSource { current }
+        val order = mutableListOf<String>()
+        V2CaptureBridge.setCompilerForTest(recordingCompiler(order))
+        V2CaptureBridge.onTextChanged(musicText("lo", 1_000L))
+        V2CaptureBridge.awaitCaptureIdleForTest()
+
+        val release = V2CaptureBridge.pauseCaptureQueueForTest()
+        V2CaptureBridge.onTextCommit(musicText("lo", 1_000L))
+        V2CaptureBridge.onTextChanged(musicText("lof", 1_200L))
+        V2CaptureBridge.onTextCommit(musicText("lof", 1_200L))
+        V2CaptureBridge.onTextChanged(musicText("lofi beats", 1_900L))
+        V2CaptureBridge.onTextCommit(musicText("lofi beats", 1_900L))
+        V2CaptureBridge.onScreenChanged(2_600L)
+        current = musicResultsSnapshot(2_700L)
+        release.countDown()
+        V2CaptureBridge.awaitCaptureIdleForTest()
+
+        assertEquals(listOf("text:lo", "text:lof", "text:lofi beats", "ime:SEARCH,inferred"), order)
+    }
+
+    @Test
+    fun `text typed while focused keeps its typing screen when the queue only gets to it after the submit`() {
+        var current = musicTypingSnapshot("lofi bea", 1_000L)
+        EngineV2.snapshotSource = WindowSnapshotSource { current }
+        val order = mutableListOf<String>()
+        V2CaptureBridge.setCompilerForTest(recordingCompiler(order))
+        V2CaptureBridge.onTextChanged(musicText("lofi bea", 1_000L))
+        V2CaptureBridge.awaitCaptureIdleForTest()
+
+        // The last keystroke and the commit flushed by focus loss are processed only after Search.
+        current = musicResultsSnapshot(1_800L)
+        V2CaptureBridge.onTextChanged(musicText("lofi beats", 1_200L))
+        V2CaptureBridge.onTextCommit(musicText("lofi beats", 1_200L))
+        V2CaptureBridge.awaitCaptureIdleForTest()
+
+        assertEquals(listOf("text:lofi beats", "ime:SEARCH,inferred"), order)
+    }
+
+    @Test
+    fun `seeing the field still typed into keeps a submit after a pause eligible`() {
+        var current = musicTypingSnapshot("lofi beats", 1_000L)
+        EngineV2.snapshotSource = WindowSnapshotSource { current }
+        val order = mutableListOf<String>()
+        V2CaptureBridge.setCompilerForTest(recordingCompiler(order))
+        V2CaptureBridge.onTextChanged(musicText("lofi beats", 1_000L))
+        V2CaptureBridge.onTextCommit(musicText("lofi beats", 1_000L))
+        V2CaptureBridge.awaitCaptureIdleForTest()
+
+        V2CaptureBridge.onTypedFieldStillFocused(musicPackage, musicFieldId, "android.widget.EditText", "lofi beats", 3_500L)
+        current = musicResultsSnapshot(4_200L)
+        V2CaptureBridge.onScreenChanged(4_200L)
+        V2CaptureBridge.awaitCaptureIdleForTest()
+
+        assertEquals(listOf("text:lofi beats", "ime:SEARCH,inferred"), order)
+    }
+
+    @Test
+    fun `without a sighting a submit long after typing is not inferred`() {
+        var current = musicTypingSnapshot("lofi beats", 1_000L)
+        EngineV2.snapshotSource = WindowSnapshotSource { current }
+        val order = mutableListOf<String>()
+        V2CaptureBridge.setCompilerForTest(recordingCompiler(order))
+        V2CaptureBridge.onTextChanged(musicText("lofi beats", 1_000L))
+        V2CaptureBridge.onTextCommit(musicText("lofi beats", 1_000L))
+        V2CaptureBridge.awaitCaptureIdleForTest()
+
+        current = musicResultsSnapshot(4_200L)
+        V2CaptureBridge.onScreenChanged(4_200L)
+        V2CaptureBridge.awaitCaptureIdleForTest()
+
+        assertEquals(listOf("text:lofi beats"), order)
+    }
+
+    @Test
+    fun `text changes superseded by newer queued text take no snapshot`() {
+        val snapshots = java.util.concurrent.atomic.AtomicInteger(0)
+        EngineV2.snapshotSource = WindowSnapshotSource { snapshots.incrementAndGet(); musicTypingSnapshot("l", 1_000L) }
+        V2CaptureBridge.setCompilerForTest(mockk(relaxed = true))
+        V2CaptureBridge.onTextChanged(musicText("l", 1_000L))
+        V2CaptureBridge.awaitCaptureIdleForTest()
+        val before = snapshots.get()
+
+        val release = V2CaptureBridge.pauseCaptureQueueForTest()
+        listOf("lo", "lof", "lofi", "lofi ", "lofi b").forEachIndexed { index, text ->
+            V2CaptureBridge.onTextChanged(musicText(text, 1_100L + index * 100L))
+        }
+        release.countDown()
+        V2CaptureBridge.awaitCaptureIdleForTest()
+
+        assertEquals(1, snapshots.get() - before)
+    }
+
     @Test
     fun testInferredImeActionOnResultsActivitySwitch() {
         val searchField = NodeSnapshot(

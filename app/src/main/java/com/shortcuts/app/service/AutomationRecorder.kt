@@ -88,7 +88,9 @@ data class RecorderEvent(
     val scrollDeltaX: Int? = null,
     val scrollDeltaY: Int? = null,
     /** Accessibility window containing the source, when Android supplies one. */
-    val windowId: Int? = null
+    val windowId: Int? = null,
+    /** Whether the source had input focus when the event happened; null when unknown. */
+    val sourceIsFocused: Boolean? = null
 )
 
 /**
@@ -318,11 +320,16 @@ object AutomationRecorder {
         if (eventType == RecorderEventType.APP_CHANGE &&
             (packageName in transientPackages || isFromInputMethodWindow(event, context))
         ) {
-            // Input-method windows are not foreground applications. Flush the app field while
-            // its typed value is still buffered, then let v2 inspect the resulting screen effect
-            // without changing app attribution to the keyboard package.
-            cancelPendingTextFinalizer()
-            sessionOwner.flushPendingText()
+            // Input-method windows are not foreground applications. When the keyboard has closed,
+            // flush the app field while its typed value is still buffered, then let v2 inspect the
+            // resulting screen effect without changing app attribution to the keyboard package.
+            // Gboard also reports window-state changes continuously while the user types
+            // (suggestion strip, key previews); flushing on those split one search into a commit
+            // per keystroke, which flooded the capture queue.
+            if (!isInputMethodWindowShowing(context)) {
+                cancelPendingTextFinalizer()
+                sessionOwner.flushPendingText()
+            }
             com.shortcuts.app.automation.android.capture.V2CaptureBridge.onScreenChanged(event.eventTime)
             updateRecordingHud()
             return
@@ -365,6 +372,16 @@ object AutomationRecorder {
             ) {
                 showSilentTapSuggestion(context)
             }
+            return
+        }
+
+        if (isBackgroundWindowEvent(eventType, packageName, event, context)) {
+            // Content, scroll and focus callbacks come from every visible window, not only the app
+            // in front: the Pixel launcher keeps a system window updating while Chrome is open, and
+            // carousels scroll on their own. Treated as a switch to that app, they reset the field
+            // being typed into, so Chrome's address-bar text (which only a live re-read can see)
+            // was never captured. They still count as a screen change for the field in front.
+            com.shortcuts.app.automation.android.capture.V2CaptureBridge.onScreenChanged(event.eventTime)
             return
         }
 
@@ -434,6 +451,7 @@ object AutomationRecorder {
         val displaySnapshot = captureDisplaySnapshotForRecording(context)
         val sourceClassName = rawNode.className?.toString()
         val sourceIsEditable = isEditableNode(rawNode) && !sensitiveTextNode
+        val sourceIsFocused = rawNode.isFocused
         val enteredText = when {
             eventType == RecorderEventType.TEXT_CHANGE -> event.text.joinToString("")
             sourceIsEditable -> readableEditableText(rawNode)
@@ -460,7 +478,8 @@ object AutomationRecorder {
             scrollY = event.scrollY.takeIf { it >= 0 },
             scrollDeltaX = event.scrollDeltaXOrNull(),
             scrollDeltaY = event.scrollDeltaYOrNull(),
-            windowId = event.windowId.takeIf { it >= 0 }
+            windowId = event.windowId.takeIf { it >= 0 },
+            sourceIsFocused = sourceIsFocused.takeIf { eventType == RecorderEventType.TEXT_CHANGE }
         )
         sessionOwner.processEvent(
             recorderEvent,
@@ -500,6 +519,58 @@ object AutomationRecorder {
         return window.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION
     }
 
+    /**
+     * True for a content, scroll or focus callback from another app's window that is not the
+     * active application window. Only events from the recorded app, or from the window the user
+     * is actually in, may move the recording to another app. The window lookup runs only when the
+     * event's package differs from the recorded app.
+     */
+    private fun isBackgroundWindowEvent(
+        eventType: RecorderEventType,
+        packageName: String,
+        event: AccessibilityEvent,
+        context: Context
+    ): Boolean = isBackgroundWindowEvent(eventType, packageName, sessionOwner.foregroundPackage()) {
+        val service = context as? AutomationAccessibilityService
+            ?: AutomationAccessibilityService.instance
+            ?: return@isBackgroundWindowEvent null
+        val windowId = event.windowId
+        if (windowId < 0) return@isBackgroundWindowEvent null
+        val window = runCatching { service.windows.orEmpty().firstOrNull { it.id == windowId } }.getOrNull()
+            ?: return@isBackgroundWindowEvent null
+        isForegroundApplicationWindow(window.type, window.isActive, window.isFocused)
+    }
+
+    /**
+     * Pure decision behind [isBackgroundWindowEvent]. [isForegroundAppWindow] answers whether the
+     * event's window is the active application window, or null when the window can't be identified
+     * (then the event is kept, as before).
+     */
+    internal fun isBackgroundWindowEvent(
+        eventType: RecorderEventType,
+        packageName: String,
+        foregroundPackage: String?,
+        isForegroundAppWindow: () -> Boolean?
+    ): Boolean {
+        if (eventType != RecorderEventType.CONTENT_CHANGE &&
+            eventType != RecorderEventType.SCROLL &&
+            eventType != RecorderEventType.FOCUS
+        ) return false
+        if (packageName.isBlank() || packageName == foregroundPackage) return false
+        return isForegroundAppWindow() == false
+    }
+
+    private fun isInputMethodWindowShowing(context: Context): Boolean {
+        val service = context as? AutomationAccessibilityService
+            ?: AutomationAccessibilityService.instance
+            ?: return false
+        return runCatching {
+            service.windows.orEmpty().any {
+                it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_INPUT_METHOD
+            }
+        }.getOrDefault(false)
+    }
+
     private fun isFromInputMethodWindow(event: AccessibilityEvent, context: Context): Boolean {
         val service = context as? AutomationAccessibilityService
             ?: AutomationAccessibilityService.instance
@@ -510,6 +581,9 @@ object AutomationRecorder {
             ?: return false
         return window.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_INPUT_METHOD
     }
+
+    internal fun isForegroundApplicationWindow(windowType: Int, isActive: Boolean, isFocused: Boolean): Boolean =
+        windowType == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION && (isActive || isFocused)
 
     internal fun classifyAccessibilityEventType(eventType: Int): RecorderEventType? = when (eventType) {
         AccessibilityEvent.TYPE_VIEW_CLICKED -> RecorderEventType.CLICK
@@ -904,11 +978,22 @@ object AutomationRecorder {
                     sourceClassName = focusedNode.className?.toString() ?: tracked.sourceClassName,
                     sourceIsEditable = true,
                     occurredAtMillis = occurredAtMillis,
-                    windowId = focusedNode.windowId.takeIf { it >= 0 } ?: tracked.windowId
+                    windowId = focusedNode.windowId.takeIf { it >= 0 } ?: tracked.windowId,
+                    sourceIsFocused = true
                 )
                 val result = sessionOwner.processLiveFocusedTextSnapshot(liveEvent, keyboardVisible)
                 if (result == FocusedTextSnapshotResult.UPDATED) {
                     com.shortcuts.app.automation.android.capture.V2CaptureBridge.onTextChanged(liveEvent)
+                } else if (result == FocusedTextSnapshotResult.UNCHANGED && keyboardVisible) {
+                    // Still in the field with the keyboard up (often reading suggestions): the
+                    // submit-inference window restarts from here, not from the last keystroke.
+                    com.shortcuts.app.automation.android.capture.V2CaptureBridge.onTypedFieldStillFocused(
+                        packageName = liveEvent.packageName,
+                        resourceId = liveEvent.sourceViewId,
+                        className = liveEvent.sourceClassName,
+                        text = liveText,
+                        uptimeMs = occurredAtMillis
+                    )
                 }
                 roots.drop(index + 1).forEach { it.recycle() }
                 return result

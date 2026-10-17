@@ -16,12 +16,16 @@ import java.io.PrintWriter
 internal object DebugUiDump {
     private const val MAX_DEPTH = 80
 
-    fun write(windows: List<AccessibilityWindowInfo>, out: PrintWriter) {
+    fun write(windows: List<AccessibilityWindowInfo>, out: PrintWriter, inputMethodOnly: Boolean = false) {
         out.println("<hierarchy rotation=\"0\">")
         windows
             .filter {
-                it.type != AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY &&
-                    it.type != AccessibilityWindowInfo.TYPE_INPUT_METHOD
+                if (inputMethodOnly) {
+                    it.type == AccessibilityWindowInfo.TYPE_INPUT_METHOD
+                } else {
+                    it.type != AccessibilityWindowInfo.TYPE_ACCESSIBILITY_OVERLAY &&
+                        it.type != AccessibilityWindowInfo.TYPE_INPUT_METHOD
+                }
             }
             // App windows first, so a locator matches the app before the status or navigation bar.
             .sortedWith(

@@ -267,6 +267,9 @@ class RecorderSessionOwner(
         processEvent(normalizedEvent, myPackageName, launcherPackage, transientPackages)
     }
 
+    /** The app the recording is currently attributed to; null until the first app is seen. */
+    fun foregroundPackage(): String? = synchronized(lock) { lastSeenForegroundPackage }
+
     /**
      * Returns the editable field whose focus was observed through a focus or click callback.
      * The Android boundary uses this solely as a gate: it performs no node-tree lookup when null.

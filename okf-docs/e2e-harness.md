@@ -66,6 +66,8 @@ steps, and `expect: "recorded"`:
     {"tap": {"text": "Open", "row_of": "Item 45"}},
     {"type": "hello world"},
     {"key": "ENTER"},
+    {"gtype": "hello world"},
+    {"ime": "action"},
     {"swipe": {"from": [540, 1800], "to": [540, 700], "ms": 350}},
     {"scroll_until": {"text": "Item 45"}},
     {"wait_ms": 800}
@@ -74,11 +76,40 @@ steps, and `expect: "recorded"`:
 }
 ```
 
-Element targets are resolved from a fresh uiautomator hierarchy. Dumps retry
-five times with a 400 ms backoff, and `row_of` selects the repeated target
-whose vertical center is closest to the anchor row. Text input uses adb's
-`%s` space encoding. Every step receives a 700 ms settle delay by default;
-`run --settle-ms` changes it.
+Element targets are resolved from a fresh hierarchy read through RepeatKit Dev's
+own service (`rk-ui`). Dumps retry five times with a 400 ms backoff, and `row_of`
+selects the repeated target whose vertical center is closest to the anchor row.
+Every step receives a 700 ms settle delay by default; `run --settle-ms` changes it.
+
+Two ways to type:
+
+- `type` / `key` use `adb shell input text` and an injected key event (adb's `%s`
+  space encoding). Fast, but not how people type: injected keys hide Gboard and
+  move focus in ways real typing never does, so search capture looked better with
+  them than it was.
+- `gtype` / `ime` type like a person: `gtype` taps each key of the on-screen
+  keyboard (Gboard commits through the field's input connection) and `ime` taps the
+  keyboard's own action key (Search/Go/Send). The keys are read from
+  `dumpsys activity service <RepeatKit Dev service> rk-ime`, which prints only the
+  keyboard window (`rk-ui` leaves it out). Letters, space and `.`/`/` are supported.
+
+## Real apps
+
+`tools/e2e/rk_realapps.py` records and replays harmless flows in the phone's real
+apps (Settings, Calculator, Chrome, YouTube Music): navigation, search and typing
+only, nothing sent or played, and no app force-stopped. Each run puts the app in a
+start state, records like a person (RepeatKit -> Home -> launcher icon), saves,
+returns to the start state, replays from Home through the widget run path, and
+checks the end screen. A recording that fell back to the legacy format fails.
+
+```sh
+REPEAT=10 ADB=~/Library/Android/sdk/platform-tools/adb \
+  python3 tools/e2e/rk_realapps.py chrome_search_gboard music_search_gboard
+```
+
+Flows ending in `_gboard` use `gtype`/`ime`; the plain ones use adb text. Evidence
+(recording, logcat, trace, screenshots, verdict with the compact recorded steps)
+goes to `tools/e2e/results/realapps/<timestamp>/<flow>/run<n>/`.
 
 ## Verdict rules
 

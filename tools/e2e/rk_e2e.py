@@ -28,6 +28,7 @@ RESULTS_DIR = Path(__file__).resolve().parent / "results"
 DEBUG_COMMAND_TIMEOUT = 30
 RUN_TIMEOUT = 120
 TYPE_SETTLE_MS = 700
+GTYPE_KEY_GAP_MS = 80
 DEBUG_TAG = "RepeatKitDebug"
 FIXTURE_TAG = "FixtureEvent"
 LOGCAT_TAGS = [
@@ -333,6 +334,43 @@ def scroll_until(adb, locator, max_swipes=15):
     raise HarnessError("scroll_until exhausted %d swipes for %s" % (max_swipes, json.dumps(locator)))
 
 
+def parse_keyboard_keys(xml_text):
+    """Map the on-screen keyboard's keys to tap points: single characters, " " and "<action>".
+
+    Gboard labels letter keys by content description ("q") and names the space and action keys by
+    resource id. The action key is Search/Go/Send/Enter depending on the field.
+    """
+    keys = {}
+    for node in parse_ui_nodes(xml_text):
+        bounds = node["bounds"]
+        if not bounds:
+            continue
+        center = ((bounds[0] + bounds[2]) // 2, (bounds[1] + bounds[3]) // 2)
+        rid = node["id"].split("/")[-1]
+        label = node["desc"] or node["text"]
+        if rid == "key_pos_space":
+            keys[" "] = center
+        elif rid == "key_pos_ime_action":
+            keys["<action>"] = center
+        elif label and len(label) == 1:
+            keys[label.lower()] = center
+    return keys
+
+
+def keyboard_keys(adb, timeout=6):
+    """Read the keyboard through RepeatKit Dev's service (`rk-ime`); uiautomator would unbind it."""
+    deadline = time.monotonic() + timeout
+    while True:
+        raw = adb.text(["shell", "dumpsys", "activity", "service", DEV_COMPONENT, "rk-ime"], timeout=15, check=False)
+        xml = _extract_hierarchy(raw)
+        keys = parse_keyboard_keys(xml) if xml else {}
+        if " " in keys and "<action>" in keys:
+            return keys
+        if time.monotonic() >= deadline:
+            raise HarnessError("The on-screen keyboard is not showing (no keys from rk-ime)")
+        time.sleep(0.3)
+
+
 def encode_input_text(value):
     """Encode the adb input-text space convention without invoking a shell."""
     return str(value).replace(" ", "%s")
@@ -361,6 +399,21 @@ def execute_step(adb, step, settle_ms=700):
         adb.shell(["input", "swipe", str(x), str(y), str(x), str(y), "800"])
     elif action == "type":
         adb.shell(["input", "text", encode_input_text(value)])
+    elif action == "gtype":
+        # Type like a person: tap each key of the on-screen keyboard, so the keyboard commits the
+        # text through the field's input connection. `input text` instead injects key events, which
+        # hides Gboard and moves focus in ways real typing never does.
+        keys = keyboard_keys(adb)
+        for char in str(value):
+            if char.lower() not in keys:
+                raise HarnessError("No keyboard key for %r" % char)
+            x, y = keys[char.lower()]
+            adb.shell(["input", "tap", str(x), str(y)])
+            time.sleep(GTYPE_KEY_GAP_MS / 1000.0)
+    elif action == "ime":
+        # The keyboard's own action key (Search/Go/Send), as a person submits.
+        x, y = keyboard_keys(adb)["<action>"]
+        adb.shell(["input", "tap", str(x), str(y)])
     elif action == "key":
         key = str(value).upper()
         adb.shell(["input", "keyevent", KEYCODES.get(key, key if key.startswith("KEYCODE_") else "KEYCODE_" + key)])
@@ -378,7 +431,7 @@ def execute_step(adb, step, settle_ms=700):
     # People press Enter right after typing. After a longer pause, an injected Enter sometimes no
     # longer submits the field (seen with Gboard even with no recording running), so typing keeps
     # the short pause while screens still get the full settle.
-    time.sleep(float(min(settle_ms, TYPE_SETTLE_MS) if action == "type" else settle_ms) / 1000.0)
+    time.sleep(float(min(settle_ms, TYPE_SETTLE_MS) if action in ("type", "gtype") else settle_ms) / 1000.0)
 
 
 def validate_scenario(data):

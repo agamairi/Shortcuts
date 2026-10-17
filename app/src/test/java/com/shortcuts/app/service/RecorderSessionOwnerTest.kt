@@ -62,6 +62,28 @@ class RecorderSessionOwnerTest {
     }
 
     @Test
+    fun `foreground package follows the app the recording is attributed to`() {
+        val recorder = RecorderSessionOwner()
+        recorder.start()
+        assertEquals(null, recorder.foregroundPackage())
+
+        recorder.processEvent(
+            RecorderEvent(RecorderEventType.APP_CHANGE, "com.android.chrome", null, null, null, "", occurredAtMillis = 1_000L),
+            myPackage,
+            launcherPackage
+        )
+        assertEquals("com.android.chrome", recorder.foregroundPackage())
+
+        // The keyboard and RepeatKit itself never become the recorded app.
+        recorder.processEvent(
+            RecorderEvent(RecorderEventType.CONTENT_CHANGE, myPackage, null, null, null, "", occurredAtMillis = 1_100L),
+            myPackage,
+            launcherPackage
+        )
+        assertEquals("com.android.chrome", recorder.foregroundPackage())
+    }
+
+    @Test
     fun `captured non-editable tap leaves live text fallback untracked`() {
         val recorder = RecorderSessionOwner()
         recorder.start()
