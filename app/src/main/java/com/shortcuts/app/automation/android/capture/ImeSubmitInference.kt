@@ -95,8 +95,10 @@ fun inferImeActionKind(
  * 3. The field losing input focus (or the IME disappearing) while the same app changes screen
  *    substantially, including an omnibox replacing the typed query with a result URL.
  *
- * Both must occur within [maxDelayMs] (2 seconds) after a text commit or typing, without any
- * intervening overlay tap or navigation key (BACK, HOME, RECENTS).
+ * The effect must occur within [maxDelayMs] (2 seconds) of the last moment the field was seen in
+ * its typed state: the commit itself, or a later [onFieldStillFocused] report that the field still
+ * held the committed text with the keyboard up (people often pause to read suggestions before
+ * pressing Search). No overlay tap or navigation key (BACK, HOME, RECENTS) may intervene.
  *
  * Keyboard hide alone or same-screen content updates (e.g. autocomplete suggestions) must NEVER
  * synthesize a submission.
@@ -118,8 +120,13 @@ class ImeSubmitInference(
         /** A changed non-empty value means the user is editing/deleting, not submitting. */
         val sawIntermediateTextChange: Boolean = false,
         /** Set when a tap is captured inside the field bounds (e.g. tapping the clear "X" button). */
-        val hasTapInsideField: Boolean = false
-    )
+        val hasTapInsideField: Boolean = false,
+        /** Last time the field was seen focused, holding [text], with the keyboard up. */
+        val lastSeenTypingMs: Long = timestampMs
+    ) {
+        fun isExpiredAt(uptimeMs: Long, maxDelayMs: Long): Boolean =
+            uptimeMs - maxOf(timestampMs, lastSeenTypingMs) > maxDelayMs
+    }
 
     var candidate: Candidate? = null
         private set
@@ -160,6 +167,24 @@ class ImeSubmitInference(
     }
 
     /**
+     * The field was just seen still focused, still holding exactly the committed [text], with the
+     * keyboard up. The user is still in the field (for example reading suggestions), so the submit
+     * window restarts from now. A different value means newer typing, which is not a confirmation.
+     */
+    fun onFieldStillFocused(text: String, uptimeMs: Long) {
+        val current = candidate ?: return
+        if (text != current.text || uptimeMs <= current.lastSeenTypingMs) return
+        candidate = current.copy(lastSeenTypingMs = uptimeMs)
+    }
+
+    /**
+     * Structural reason for the last effect-only inference (field focus, keyboard, screen change), for
+     * logging. Never contains field text.
+     */
+    var lastEffectDiagnostics: String? = null
+        private set
+
+    /**
      * Inspects an activity transition to determine if it indicates submission from the active candidate.
      */
     fun onActivityChanged(
@@ -168,7 +193,7 @@ class ImeSubmitInference(
         uptimeMs: Long
     ): InferredImeSubmit? {
         val current = candidate ?: return null
-        if (uptimeMs - current.timestampMs > maxDelayMs) {
+        if (current.isExpiredAt(uptimeMs, maxDelayMs)) {
             candidate = null
             return null
         }
@@ -198,7 +223,7 @@ class ImeSubmitInference(
         uptimeMs: Long
     ): InferredImeSubmit? {
         val current = candidate ?: return null
-        if (uptimeMs - current.timestampMs > maxDelayMs) {
+        if (current.isExpiredAt(uptimeMs, maxDelayMs)) {
             candidate = null
             return null
         }
@@ -218,7 +243,7 @@ class ImeSubmitInference(
         fieldBounds: com.shortcuts.app.automation.core.tree.IntRect? = null
     ): InferredImeSubmit? {
         val current = candidate ?: return null
-        if (uptimeMs - current.timestampMs > maxDelayMs) {
+        if (current.isExpiredAt(uptimeMs, maxDelayMs)) {
             candidate = null
             return null
         }
@@ -250,7 +275,7 @@ class ImeSubmitInference(
         windowSnapshot: WindowSnapshot? = null
     ): InferredImeSubmit? {
         val current = candidate ?: return null
-        if (uptimeMs - current.timestampMs > maxDelayMs) {
+        if (current.isExpiredAt(uptimeMs, maxDelayMs)) {
             candidate = null
             return null
         }
@@ -288,7 +313,7 @@ class ImeSubmitInference(
         activityClass: String? = null
     ): InferredImeSubmit? {
         val current = candidate ?: return null
-        if (uptimeMs - current.timestampMs > maxDelayMs) {
+        if (current.isExpiredAt(uptimeMs, maxDelayMs)) {
             candidate = null
             return null
         }
@@ -336,6 +361,9 @@ class ImeSubmitInference(
             inferImeActionKind(current.fieldNode, current.windowSnapshot) != ImeActionKind.UNSPECIFIED
         if (!hasImeActionEvidence) return null
 
+        lastEffectDiagnostics = "fieldFound=${currentField != null} focusLost=$focusLost keyboardWentAway=$keyboardWentAway " +
+            "screenChanged=$screenChanged textReplaced=$textWasReplaced typedLen=${current.text.length} " +
+            "msSinceCommit=${uptimeMs - current.timestampMs} msSinceSeenTyping=${uptimeMs - current.lastSeenTypingMs}"
         return emitInference(
             current = current,
             reason = "focus_loss_with_screen_change",

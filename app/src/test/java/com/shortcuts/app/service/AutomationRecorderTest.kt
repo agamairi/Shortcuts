@@ -204,6 +204,64 @@ class AutomationRecorderTest {
     }
 
     @Test
+    fun `a background launcher window updating while Chrome is recorded is not an app switch`() {
+        // Seen on a Pixel 6a: the launcher keeps a system window updating while Chrome is open.
+        // Counted as switching to the launcher, it reset the address bar being typed into.
+        var lookups = 0
+        val launcherSystemWindow = { lookups++; AutomationRecorder.isForegroundApplicationWindow(
+            android.view.accessibility.AccessibilityWindowInfo.TYPE_SYSTEM, isActive = false, isFocused = false
+        ) }
+
+        assertTrue(AutomationRecorder.isBackgroundWindowEvent(
+            RecorderEventType.CONTENT_CHANGE, "com.google.android.apps.nexuslauncher", "com.android.chrome", launcherSystemWindow
+        ))
+        assertTrue(AutomationRecorder.isBackgroundWindowEvent(
+            RecorderEventType.SCROLL, "com.google.android.apps.nexuslauncher", "com.android.chrome", launcherSystemWindow
+        ))
+        assertEquals(2, lookups)
+    }
+
+    @Test
+    fun `events from the recorded app or the window the user is in still count`() {
+        var lookups = 0
+        val activeAppWindow = { lookups++; AutomationRecorder.isForegroundApplicationWindow(
+            android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION, isActive = true, isFocused = true
+        ) }
+
+        // Same app: no window lookup at all.
+        assertTrue(!AutomationRecorder.isBackgroundWindowEvent(
+            RecorderEventType.CONTENT_CHANGE, "com.android.chrome", "com.android.chrome", activeAppWindow
+        ))
+        assertEquals(0, lookups)
+        // Another app's active window (the user really switched).
+        assertTrue(!AutomationRecorder.isBackgroundWindowEvent(
+            RecorderEventType.CONTENT_CHANGE, "com.other.app", "com.android.chrome", activeAppWindow
+        ))
+        // Unknown window: keep the event, as before.
+        assertTrue(!AutomationRecorder.isBackgroundWindowEvent(
+            RecorderEventType.FOCUS, "com.other.app", "com.android.chrome"
+        ) { null })
+        // Taps and typing are never filtered this way.
+        assertTrue(!AutomationRecorder.isBackgroundWindowEvent(
+            RecorderEventType.CLICK, "com.other.app", "com.android.chrome"
+        ) { false })
+        assertTrue(!AutomationRecorder.isBackgroundWindowEvent(
+            RecorderEventType.TEXT_CHANGE, "com.other.app", "com.android.chrome"
+        ) { false })
+    }
+
+    @Test
+    fun `only an active or focused application window is the foreground app window`() {
+        val app = android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION
+        assertTrue(AutomationRecorder.isForegroundApplicationWindow(app, isActive = true, isFocused = false))
+        assertTrue(AutomationRecorder.isForegroundApplicationWindow(app, isActive = false, isFocused = true))
+        assertTrue(!AutomationRecorder.isForegroundApplicationWindow(app, isActive = false, isFocused = false))
+        assertTrue(!AutomationRecorder.isForegroundApplicationWindow(
+            android.view.accessibility.AccessibilityWindowInfo.TYPE_SYSTEM, isActive = true, isFocused = true
+        ))
+    }
+
+    @Test
     fun `consecutive text-change events on the SAME field collapse into ONE TYPE action carrying the final text`() {
         val event1 = RecorderEvent(
             eventType = RecorderEventType.TEXT_CHANGE,

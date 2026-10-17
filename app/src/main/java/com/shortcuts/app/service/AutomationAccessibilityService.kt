@@ -21,6 +21,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import com.shortcuts.app.automation.android.AccessibilitySnapshotAdapter
 import com.shortcuts.app.automation.android.EngineV2
 import com.shortcuts.app.automation.android.replay.AndroidUiEventHub
+import com.shortcuts.app.diagnostics.Diagnostics
 import java.util.Collections
 import java.util.IdentityHashMap
 import kotlin.math.abs
@@ -156,6 +157,7 @@ open class AutomationAccessibilityService : AccessibilityService() {
         EngineV2.snapshotSource = AccessibilitySnapshotAdapter(this)
         AutomationRecorder.onAccessibilityServiceConnected()
         Log.d(TAG, "AutomationAccessibilityService connected with flags=${configuredInfo.flags}")
+        Diagnostics.log("service", "connected")
     }
 
     override fun onDestroy() {
@@ -170,6 +172,7 @@ open class AutomationAccessibilityService : AccessibilityService() {
             AutomationRecorder.stopForAccessibilityDisconnect(this)
         }
         Log.d(TAG, "AutomationAccessibilityService destroyed")
+        Diagnostics.log("service", "destroyed")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -184,10 +187,17 @@ open class AutomationAccessibilityService : AccessibilityService() {
         // Handle UI Automation feedback here
     }
 
-    /** Debug builds: `dumpsys activity service <this> rk-ui` prints the screen for the E2E harness. */
+    /**
+     * Debug builds: `dumpsys activity service <this> rk-ui` prints the screen for the E2E harness;
+     * `rk-ime` prints only the keyboard, so the harness can type by tapping its keys like a person.
+     */
     override fun dump(fd: java.io.FileDescriptor?, writer: java.io.PrintWriter, args: Array<out String>?) {
         if (com.shortcuts.app.BuildConfig.DEBUG && args?.contains("rk-ui") == true) {
             DebugUiDump.write(runCatching { windows }.getOrNull().orEmpty(), writer)
+            return
+        }
+        if (com.shortcuts.app.BuildConfig.DEBUG && args?.contains("rk-ime") == true) {
+            DebugUiDump.write(runCatching { windows }.getOrNull().orEmpty(), writer, inputMethodOnly = true)
             return
         }
         super.dump(fd, writer, args)
@@ -284,6 +294,7 @@ open class AutomationAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {
         Log.d(TAG, "Interrupted")
+        Diagnostics.log("service", "interrupted")
     }
 
     open fun getRootNode(): AccessibilityNodeInfo? = rootInActiveWindow

@@ -17,9 +17,16 @@ import com.shortcuts.app.automation.core.tree.WindowSetSnapshot
 import com.shortcuts.app.automation.core.tree.WindowSnapshot
 import com.shortcuts.app.automation.model.DecodeResult
 import com.shortcuts.app.automation.model.GestureKind
+import com.shortcuts.app.automation.model.LaunchAppStep
+import com.shortcuts.app.automation.model.LegacyActionStep
+import com.shortcuts.app.automation.model.Step
+import com.shortcuts.app.automation.model.UiOperation
+import com.shortcuts.app.automation.model.UiStep
+import com.shortcuts.app.automation.model.WaitStep
 import com.shortcuts.app.automation.model.WindowType
 import com.shortcuts.app.automation.model.WorkflowCodec
 import com.shortcuts.app.automation.model.WorkflowV2
+import com.shortcuts.app.diagnostics.Diagnostics
 import com.shortcuts.app.service.RecorderEvent
 import com.shortcuts.app.service.capture.TouchSample
 import java.io.File
@@ -73,6 +80,27 @@ object V2CaptureBridge {
         val snapshot: WindowSetSnapshot
     )
     private var pendingTextContext: PendingTextContext? = null
+
+    /**
+     * Text events are numbered when the recorder hands them over (on its own thread) and marked done
+     * when the capture queue reaches them. While the queue is behind, a commit or change for newer
+     * text is still waiting, and the live screen already shows what happened after it. Judging an
+     * older value against that screen recorded "lo" as a submitted search, so effect-only submit
+     * inference waits until the newest text has been processed.
+     */
+    private val textEventsEnqueued = java.util.concurrent.atomic.AtomicLong(0)
+    @Volatile private var textEventsProcessed = 0L
+
+    private data class TypedFieldSighting(
+        val packageName: String,
+        val resourceId: String?,
+        val className: String?,
+        val text: String,
+        val uptimeMs: Long
+    )
+
+    /** Latest "field still focused with this text and the keyboard up" report from the recorder. */
+    @Volatile private var typedFieldSighting: TypedFieldSighting? = null
     private val activityCache = java.util.concurrent.ConcurrentHashMap<Pair<String, String>, Boolean>()
     private val imeInference = ImeSubmitInference()
     private var backInference = BackNavigationInference()
@@ -134,6 +162,7 @@ object V2CaptureBridge {
                 lastSnapshotsByScreen.clear()
                 activityCache.clear()
                 imeInference.reset()
+                typedFieldSighting = null
                 pendingAppSwitches.clear()
                 pendingTextContext = null
                 imePackageNames = emptySet()
@@ -199,6 +228,7 @@ object V2CaptureBridge {
                     lastSnapshotsByScreen.clear()
                     activityCache.clear()
                     imeInference.reset()
+                    typedFieldSighting = null
                     pendingAppSwitches.clear()
                     pendingTextContext = null
                     imePackageNames = emptySet()
@@ -220,11 +250,11 @@ object V2CaptureBridge {
                 val finalSnapshot = snapshotWithRetry()
                 if (finalSnapshot != null) {
                     flushPendingAppSwitchesLocked(finalSnapshot)
-                    imeInference.onScreenEffect(
+                    inferSubmitFromScreenLocked(
                         finalSnapshot,
                         finalSnapshot.capturedAtUptimeMs,
                         lastForegroundPackage?.let(lastActivitiesByPackage::get)
-                    )?.let(::deliverInferredImeSubmitLocked)
+                    )
                     runCatching { activeCompiler.updateScreen(finalSnapshot) }
                 }
 
@@ -235,8 +265,25 @@ object V2CaptureBridge {
                     lastWorkflowJson = json
                     store?.saveLastWorkflow(json)
                     Log.d(TAG, "Recording stopped: steps=${workflow.steps.size}")
+                    Diagnostics.log(
+                        "capture",
+                        "compiled",
+                        mapOf(
+                            "stepCount" to workflow.steps.size,
+                            "stepTypes" to workflow.steps.map(::formatStepType),
+                            "warnings" to workflow.steps.flatMap { it.migrationWarnings }
+                        )
+                    )
                 }.onFailure { error ->
                     Log.w(TAG, "Failed to compile v2 workflow", error)
+                    Diagnostics.log(
+                        "capture",
+                        "compile_failed",
+                        mapOf(
+                            "errorClass" to error.javaClass.name,
+                            "message" to (error.message ?: "")
+                        )
+                    )
                     lastWorkflow = null
                     lastWorkflowJson = null
                     store?.clearLastWorkflow()
@@ -265,6 +312,7 @@ object V2CaptureBridge {
                 lastSnapshotsByScreen.clear()
                 activityCache.clear()
                 imeInference.reset()
+                typedFieldSighting = null
                 pendingAppSwitches.clear()
                 pendingTextContext = null
                 imePackageNames = emptySet()
@@ -377,6 +425,18 @@ object V2CaptureBridge {
                 TAG,
                 "Delivered Interaction: kind=$kind pkg=${window?.packageName} nodeClass=${targetNode?.className} windowId=${interaction.hitWindowId} nodeId=${interaction.hitNodeId} viewId=${targetNode?.resourceId} points=${interaction.points.size} down=${interaction.downUptimeMs} up=${interaction.upUptimeMs}"
             )
+            Diagnostics.log(
+                "capture",
+                "interaction",
+                mapOf(
+                    "kind" to kind.name,
+                    "pkg" to window?.packageName,
+                    "nodeClass" to targetNode?.className,
+                    "viewId" to targetNode?.resourceId,
+                    "points" to interaction.points.size,
+                    "lateSnapshot" to lateSnapshot
+                )
+            )
         }
         }
     }
@@ -385,8 +445,10 @@ object V2CaptureBridge {
      * Delivers a committed field text edit to the compiler.
      */
     fun onTextCommit(event: RecorderEvent) {
+        val sequence = textEventsEnqueued.incrementAndGet()
         captureExecutor.execute {
             synchronized(lock) {
+                textEventsProcessed = sequence
                 if (!EngineV2.enabled) return@synchronized
                 val activeCompiler = compiler ?: return@synchronized
                 if (event.enteredText.isEmpty()) return@synchronized
@@ -421,13 +483,32 @@ object V2CaptureBridge {
                 persistEventLocked(PersistedV2EventWrapper(type = "text_commit", textCommit = commit))
                 val currentActivity = lastActivitiesByPackage[window.packageName]
                 imeInference.onTextCommit(commit, currentActivity, snapshot)
-                pendingTextContext = null
+                // Keep the field's context (screen while typing): if the queue is behind, the next
+                // change to this field may only be processed after the field has lost focus.
+                pendingTextContext = capturedContext?.copy(enteredText = committedText)
                 rememberSnapshotLocked(window.packageName, snapshot)
 
                 Log.d(
                     TAG,
-                    "Delivered TextCommit: pkg=${window.packageName} nodeClass=${fieldNode.className} windowId=${window.windowId} nodeId=${fieldNode.nodeId} viewId=${fieldNode.resourceId} isEditable=${fieldNode.editable} password=${fieldNode.password} at=${commit.committedAtUptimeMs}"
+                    "Delivered TextCommit: pkg=${window.packageName} nodeClass=${fieldNode.className} windowId=${window.windowId} nodeId=${fieldNode.nodeId} viewId=${fieldNode.resourceId} isEditable=${fieldNode.editable} password=${fieldNode.password} at=${commit.committedAtUptimeMs} queueLagMs=${liveSnapshot?.let { it.capturedAtUptimeMs - event.occurredAtMillis }}"
                 )
+                Diagnostics.log(
+                    "capture",
+                    "text_commit",
+                    mapOf(
+                        "pkg" to window.packageName,
+                        "nodeClass" to fieldNode.className,
+                        "viewId" to fieldNode.resourceId,
+                        "textLength" to committedText.length,
+                        "queueLagMs" to liveSnapshot?.let { it.capturedAtUptimeMs - event.occurredAtMillis }
+                    )
+                )
+                // A commit flushed because the field just lost focus (the submit itself) is often the
+                // last text event: judge the screen it left behind now rather than waiting for the
+                // next screen change, which may never come on a quiet results screen.
+                if (liveSnapshot != null && !newerTextPending()) {
+                    inferSubmitFromScreenLocked(liveSnapshot, commit.committedAtUptimeMs, currentActivity)
+                }
             }
         }
     }
@@ -441,6 +522,7 @@ object V2CaptureBridge {
                 if (!EngineV2.enabled) return@synchronized
                 val activeCompiler = compiler ?: return@synchronized
                 imeInference.reset()
+                typedFieldSighting = null
                 val kind = mapImeLabelToActionKind(label)
 
                 val snapshot = EngineV2.snapshotSource?.snapshot()
@@ -470,6 +552,14 @@ object V2CaptureBridge {
                     TAG,
                     "Delivered ImeAction: kind=$kind pkg=${window.packageName} nodeClass=${fieldNode.className} windowId=${window.windowId} nodeId=${fieldNode.nodeId} viewId=${fieldNode.resourceId} at=$uptimeMs"
                 )
+                Diagnostics.log(
+                    "capture",
+                    "ime_action",
+                    mapOf(
+                        "kind" to kind.name,
+                        "inferred" to false
+                    )
+                )
             }
         }
     }
@@ -496,11 +586,11 @@ object V2CaptureBridge {
                 if (isImeWindowState) {
                     if (snapshot != null) {
                         flushPendingAppSwitchesLocked(snapshot)
-                        imeInference.onScreenEffect(
+                        inferSubmitFromScreenLocked(
                             snapshot,
                             uptimeMs,
                             lastForegroundPackage?.let(lastActivitiesByPackage::get)
-                        )?.let(::deliverInferredImeSubmitLocked)
+                        )
                     }
                     Log.d(TAG, "Ignored IME window state: pkg=$toPackage at=$uptimeMs")
                     return@synchronized
@@ -526,12 +616,12 @@ object V2CaptureBridge {
         val confirmedActivityClass = className?.takeIf { isConfirmedActivity(toPackage, it) }
         val activityClass = confirmedActivityClass ?: lastActivitiesByPackage[toPackage]
 
+        applyTypedFieldSightingLocked()
         val inferred = imeInference.onActivityChanged(toPackage, activityClass, uptimeMs)
         if (inferred != null) {
             deliverInferredImeSubmitLocked(inferred)
         } else {
-            imeInference.onScreenEffect(snapshot, uptimeMs, activityClass)
-                ?.let(::deliverInferredImeSubmitLocked)
+            inferSubmitFromScreenLocked(snapshot, uptimeMs, activityClass)
         }
 
         val fromPackage = lastForegroundPackage
@@ -565,6 +655,15 @@ object V2CaptureBridge {
             TAG,
             "Delivered AppSwitch: from=${appSwitch.fromPackageName} to=$toPackage activityClass=$activityClass at=$uptimeMs"
         )
+        Diagnostics.log(
+            "capture",
+            "app_switch",
+            mapOf(
+                "from" to appSwitch.fromPackageName,
+                "to" to toPackage,
+                "activityClass" to activityClass
+            )
+        )
     }
 
     private fun flushPendingAppSwitchesLocked(snapshot: WindowSetSnapshot) {
@@ -591,46 +690,133 @@ object V2CaptureBridge {
      * Inspects a text change event for field clearing (the "sent" pattern) or in-progress typing.
      */
     fun onTextChanged(event: RecorderEvent) {
+        val sequence = textEventsEnqueued.incrementAndGet()
         captureExecutor.execute {
             synchronized(lock) {
+                textEventsProcessed = sequence
                 if (!EngineV2.enabled || compiler == null) return@synchronized
+                // Only fields with a view id: two id-less Compose fields of the same class are
+                // indistinguishable without a snapshot.
+                val previousForEvent = pendingTextContext?.takeIf {
+                    event.sourceViewId != null && it.resourceId != null && matchesTextContext(it, event)
+                }
+                val focusKnown = event.sourceIsFocused
+                if (previousForEvent != null && focusKnown != null && newerTextPending()) {
+                    // Superseded by text still waiting in the queue: keep the value (and the
+                    // field-cleared bookkeeping) without a full-screen snapshot, so a fast typist
+                    // cannot push the queue further behind. Text that changed after the field lost
+                    // focus is the app's replacement (a results URL), not typing.
+                    if (focusKnown) {
+                        pendingTextContext = previousForEvent.copy(enteredText = event.enteredText)
+                    }
+                    applyTypedFieldSightingLocked()
+                    imeInference.onFieldTextChanged(
+                        previousForEvent.fieldNode,
+                        event.enteredText,
+                        event.occurredAtMillis,
+                        previousForEvent.window
+                    )?.let(::deliverInferredImeSubmitLocked)
+                    return@synchronized
+                }
                 val snapshot = EngineV2.snapshotSource?.snapshot() ?: return@synchronized
                 flushPendingAppSwitchesLocked(snapshot)
                 val window = (event.windowId?.let { snapshot.window(it) })
                     ?: snapshot.windows.firstOrNull { it.packageName == event.packageName && it.type != WindowType.ACCESSIBILITY_OVERLAY && it.type != WindowType.INPUT_METHOD }
                     ?: return@synchronized
-                val field = resolveTextField(window, event.sourceViewId, event.sourceClassName, event.enteredText)
+                val liveField = resolveTextField(window, event.sourceViewId, event.sourceClassName, event.enteredText)
                     ?: return@synchronized
                 val previousTextContext = pendingTextContext?.takeIf {
                     it.packageName == window.packageName &&
-                        (field.resourceId == null || it.resourceId == field.resourceId) &&
-                        it.className == field.className
+                        (liveField.resourceId == null || it.resourceId == liveField.resourceId) &&
+                        it.className == liveField.className
                 }
+                // The event says whether the field was focused when the text changed. The snapshot is
+                // taken when the queue gets here, possibly after the submit, so it only decides when
+                // the event could not say.
+                val focusedAtEvent = event.sourceIsFocused
                 val keyboardWentAway = previousTextContext?.snapshot?.windows?.any {
                     it.type == WindowType.INPUT_METHOD
                 } == true && snapshot.windows.none { it.type == WindowType.INPUT_METHOD }
                 val isPostSubmitReplacement = previousTextContext != null &&
                     previousTextContext.enteredText != event.enteredText &&
-                    (!field.focused || keyboardWentAway)
+                    if (focusedAtEvent != null) !focusedAtEvent else (!liveField.focused || keyboardWentAway)
                 if (!isPostSubmitReplacement) {
-                    pendingTextContext = PendingTextContext(
-                        packageName = window.packageName,
-                        resourceId = field.resourceId,
-                        className = field.className,
-                        enteredText = event.enteredText,
-                        fieldNode = field,
-                        window = window,
-                        snapshot = snapshot
-                    )
+                    // Typed while focused, but the field has lost focus since (the queue was behind):
+                    // keep the screen from when it was still being typed into.
+                    val staleFocus = focusedAtEvent == true && !liveField.focused &&
+                        previousTextContext?.resourceId != null && previousTextContext.resourceId == liveField.resourceId
+                    pendingTextContext = if (staleFocus) {
+                        previousTextContext!!.copy(enteredText = event.enteredText)
+                    } else {
+                        PendingTextContext(
+                            packageName = window.packageName,
+                            resourceId = liveField.resourceId,
+                            className = liveField.className,
+                            enteredText = event.enteredText,
+                            fieldNode = liveField,
+                            window = window,
+                            snapshot = snapshot
+                        )
+                    }
                 }
-                imeInference.onFieldTextChanged(field, event.enteredText, event.occurredAtMillis, window)
-                    ?.let(::deliverInferredImeSubmitLocked)
-                    ?: imeInference.onScreenEffect(
+                val field = pendingTextContext?.takeIf {
+                    focusedAtEvent == true && it.resourceId != null && it.resourceId == liveField.resourceId
+                }?.fieldNode ?: liveField
+                applyTypedFieldSightingLocked()
+                val inferred = imeInference.onFieldTextChanged(field, event.enteredText, event.occurredAtMillis, window)
+                if (inferred != null) {
+                    deliverInferredImeSubmitLocked(inferred)
+                } else if (!newerTextPending()) {
+                    inferSubmitFromScreenLocked(
                         snapshot,
                         event.occurredAtMillis,
                         lastActivitiesByPackage[window.packageName]
-                    )?.let(::deliverInferredImeSubmitLocked)
+                    )
+                }
             }
+        }
+    }
+
+    /**
+     * The recorder saw the typed field still focused, holding [text], with the keyboard up. Cheap and
+     * called often (every event while a field is followed): it only records the sighting, which the
+     * capture queue applies before judging a submit.
+     */
+    fun onTypedFieldStillFocused(
+        packageName: String,
+        resourceId: String?,
+        className: String?,
+        text: String,
+        uptimeMs: Long
+    ) {
+        if (text.isEmpty()) return
+        typedFieldSighting = TypedFieldSighting(packageName, resourceId, className, text, uptimeMs)
+    }
+
+    private fun applyTypedFieldSightingLocked() {
+        val sighting = typedFieldSighting ?: return
+        val candidate = imeInference.candidate ?: return
+        val field = candidate.fieldNode
+        if (sighting.packageName != candidate.windowSnapshot.packageName) return
+        if (sighting.resourceId != null && field.resourceId != null && sighting.resourceId != field.resourceId) return
+        if (sighting.className != null && field.className != null && sighting.className != field.className) return
+        imeInference.onFieldStillFocused(sighting.text, sighting.uptimeMs)
+    }
+
+    private fun newerTextPending(): Boolean = textEventsEnqueued.get() > textEventsProcessed
+
+    private fun matchesTextContext(context: PendingTextContext, event: RecorderEvent): Boolean =
+        context.packageName == event.packageName &&
+            (event.sourceViewId == null || context.resourceId == event.sourceViewId) &&
+            (event.sourceClassName == null || context.className == event.sourceClassName)
+
+    /** Effect-only submit inference (focus/keyboard gone and the screen changed), never on stale text. */
+    private fun inferSubmitFromScreenLocked(snapshot: WindowSetSnapshot, uptimeMs: Long, activityClass: String?) {
+        if (imeInference.candidate == null || newerTextPending()) return
+        applyTypedFieldSightingLocked()
+        imeInference.onScreenEffect(snapshot, uptimeMs, activityClass)?.let { inferred ->
+            Log.d(TAG, "Submit effect: ${imeInference.lastEffectDiagnostics}")
+            deliverInferredImeSubmitLocked(inferred)
         }
     }
 
@@ -650,15 +836,19 @@ object V2CaptureBridge {
             screenCheckQueued.set(false)
             synchronized(lock) {
                 if (!EngineV2.enabled || compiler == null) return@synchronized
-                if (imeInference.candidate == null && pendingAppSwitches.isEmpty()) return@synchronized
+                if (pendingAppSwitches.isEmpty() && (imeInference.candidate == null || newerTextPending())) {
+                    // Nothing to check, or newer text is still queued: its own processing judges the
+                    // screen once it is the latest value.
+                    return@synchronized
+                }
                 val uptimeMs = latestScreenChangeUptimeMs
                 val snapshot = EngineV2.snapshotSource?.snapshot() ?: return@synchronized
                 flushPendingAppSwitchesLocked(snapshot)
-                imeInference.onScreenEffect(
+                inferSubmitFromScreenLocked(
                     snapshot,
                     uptimeMs,
                     lastForegroundPackage?.let(lastActivitiesByPackage::get)
-                )?.let(::deliverInferredImeSubmitLocked)
+                )
             }
         }
     }
@@ -677,6 +867,14 @@ object V2CaptureBridge {
         backInference.onInteraction(inferred.action.actionAtUptimeMs)
         persistEventLocked(PersistedV2EventWrapper(type = "ime_action", imeAction = inferred.action, inferredImeReason = inferred.reason))
         Log.w(TAG, "Inferred ImeAction (reason=${inferred.reason}; INFERRED_IME_ACTION)")
+        Diagnostics.log(
+            "capture",
+            "ime_inferred",
+            mapOf(
+                "reason" to inferred.reason,
+                "diagnostics" to imeInference.lastEffectDiagnostics
+            )
+        )
     }
 
     private fun deliverInferredBackLocked(
@@ -696,6 +894,22 @@ object V2CaptureBridge {
         Log.d(
             TAG,
             "Inferred GlobalAction BACK (from=${inferred.fromActivityClass} to=${inferred.toActivityClass}; INFERRED_BACK)"
+        )
+        Diagnostics.log(
+            "capture",
+            "back_inferred",
+            mapOf(
+                "from" to inferred.fromActivityClass,
+                "to" to inferred.toActivityClass
+            )
+        )
+        Diagnostics.log(
+            "capture",
+            "global_action",
+            mapOf(
+                "kind" to "BACK",
+                "inferred" to true
+            )
         )
     }
 
@@ -723,6 +937,14 @@ object V2CaptureBridge {
                 persistEventLocked(PersistedV2EventWrapper(type = "global_action", globalAction = globalAction))
                 primaryApplicationPackage(snapshot)?.let { rememberSnapshotLocked(it, snapshot) }
                 Log.d(TAG, "Delivered GlobalAction: kind=$kind at=$eventTime")
+                Diagnostics.log(
+                    "capture",
+                    "global_action",
+                    mapOf(
+                        "kind" to kind,
+                        "inferred" to false
+                    )
+                )
             }
         }
         return false
@@ -817,6 +1039,7 @@ object V2CaptureBridge {
     private fun logDegraded(reason: String) {
         if (!degradedLogged) {
             Log.w(TAG, "Degraded mode: $reason")
+            Diagnostics.log("capture", "degraded", mapOf("reason" to reason))
             degradedLogged = true
         }
     }
@@ -883,6 +1106,7 @@ object V2CaptureBridge {
             lastActivitiesByPackage.clear()
             lastSnapshotsByScreen.clear()
             imeInference.reset()
+            typedFieldSighting = null
             backInference = BackNavigationInference()
             launcherPackages = emptySet()
             imePackageNames = emptySet()
@@ -894,8 +1118,29 @@ object V2CaptureBridge {
 
     internal fun getImeInferenceForTest(): ImeSubmitInference = imeInference
 
+    /** Holds the capture queue until the returned latch is released, to model a queue that is behind. */
+    internal fun pauseCaptureQueueForTest(): java.util.concurrent.CountDownLatch {
+        val release = java.util.concurrent.CountDownLatch(1)
+        captureExecutor.execute { runCatching { release.await(5, TimeUnit.SECONDS) } }
+        return release
+    }
+
     internal fun awaitCaptureIdleForTest() {
         runCatching { captureExecutor.submit {}.get(2, TimeUnit.SECONDS) }
+    }
+
+    internal fun formatStepType(step: Step): String = when (step) {
+        is LaunchAppStep -> "launch_app"
+        is WaitStep -> "wait"
+        is LegacyActionStep -> "legacy"
+        is UiStep -> when (val op = step.operation) {
+            is UiOperation.TAP -> "tap"
+            is UiOperation.LONG_PRESS -> "long_press"
+            is UiOperation.SWIPE -> "swipe"
+            is UiOperation.SET_TEXT -> "set_text"
+            is UiOperation.IME_ACTION -> "ime_action"
+            is UiOperation.GLOBAL_ACTION -> op.kind.lowercase()
+        }
     }
 
     private const val SNAPSHOT_ATTEMPTS = 3

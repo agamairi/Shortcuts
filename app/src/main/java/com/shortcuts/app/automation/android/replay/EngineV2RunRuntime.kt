@@ -13,9 +13,12 @@ import com.shortcuts.app.automation.core.tree.WindowSetSnapshot
 import com.shortcuts.app.automation.diagnostics.TraceEvent
 import com.shortcuts.app.automation.diagnostics.TraceSink
 import com.shortcuts.app.automation.model.DecodeResult
+import com.shortcuts.app.automation.model.Step
 import com.shortcuts.app.automation.model.UiStep
 import com.shortcuts.app.automation.model.WorkflowCodec
 import com.shortcuts.app.automation.model.WorkflowV2
+import com.shortcuts.app.diagnostics.Diagnostics
+import com.shortcuts.app.diagnostics.ReplayTraceCompactor
 import com.shortcuts.app.automation.replay.DefaultReplayEngine
 import com.shortcuts.app.automation.replay.DispatchResult
 import com.shortcuts.app.automation.replay.ReplayCancellationSignal
@@ -248,9 +251,47 @@ class EngineV2RunRuntime(
             engine.run(workflow, sink)
         } finally {
             writeDebugTraceIfEnabled(sink)
+            logDiagnosticsTrace(workflow, sink)
         }
 
         return mapReplayResultToRunResult(workflow, replayResult, shortcutName)
+    }
+
+    private fun logDiagnosticsTrace(workflow: WorkflowV2, sink: InMemoryTraceSink) {
+        val stepTypes = workflow.steps.map(::formatReplayStepType)
+        Diagnostics.log(
+            "replay",
+            "run_engine",
+            mapOf(
+                "workflowId" to workflow.workflowId,
+                "stepCount" to workflow.steps.size,
+                "stepTypes" to stepTypes
+            )
+        )
+        val runStarted = sink.events.filterIsInstance<TraceEvent.RunStarted>().firstOrNull()
+        val runId = runStarted?.runId
+        val compacted = ReplayTraceCompactor.compact(sink.events)
+        for (entry in compacted) {
+            val traceFields = entry.toMutableMap()
+            if (runId != null) {
+                traceFields["run"] = runId
+            }
+            Diagnostics.log("replay", "trace", traceFields)
+        }
+    }
+
+    private fun formatReplayStepType(step: Step): String = when (step) {
+        is com.shortcuts.app.automation.model.LaunchAppStep -> "launch_app"
+        is com.shortcuts.app.automation.model.WaitStep -> "wait"
+        is com.shortcuts.app.automation.model.LegacyActionStep -> "legacy"
+        is com.shortcuts.app.automation.model.UiStep -> when (val op = step.operation) {
+            is com.shortcuts.app.automation.model.UiOperation.TAP -> "tap"
+            is com.shortcuts.app.automation.model.UiOperation.LONG_PRESS -> "long_press"
+            is com.shortcuts.app.automation.model.UiOperation.SWIPE -> "scroll"
+            is com.shortcuts.app.automation.model.UiOperation.SET_TEXT -> "set_text"
+            is com.shortcuts.app.automation.model.UiOperation.IME_ACTION -> "ime_action"
+            is com.shortcuts.app.automation.model.UiOperation.GLOBAL_ACTION -> op.kind.lowercase()
+        }
     }
 
     private fun writeDebugTraceIfEnabled(sink: InMemoryTraceSink) {

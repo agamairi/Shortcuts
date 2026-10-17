@@ -87,6 +87,8 @@ class RunAutomationCallback : ActionCallback {
                     return@withContext
                 }
 
+                com.shortcuts.app.diagnostics.Diagnostics.log("widget", "tap", mapOf("shortcutId" to automationIdToRun))
+
                 val automation = db.automationDao().getAutomationById(automationIdToRun)
                 if (automation == null) {
                     withContext(Dispatchers.Main) {
@@ -126,6 +128,11 @@ class RunAutomationCallback : ActionCallback {
                 Log.d("WidgetCallback", outcome.userMessage())
             } catch (e: Exception) {
                 Log.e("WidgetCallback", "Failed to execute widget automation", e)
+                com.shortcuts.app.diagnostics.Diagnostics.log(
+                    "widget",
+                    "error",
+                    mapOf("errorClass" to e.javaClass.name, "where" to "RunAutomationCallback")
+                )
                 withContext(Dispatchers.Main) {
                     android.widget.Toast.makeText(
                         context,

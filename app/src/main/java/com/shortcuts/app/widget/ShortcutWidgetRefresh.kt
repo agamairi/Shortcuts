@@ -53,7 +53,14 @@ internal suspend fun refreshShortcutWidget(context: Context, appWidgetId: Int) {
                     runCatching {
                         awm.updateAppWidgetOptions(appWidgetId, awm.getAppWidgetOptions(appWidgetId))
                     }.onFailure { Log.w(TAG, "Launcher nudge failed for widget $appWidgetId", it) }
-                }.onFailure { Log.e(TAG, "Redrawing widget $appWidgetId (glanceId=$glanceId) failed", it) }
+                }.onFailure {
+                    Log.e(TAG, "Redrawing widget $appWidgetId (glanceId=$glanceId) failed", it)
+                    com.shortcuts.app.diagnostics.Diagnostics.log(
+                        "widget",
+                        "error",
+                        mapOf("errorClass" to it.javaClass.name, "where" to "ShortcutWidgetRefresh.refreshShortcutWidget")
+                    )
+                }
                 return
             }
             if (attempt < GLANCE_ID_ATTEMPTS - 1) {
@@ -76,7 +83,14 @@ internal suspend fun refreshShortcutWidget(context: Context, appWidgetId: Int) {
                     }
                 }
             }.onSuccess { Log.i(TAG, "Fallback redraw succeeded for glanceId=$id") }
-             .onFailure { Log.e(TAG, "Fallback redraw failed for glanceId=$id", it) }
+             .onFailure {
+                 Log.e(TAG, "Fallback redraw failed for glanceId=$id", it)
+                 com.shortcuts.app.diagnostics.Diagnostics.log(
+                     "widget",
+                     "error",
+                     mapOf("errorClass" to it.javaClass.name, "where" to "ShortcutWidgetRefresh.fallbackRedraw")
+                 )
+             }
         }
     }
 }
@@ -100,7 +114,14 @@ internal suspend fun refreshAllShortcutWidgets(context: Context) {
                     }
                 }
             }.onSuccess { Log.i(TAG, "Redraw all succeeded for glanceId=$id") }
-             .onFailure { Log.e(TAG, "Redraw all failed for glanceId=$id", it) }
+             .onFailure {
+                 Log.e(TAG, "Redraw all failed for glanceId=$id", it)
+                 com.shortcuts.app.diagnostics.Diagnostics.log(
+                     "widget",
+                     "error",
+                     mapOf("errorClass" to it.javaClass.name, "where" to "ShortcutWidgetRefresh.refreshAllShortcutWidgets")
+                 )
+             }
         }
     }
 }

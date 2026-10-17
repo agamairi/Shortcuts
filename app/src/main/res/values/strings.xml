@@ -94,4 +94,14 @@
     <string name="licensing_dep_okhttp_retrofit">OkHttp &amp; Retrofit (com.squareup.okhttp3, com.squareup.retrofit2) \u2014 Square, Inc.</string>
     <string name="licensing_dep_datastore_security">DataStore Preferences &amp; Security Crypto \u2014 Android Open Source Project / Google LLC</string>
     <string name="licensing_dep_kotlin">Kotlin Standard Library &amp; Coroutines \u2014 JetBrains s.r.o.</string>
+
+    <!-- Settings Diagnostics -->
+    <string name="settings_diagnostics_title">Diagnostics</string>
+    <string name="settings_diagnostics_keep_log">Keep a diagnostics log</string>
+    <string name="settings_diagnostics_description">Records what RepeatKit does while recording and running shortcuts, so you can send it when something goes wrong. It stays on this phone until you share it, and includes app and shortcut names and which step failed \u2014 never what you type or what\u2019s on screen.</string>
+    <string name="settings_diagnostics_empty">Empty</string>
+    <string name="settings_diagnostics_share">Share log</string>
+    <string name="settings_diagnostics_clear">Clear log</string>
+    <string name="settings_diagnostics_clear_confirm_title">Clear diagnostics log?</string>
+    <string name="settings_diagnostics_clear_confirm_body">This will permanently delete all stored diagnostics logs on this device.</string>
 </resources>

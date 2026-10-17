@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-17
+
+Searches now record and replay, and the app keeps a private diagnostics log you can share. On a Pixel 6a, Chrome address-bar searches passed 10 of 10 runs and YouTube Music searches 23 of 25, typed on the on-screen keyboard (both were 0 of 2 in 0.8.0). The test-app suite still passes 24 of 24.
+
+### Fixed
+- **Chrome address-bar searches record the typed query and the submit.** Recording "open Chrome, tap the address bar, type, press Go" kept only the launch and the tap. Chrome's address bar never announces its text, so RepeatKit has to re-read it. But the Pixel launcher keeps a background window updating while Chrome is open, and the recorder took each update as a switch to the launcher. That reset the field being followed, so the text was never re-read. Updates from background windows of other apps no longer count as switching apps. The recording now has the query as typed (not the results URL Chrome shows afterwards) and a detected Go. On a Pixel 6a, recording and replay passed 10 of 10 runs typed on the on-screen keyboard and 5 of 5 typed with adb (it was 0 of 2 in 0.8.0).
+- **Searches typed on the on-screen keyboard record the whole query.** In YouTube Music, typing with Gboard recorded a partial query ("lo") as a submitted search and often missed the real Search press. Gboard reports a window change on almost every keystroke, and each one saved the field as a separate step. The recording queue then fell seconds behind, and it judged old partial text against a screen that already showed the results. Now the field is saved only when the keyboard actually closes, and a submit is never detected while newer typed text is still waiting to be processed. Testing with adb-injected text had hidden this: it hides the keyboard, so these events never happened. On a Pixel 6a, recording and replay of a YouTube Music search typed on the on-screen keyboard passed 23 of 25 runs (0 of 2 before the fix), and 5 of 5 with adb. All 24 recordings that started were correct. One failure was YouTube Music not showing its Search button before recording started. The other was YouTube Music itself running out of memory while replay opened it.
+- **A pause before pressing Search no longer loses the search.** A keyboard submit was only detected within 2 seconds of the last keystroke, so stopping to read suggestions first meant the Search press wasn't recorded. The 2 seconds now count from the last moment the field was seen still focused, holding the typed text, with the keyboard up.
+
+### Added
+- **Diagnostics log you can share.** Settings → Diagnostics keeps a private log of what RepeatKit did while recording and running shortcuts (which app and screen, which step, why it failed, crashes) and shares it as a text file. It never contains what you type or what's on screen, stays on the phone until you share it, and can be turned off or cleared.
+- **The test harness can type like a person.** New `gtype` and `ime` scenario steps tap the on-screen keyboard's keys and its Search/Go key, read through RepeatKit Dev's own service (`rk-ime`), instead of injecting text with adb. `tools/e2e/rk_realapps.py` records and replays the real-app flows (Settings, Calculator, Chrome and YouTube Music search, with both typing methods) and checks the end screen.
+
+### Known issues
+- **Google Messages (type and Send) is still untested on a real device**, and so is a Chrome search started from a page whose address is already in the address bar.
+- **Only the debug build has been tested recording and replaying on device.** The release build was checked to install, start and keep its diagnostics log.
+- **Still open from 0.8.0:** lock-screen widgets are untested on device; choosing a shortcut for an empty widget lands you in RepeatKit; a tap made the instant a screen opens can be recorded but not received; Back is detected, not observed.
+
 ## [0.8.0] - 2026-10-17
 
 Recording and replay rebuilt (Engine v2), and home-screen widgets fixed. On a Pixel 6a (Android 16), v0.7.4 replayed 0 of 12 test-app scenarios; this release replays all 12, 24 of 24 runs on the final build. In real apps, Settings, Calculator and YouTube Music navigation record and replay reliably; see Known issues for searches. Widgets pin, load in a few seconds, run, and follow renames and deletes.

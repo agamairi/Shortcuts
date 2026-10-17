@@ -7,6 +7,7 @@ from rk_e2e import (
     encode_input_text,
     find_bounds,
     merge_enabled_services,
+    parse_keyboard_keys,
     record_quality,
     validate_scenario,
 )
@@ -97,6 +98,25 @@ class AccessibilitySettingTests(unittest.TestCase):
     def test_merge_is_idempotent_and_handles_null(self):
         self.assertEqual(merge_enabled_services("null", DEV_COMPONENT), DEV_COMPONENT)
         self.assertEqual(merge_enabled_services(DEV_COMPONENT, DEV_COMPONENT), DEV_COMPONENT)
+
+
+class KeyboardTests(unittest.TestCase):
+    def test_gboard_keys_map_letters_space_and_action(self):
+        xml = (
+            '<hierarchy rotation="0"><node text="" resource-id="com.google.android.inputmethod.latin:id/D01" '
+            'class="android.widget.FrameLayout" package="g" content-desc="q" clickable="false" bounds="[4,1754][111,1885]">'
+            '</node><node text="" resource-id="com.google.android.inputmethod.latin:id/key_pos_space" class="x" package="g" '
+            'content-desc="Space" clickable="false" bounds="[271,2147][807,2279]"></node>'
+            '<node text="" resource-id="com.google.android.inputmethod.latin:id/key_pos_ime_action" class="x" package="g" '
+            'content-desc="Search" clickable="false" bounds="[914,2147][1076,2279]"></node>'
+            '<node text="" resource-id="g:id/key_pos_shift" class="x" package="g" content-desc="Shift" clickable="false" '
+            'bounds="[4,2016][164,2147]"></node></hierarchy>'
+        )
+        keys = parse_keyboard_keys(xml)
+        self.assertEqual(keys["q"], (57, 1819))
+        self.assertEqual(keys[" "], (539, 2213))
+        self.assertEqual(keys["<action>"], (995, 2213))
+        self.assertNotIn("shift", keys)
 
 
 class InputEncodingTests(unittest.TestCase):

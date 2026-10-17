@@ -4,6 +4,7 @@ sealed class DebugCommand(val commandName: String) {
     data object StartRecording : DebugCommand("start_recording")
     data object StopRecording : DebugCommand("stop_recording")
     data object DumpRecording : DebugCommand("dump_recording")
+    data object DumpDiagnostics : DebugCommand("dump_diagnostics")
     data class Save(val name: String) : DebugCommand("save")
     data class Run(val name: String) : DebugCommand("run")
     data object List : DebugCommand("list")
@@ -19,6 +20,7 @@ sealed class DebugCommand(val commandName: String) {
                 "start_recording" -> StartRecording
                 "stop_recording" -> StopRecording
                 "dump_recording" -> DumpRecording
+                "dump_diagnostics" -> DumpDiagnostics
                 "save" -> if (normalizedName.isEmpty()) {
                     Invalid("save requires a name")
                 } else {

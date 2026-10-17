@@ -162,6 +162,11 @@ class ShortcutWidgetConfigActivity : ComponentActivity() {
                 )
             } catch (t: Throwable) {
                 Log.e(TAG, "Could not place widget $appWidgetId", t)
+                com.shortcuts.app.diagnostics.Diagnostics.log(
+                    "widget",
+                    "error",
+                    mapOf("errorClass" to t.javaClass.name, "where" to "ShortcutWidgetConfigActivity.placeWidget")
+                )
                 Toast.makeText(
                     this@ShortcutWidgetConfigActivity,
                     "That widget couldn't be set up. Please try again.",

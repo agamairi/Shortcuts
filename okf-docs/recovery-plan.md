@@ -84,9 +84,30 @@ Harmless flows only (navigation, search, typing; nothing sent, played or changed
 | Settings → scroll → About phone | **2 / 2** (new format) | Failed earlier: snapshots dropped during launch (caused by the harness's `uiautomator dump` unbinding the service) → no launch step → legacy fallback. |
 | Calculator 7 + 8 = | **2 / 2** (new format) | |
 | YouTube Music → Library | **2 / 2** (new format) | Failed earlier: launch step had no app window (app still drawing) → legacy fallback; then the launch step demanded the personalised feed look as recorded. |
-| YouTube Music → Search "lofi beats" → keyboard Search | **8 / 11** since the tap-check fix; **1 / 3** on the final build | Flaky: with adb-typed input Gboard hides and focus moves mid-word, so the same-screen submit is sometimes inferred early or missed. Known issue. Needed earlier: keyboard is not an app switch; submit-by-effect inference; tap-into-typing verifies the field; coalesced screen checks. |
-| Chrome → address bar → "repeatkit android" → Enter | **0 / 2** | Known issue: typed text is never captured (only the tap). Chrome's `url_bar` reports `isEditable=false` until focused and emits no text-change events; the focus-tracking fix did not change the outcome on device. |
+| YouTube Music → Search "lofi beats" → keyboard Search | 0.8.0: **8 / 11** since the tap-check fix; **1 / 3** on the final build. After the search-capture fix: see below. | 0.8.0: flaky. Typed through Gboard's keys it was worse than adb suggested (0 / 2): partial query plus early submit. Fixed on `fix/engine-v2-search-capture`. |
+| Chrome → address bar → "repeatkit android" → Enter | 0.8.0: **0 / 2**. After the search-capture fix: see below. | 0.8.0: typed text never captured, only the tap. Fixed on `fix/engine-v2-search-capture`. |
 | Google Messages | not run | Blocked by a mandatory Play Store update on the test phone. |
+
+### Search capture fix (Pixel 6a, 2026-10-17, branch `fix/engine-v2-search-capture`)
+
+The two 0.8.0 search gaps, re-measured on the final build of the fix with `tools/e2e/rk_realapps.py`. `_gboard` flows type by tapping Gboard's keys and press its action key (how people type); the others use `adb shell input text` and an injected Enter. Every run is counted.
+
+| Flow | Result | Recorded workflow |
+|---|---|---|
+| Chrome → address bar → "repeatkit android" → Go (Gboard) | **10 / 10** | launch, tap `url_bar`, `set_text("repeatkit android")`, detected Search, in every run |
+| Chrome, same flow (adb text + Enter) | **5 / 5** | same |
+| YouTube Music → Search → "lofi beats" → Search (Gboard) | **23 / 25** (9/10, 4/5, 10/10) | launch, tap Search, `set_text("lofi beats")`, detected Search, in all 24 runs that got to record |
+| YouTube Music, same flow (adb text + Enter) | **5 / 5** | same |
+| Regression: Settings → About, Settings → Battery, Calculator 7+8=, YouTube Music → Library | **8 / 8** (2 each) | |
+| Fixture suite, 12 scenarios × 2 | **24 / 24** | 0 recording issues |
+
+The two YouTube Music failures were not recording or replay faults. In one, before anything was recorded, YouTube Music did not show its Search button within 30 s; the script now keeps a screenshot and screen dump when a run fails early. In the other, YouTube Music crashed with an `OutOfMemoryError` in its own process while replay was opening it, after about 45 relaunches of the same process (the test loop never force-stops it). The 10 runs after that crash all passed.
+
+What was wrong (found with a temporary on-device probe of what the service sees):
+
+1. **Chrome:** `url_bar` sends no text-change and no selection events, so its text can only be re-read with `findFocus`. Re-reading started on the tap, but the Pixel launcher keeps a system window updating while Chrome is open, and the recorder took each update as a switch to the launcher, which dropped the field. Background windows of other apps no longer count as app switches.
+2. **Typing on the keyboard:** Gboard reports a window change on nearly every keystroke, and each one saved the field. One search became about a dozen commits, the capture queue fell 2–3 s behind, and an old "lo" commit was judged against a live screen that already showed results. Now the field is saved only when the keyboard closes, and a submit is never inferred while newer text is still queued. adb typing hides Gboard, which is why the earlier tests looked better than real use.
+3. **Pausing before Search:** the 2 s submit window ran from the last keystroke (Chrome's Go came 3.7 s after it in these runs). It now runs from the last time the field was seen focused with the typed text and the keyboard up.
 
 ### Widgets (home screen, Pixel Launcher)
 

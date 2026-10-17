@@ -84,6 +84,7 @@ class DebugControlActivity : Activity() {
                                 null
                             }
                             DebugCommand.DumpRecording -> dumpRecording()
+                            DebugCommand.DumpDiagnostics -> dumpDiagnostics()
                             is DebugCommand.Save -> saveRecording(command.name)
                             DebugCommand.List -> listAutomations()
                             is DebugCommand.Delete -> deleteAutomation(command.name)
@@ -117,15 +118,26 @@ class DebugControlActivity : Activity() {
         return "$DEBUG_DIRECTORY/$LAST_RECORDING_FILE"
     }
 
+    private fun dumpDiagnostics(): String {
+        com.shortcuts.app.diagnostics.Diagnostics.flush()
+        val exportFile = com.shortcuts.app.diagnostics.Diagnostics.buildExport(applicationContext)
+        val target = debugFile(DIAGNOSTICS_EXPORT_FILE)
+        exportFile.copyTo(target, overwrite = true)
+        return "$DEBUG_DIRECTORY/$DIAGNOSTICS_EXPORT_FILE"
+    }
+
     private suspend fun saveRecording(name: String): String? {
         val actions = AutomationRecorder.recordedActions.value
         val database = AppDatabase.getDatabase(applicationContext)
         val repository = AutomationRepository(database.automationDao())
         val existing = repository.allAutomations.first().firstOrNull { it.name == name }
         val v07Json = ActionConverter().fromActionList(actions)
-        val actionsJson = if (com.shortcuts.app.automation.android.EngineV2.enabled &&
+        val isV2 = com.shortcuts.app.automation.android.EngineV2.enabled &&
             com.shortcuts.app.automation.android.capture.V2CaptureBridge.lastWorkflowJson != null
-        ) {
+        val format = if (isV2) "v2" else "legacy"
+        val why = if (isV2) "v2" else "v2_unavailable"
+        com.shortcuts.app.diagnostics.Diagnostics.log("recording", "save", mapOf("format" to format, "why" to why))
+        val actionsJson = if (isV2) {
             com.shortcuts.app.automation.android.capture.V2CaptureBridge.lastWorkflowJson!!
         } else {
             v07Json
@@ -333,6 +345,7 @@ class DebugControlActivity : Activity() {
         const val LAST_RECORDING_V2_FILE = "last_recording_v2.json"
         const val LAST_RUN_FILE = "last_run.json"
         const val AUTOMATIONS_FILE = "automations.json"
+        const val DIAGNOSTICS_EXPORT_FILE = "diagnostics_export.txt"
 
         val fileGson: Gson = GsonBuilder()
             .setPrettyPrinting()
