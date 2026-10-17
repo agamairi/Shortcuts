@@ -7,6 +7,8 @@ import com.shortcuts.app.automation.core.tree.windowSet
 import com.shortcuts.app.automation.model.NormalizedRect
 import com.shortcuts.app.automation.model.WindowType
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -19,197 +21,238 @@ class WindowMatcherTest {
     )
 
     @Test
-    fun `target app window wins over a higher accessibility overlay from another package`() {
-        // App window (lower layer = 1)
-        val appWindow = window("com.target.app", id = 10, type = WindowType.APPLICATION, layer = 1) {
+    fun `changed list and tab fingerprint does not weaken otherwise identical window`() {
+        val recorded = window("com.example.app", id = 1) {
             node("android.widget.FrameLayout", id = 1) {
-                node("android.widget.Button", id = 2, text = "Target Action")
+                node("android.widget.TextView", id = 2, text = "Home")
+                node("android.widget.TextView", id = 3, text = "Row 1")
             }
-        }
-        // Dynamic Island accessibility overlay from a 3rd party tool (higher layer = 99)
-        val overlayWindow = window("com.thirdparty.island", id = 20, type = WindowType.ACCESSIBILITY_OVERLAY, layer = 99) {
-            node("android.widget.FrameLayout", id = 21) {
-                node("android.widget.TextView", id = 22, text = "Island Status")
+        }.copy(title = "Example")
+        val afterScrollAndTabChange = window("com.example.app", id = 9) {
+            node("android.widget.FrameLayout", id = 10) {
+                node("android.widget.TextView", id = 11, text = "Settings")
+                node("android.widget.TextView", id = 12, text = "Row 35")
             }
-        }
-
+        }.copy(title = "Example")
         val selector = windowSelector(
-            packageName = "com.target.app",
-            windowType = WindowType.APPLICATION
+            packageName = "com.example.app",
+            observedActivityClass = "com.example.app.MainActivity",
+            windowType = WindowType.APPLICATION,
+            titleToken = "token_Example",
+            fingerprint = fingerprinter.fingerprint(recorded, "com.example.app.MainActivity")
         )
 
-        val windowSet = windowSet(overlayWindow, appWindow)
-        val decision = matcher.match(windowSet, selector)
+        val decision = matcher.match(
+            windowSet(afterScrollAndTabChange),
+            selector,
+            currentActivityClass = "com.example.app.MainActivity"
+        )
 
-        assertTrue("Expected Selected decision but got $decision", decision is WindowDecision.Selected)
+        assertTrue("Changed screen content must not change window identity: $decision", decision is WindowDecision.Selected)
         val selected = decision as WindowDecision.Selected
-        assertEquals(10, selected.window.windowId)
-        assertEquals("com.target.app", selected.window.packageName)
+        assertEquals(9, selected.window.windowId)
+        assertEquals(1.0, selected.confidence, 0.001)
+        assertNull(selected.breakdown.fingerprintSimilarity)
+        assertEquals(0.0, selected.breakdown.fingerprintWeight, 0.001)
     }
 
     @Test
-    fun `dialog wins when the step expects a dialog`() {
-        val baseActivityWindow = window(
+    fun `wrong activity in same package is not found even when it is the sole candidate`() {
+        val wrongActivityWindow = window("com.example.app", id = 1) {
+            node("android.widget.FrameLayout", id = 1)
+        }.copy(title = "Expected title")
+        val selector = windowSelector(
+            packageName = "com.example.app",
+            observedActivityClass = "com.example.app.TargetActivity",
+            windowType = WindowType.APPLICATION,
+            titleToken = "token_Expected title"
+        )
+
+        val decision = matcher.match(
+            windowSet(wrongActivityWindow),
+            selector,
+            currentActivityClass = "com.example.app.OtherActivity"
+        )
+
+        assertTrue("A sole candidate must not waive identity confidence: $decision", decision is WindowDecision.NotFound)
+    }
+
+    @Test
+    fun `unexpected same-package confirmation dialog blocks expected activity`() {
+        val activity = window(
             "com.example.app",
             id = 1,
-            type = WindowType.APPLICATION,
             layer = 1,
-            bounds = r(0, 0, 1000, 2000)
+            bounds = r(0, 0, 1_000, 2_000)
         ) {
-            node("android.widget.FrameLayout", id = 100) {
-                node("android.widget.TextView", id = 101, text = "Base Activity")
-            }
-        }
-
-        val dialogWindow = window(
+            node("android.widget.FrameLayout", id = 1)
+        }.copy(title = "Items")
+        val unexpectedDialog = window(
             "com.example.app",
             id = 2,
-            type = WindowType.APPLICATION,
             layer = 5,
-            bounds = r(100, 400, 900, 1600)
+            bounds = r(100, 400, 900, 1_600)
         ) {
-            node("android.widget.FrameLayout", id = 200) {
-                node("android.widget.TextView", id = 201, resourceId = "com.example.app:id/dialog_title", text = "Confirm Delete")
-                node("android.widget.Button", id = 202, text = "OK")
+            node("android.widget.FrameLayout", id = 2) {
+                node("android.widget.TextView", id = 3, text = "Confirm delete")
             }
-        }
-
-        val dialogFingerprint = fingerprinter.fingerprint(dialogWindow, "com.example.app.DeleteDialog")
-
+        }.copy(title = "Confirmation")
         val selector = windowSelector(
             packageName = "com.example.app",
-            observedActivityClass = "com.example.app.DeleteDialog",
+            observedActivityClass = "com.example.app.ItemsActivity",
             windowType = WindowType.APPLICATION,
-            boundsOnDisplay = NormalizedRect(0.1f, 0.2f, 0.9f, 0.8f),
-            fingerprint = dialogFingerprint
+            titleToken = "token_Items"
         )
 
-        val windowSet = windowSet(baseActivityWindow, dialogWindow, width = 1000, height = 2000)
-        val decision = matcher.match(windowSet, selector, currentActivityClass = "com.example.app.DeleteDialog")
+        val decision = matcher.match(
+            windowSet(activity, unexpectedDialog),
+            selector,
+            currentActivityClass = "com.example.app.ItemsActivity"
+        )
 
-        assertTrue("Expected Selected decision for dialog, but got $decision", decision is WindowDecision.Selected)
-        val selected = decision as WindowDecision.Selected
-        assertEquals(2, selected.window.windowId)
-        assertTrue(selected.confidence >= 0.80)
+        assertTrue("An unrecorded modal must block the activity beneath it: $decision", decision is WindowDecision.NotFound)
+        val summary = (decision as WindowDecision.NotFound).observedSummary
+        assertTrue(summary.contains("Unexpected same-package dialog or popup"))
+        assertTrue(summary.contains("id=2"))
     }
 
     @Test
-    fun `IME is ignored for normal targets`() {
-        val appWindow = window("com.example.app", id = 1, type = WindowType.APPLICATION, layer = 1) {
-            node("android.widget.FrameLayout", id = 1) {
-                node("android.widget.EditText", id = 2, text = "Search...")
-            }
-        }
-        val imeWindow = window("com.google.android.inputmethod.latin", id = 2, type = WindowType.INPUT_METHOD, layer = 10) {
-            node("android.widget.FrameLayout", id = 3) {
-                node("android.widget.Button", id = 4, text = "Enter")
-            }
-        }
-
+    fun `recorded dialog wins over its activity by title and bounds evidence`() {
+        val activity = window(
+            "com.example.app",
+            id = 1,
+            layer = 1,
+            bounds = r(0, 0, 1_000, 2_000)
+        ) {
+            node("android.widget.FrameLayout", id = 1)
+        }.copy(title = "Items")
+        val dialog = window(
+            "com.example.app",
+            id = 2,
+            layer = 5,
+            bounds = r(100, 400, 900, 1_600)
+        ) {
+            node("android.widget.FrameLayout", id = 2)
+        }.copy(title = "Confirm delete")
         val selector = windowSelector(
             packageName = "com.example.app",
-            windowType = WindowType.APPLICATION
+            observedActivityClass = "com.example.app.ItemsActivity",
+            windowType = WindowType.APPLICATION,
+            titleToken = "token_Confirm delete",
+            boundsOnDisplay = NormalizedRect(0.1f, 0.2f, 0.9f, 0.8f)
         )
 
-        val windowSet = windowSet(imeWindow, appWindow)
-        val decision = matcher.match(windowSet, selector)
+        val decision = matcher.match(
+            windowSet(activity, dialog),
+            selector,
+            currentActivityClass = "com.example.app.ItemsActivity"
+        )
 
-        assertTrue("Expected Selected but got $decision", decision is WindowDecision.Selected)
+        assertTrue("The explicitly recorded dialog should be selected: $decision", decision is WindowDecision.Selected)
+        assertEquals(2, (decision as WindowDecision.Selected).window.windowId)
+        assertEquals(1.0, decision.confidence, 0.001)
+    }
+
+    @Test
+    fun `two same-activity windows are distinguished by title token`() {
+        val expected = window("com.example.app", id = 1, layer = 1) {
+            node("android.widget.FrameLayout", id = 1)
+        }.copy(title = "Primary")
+        val other = window("com.example.app", id = 2, layer = 8) {
+            node("android.widget.FrameLayout", id = 2)
+        }.copy(title = "Secondary")
+        val selector = windowSelector(
+            packageName = "com.example.app",
+            observedActivityClass = "com.example.app.MainActivity",
+            windowType = WindowType.APPLICATION,
+            titleToken = "token_Primary"
+        )
+
+        val decision = matcher.match(
+            windowSet(other, expected),
+            selector,
+            currentActivityClass = "com.example.app.MainActivity"
+        )
+
+        assertTrue("Title identity should beat z-order: $decision", decision is WindowDecision.Selected)
         assertEquals(1, (decision as WindowDecision.Selected).window.windowId)
     }
 
     @Test
-    fun `two same-package windows with insufficient evidence fail as Ambiguous`() {
-        // Two windows from same package, same type, same size, no distinct activity or fingerprint recorded
-        val win1 = window("com.example.app", id = 1, type = WindowType.APPLICATION, layer = 2) {
-            node("android.widget.FrameLayout", id = 10)
+    fun `indistinguishable same-package windows remain ambiguous`() {
+        val higher = window("com.example.app", id = 1, layer = 2) {
+            node("android.widget.FrameLayout", id = 1)
         }
-        val win2 = window("com.example.app", id = 2, type = WindowType.APPLICATION, layer = 1) {
-            node("android.widget.FrameLayout", id = 20)
+        val lower = window("com.example.app", id = 2, layer = 1) {
+            node("android.widget.FrameLayout", id = 2)
         }
+        val selector = windowSelector(packageName = "com.example.app")
 
-        val selector = windowSelector(
-            packageName = "com.example.app",
-            windowType = WindowType.APPLICATION
-        )
+        val decision = matcher.match(windowSet(lower, higher), selector)
 
-        val windowSet = windowSet(win1, win2)
-        val decision = matcher.match(windowSet, selector)
-
-        assertTrue("Expected Ambiguous decision but got $decision", decision is WindowDecision.Ambiguous)
+        assertTrue("The 0.15 ambiguity margin must always apply: $decision", decision is WindowDecision.Ambiguous)
         val ambiguous = decision as WindowDecision.Ambiguous
         assertEquals(1, ambiguous.best.window.windowId)
         assertEquals(2, ambiguous.second.window.windowId)
     }
 
     @Test
-    fun `window confidence below 0_80 results in NotFound`() {
-        val win1 = window("com.example.app", id = 1, type = WindowType.APPLICATION) {
+    fun `non-activity class does not contribute activity weight`() {
+        val candidate = window("com.example.app", id = 1) {
             node("android.widget.FrameLayout", id = 1)
-        }.copy(title = "ExpectedTitle")
-        val win2 = window("com.example.app", id = 2, type = WindowType.APPLICATION) {
+        }
+        val selector = windowSelector(
+            observedActivityClass = "androidx.appcompat.app.AlertDialog"
+        )
+
+        val scored = matcher.scoreWindow(
+            candidate,
+            selector,
+            currentActivityClass = "androidx.appcompat.app.AlertDialog"
+        )
+
+        assertFalse(scored.breakdown.activityMatched)
+        assertEquals(0.0, scored.breakdown.activityWeight, 0.001)
+        assertEquals(20.0, scored.breakdown.applicableWeight, 0.001)
+    }
+
+    @Test
+    fun `target app wins over higher accessibility overlay`() {
+        val appWindow = window("com.target.app", id = 10, layer = 1) {
+            node("android.widget.FrameLayout", id = 1)
+        }
+        val overlayWindow = window(
+            "com.thirdparty.island",
+            id = 20,
+            type = WindowType.ACCESSIBILITY_OVERLAY,
+            layer = 99
+        ) {
+            node("android.widget.FrameLayout", id = 21)
+        }
+
+        val decision = matcher.match(
+            windowSet(overlayWindow, appWindow),
+            windowSelector(packageName = "com.target.app")
+        )
+
+        assertTrue(decision is WindowDecision.Selected)
+        assertEquals(10, (decision as WindowDecision.Selected).window.windowId)
+    }
+
+    @Test
+    fun `IME is ignored for normal target and wrong package is rejected`() {
+        val ime = window("keyboard", id = 2, type = WindowType.INPUT_METHOD, layer = 10) {
             node("android.widget.FrameLayout", id = 2)
         }
-
-        val selector = windowSelector(
-            packageName = "com.example.app",
-            observedActivityClass = "com.example.app.TargetActivity",
-            titleToken = "token_ExpectedTitle"
-        )
-
-        // Neither activityClass nor titleToken match on either window
-        val decision = matcher.match(listOf(win1, win2), selector, currentActivityClass = "com.example.app.OtherActivity")
-        assertTrue("Expected NotFound when confidence < 0.80 and multiple candidates exist, got $decision", decision is WindowDecision.NotFound)
-    }
-
-    @Test
-    fun `sole candidate window waives confidence floor and records soleCandidate in breakdown`() {
-        val win = window("com.example.app", id = 1, type = WindowType.APPLICATION) {
-            node("android.widget.FrameLayout", id = 1)
+        val wrongPackage = window("other", id = 3, layer = 2) {
+            node("android.widget.FrameLayout", id = 3)
         }
 
-        val selector = windowSelector(
-            packageName = "com.example.app",
-            observedActivityClass = "com.example.app.TargetActivity",
-            titleToken = "token_ExpectedTitle"
+        val decision = matcher.match(
+            windowSet(ime, wrongPackage),
+            windowSelector(packageName = "com.example.app")
         )
 
-        val decision = matcher.match(listOf(win), selector, currentActivityClass = "com.example.app.OtherActivity")
-        assertTrue("Expected Selected when sole candidate window exists, got $decision", decision is WindowDecision.Selected)
-        val selected = decision as WindowDecision.Selected
-        assertTrue(selected.breakdown.soleCandidate)
-    }
-
-    @Test
-    fun `title token is matched via injected tokenizer`() {
-        val win = window("com.example.app", id = 1, type = WindowType.APPLICATION) {
-            node("android.widget.FrameLayout", id = 1)
-        }.copy(title = "MyScreen")
-
-        val selector = windowSelector(
-            packageName = "com.example.app",
-            windowType = WindowType.APPLICATION,
-            titleToken = "token_MyScreen"
-        )
-
-        val decision = matcher.match(listOf(win), selector)
-        assertTrue("Expected Selected, got $decision", decision is WindowDecision.Selected)
-        val selected = decision as WindowDecision.Selected
-        assertTrue(selected.breakdown.titleTokenMatched)
-    }
-
-    @Test
-    fun `wrong package windows are hard-rejected`() {
-        val win = window("com.unrelated.pkg", id = 1, type = WindowType.APPLICATION) {
-            node("android.widget.FrameLayout", id = 1)
-        }
-
-        val selector = windowSelector(
-            packageName = "com.example.app",
-            windowType = WindowType.APPLICATION
-        )
-
-        val decision = matcher.match(listOf(win), selector)
-        assertTrue("Expected NotFound, got $decision", decision is WindowDecision.NotFound)
+        assertTrue(decision is WindowDecision.NotFound)
     }
 }

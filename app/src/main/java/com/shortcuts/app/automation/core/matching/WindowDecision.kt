@@ -37,10 +37,13 @@ data class WindowScoreBreakdown(
     val titleTokenWeight: Double,
     val boundsMatched: Boolean,
     val boundsWeight: Double,
-    val fingerprintSimilarity: Double?,
-    val fingerprintWeight: Double,
     val totalMatchedWeight: Double,
     val applicableWeight: Double,
     val confidence: Double,
+    /** Retained for trace/source compatibility. Fingerprints never contribute to window identity. */
+    val fingerprintSimilarity: Double? = null,
+    /** Retained for trace/source compatibility and always zero. */
+    val fingerprintWeight: Double = 0.0,
+    /** Retained for trace/source compatibility and always false; sole candidates get no waiver. */
     val soleCandidate: Boolean = false
 )
