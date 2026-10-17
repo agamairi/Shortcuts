@@ -269,9 +269,10 @@ class SelectorMatcherTest {
             }
         }
 
-        // Only matches text anchor (60) with no corroborations -> 60 < 75
+        // Only matches text anchor (60) + unique anchor (10) without bounds proximity -> 70 < 75
         val selector = elementSelector(
-            strategies = listOf(textStrategy("Partial Match"))
+            strategies = listOf(textStrategy("Partial Match")),
+            boundsInWindow = NormalizedRect(0.8f, 0.8f, 0.9f, 0.9f)
         )
 
         val decision = matcher.match(win, selector)

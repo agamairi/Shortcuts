@@ -81,16 +81,17 @@ class CandidateScorer {
                 (labelSourceNode?.resourceId != null && labelSourceNode.resourceId == strategy.value)
             )
         }
+        val eligibleAncestor = isEligibleActionableAncestor(node, derivedLabel, window)
         val descMatched = selector.strategies.any { strategy ->
             strategy.kind == LocatorKind.CONTENT_DESCRIPTION_EXACT && (
                 TextNormalizer.sameText(node.contentDescription, strategy.value) ||
-                TextNormalizer.sameText(derivedLabel.contentDescription, strategy.value)
+                (eligibleAncestor && TextNormalizer.sameText(derivedLabel.contentDescription, strategy.value))
             )
         }
         val textMatched = selector.strategies.any { strategy ->
             strategy.kind == LocatorKind.TEXT_EXACT && (
                 TextNormalizer.sameText(node.text, strategy.value) ||
-                TextNormalizer.sameText(derivedLabel.text, strategy.value) ||
+                (eligibleAncestor && TextNormalizer.sameText(derivedLabel.text, strategy.value)) ||
                 (node.editable && TextNormalizer.sameText(node.hintText, strategy.value))
             )
         }
@@ -156,7 +157,7 @@ class CandidateScorer {
         val requiredActionsCorroboration = if (requiredActionsSupported) 5 else 0
 
         // 7. Extra exact text/desc locators (+4 each)
-        val secondaryLocatorsCount = countSecondaryLocators(node, derivedLabel, selector, anchorKind)
+        val secondaryLocatorsCount = countSecondaryLocators(node, derivedLabel, selector, anchorKind, window)
         val secondaryLocatorsCorroboration = secondaryLocatorsCount * 4
 
         // 8. Unique exact anchor (+10) (Fix 3)
@@ -261,33 +262,38 @@ class CandidateScorer {
         node: NodeSnapshot,
         window: WindowSnapshot,
         derivedLabel: DerivedLabel
-    ): Boolean = when (strategy.kind) {
-        LocatorKind.RESOURCE_ID_EXACT,
-        LocatorKind.TEST_TAG_EXACT,
-        LocatorKind.WEB_DOM_ID_EXACT -> (node.resourceId != null && node.resourceId == strategy.value) ||
-            (derivedLabel.sourceNodeId != null && window.node(derivedLabel.sourceNodeId)?.resourceId == strategy.value)
-        LocatorKind.TEXT_EXACT -> TextNormalizer.sameText(node.text, strategy.value) ||
-            TextNormalizer.sameText(derivedLabel.text, strategy.value) ||
-            (node.editable && TextNormalizer.sameText(node.hintText, strategy.value))
-        LocatorKind.CONTENT_DESCRIPTION_EXACT -> TextNormalizer.sameText(node.contentDescription, strategy.value) ||
-            TextNormalizer.sameText(derivedLabel.contentDescription, strategy.value)
+    ): Boolean {
+        val eligibleAncestor = isEligibleActionableAncestor(node, derivedLabel, window)
+        return when (strategy.kind) {
+            LocatorKind.RESOURCE_ID_EXACT,
+            LocatorKind.TEST_TAG_EXACT,
+            LocatorKind.WEB_DOM_ID_EXACT -> (node.resourceId != null && node.resourceId == strategy.value) ||
+                (derivedLabel.sourceNodeId != null && window.node(derivedLabel.sourceNodeId)?.resourceId == strategy.value)
+            LocatorKind.TEXT_EXACT -> TextNormalizer.sameText(node.text, strategy.value) ||
+                (eligibleAncestor && TextNormalizer.sameText(derivedLabel.text, strategy.value)) ||
+                (node.editable && TextNormalizer.sameText(node.hintText, strategy.value))
+            LocatorKind.CONTENT_DESCRIPTION_EXACT -> TextNormalizer.sameText(node.contentDescription, strategy.value) ||
+                (eligibleAncestor && TextNormalizer.sameText(derivedLabel.contentDescription, strategy.value))
+        }
     }
 
     private fun countSecondaryLocators(
         node: NodeSnapshot,
         derivedLabel: DerivedLabel,
         selector: ElementSelector,
-        anchorKind: AnchorKind
+        anchorKind: AnchorKind,
+        window: WindowSnapshot
     ): Int {
         var count = 0
         var anchorTextUsed = anchorKind == AnchorKind.TEXT
         var anchorDescUsed = anchorKind == AnchorKind.CONTENT_DESCRIPTION
+        val eligibleAncestor = isEligibleActionableAncestor(node, derivedLabel, window)
 
         for (strategy in selector.strategies) {
             when (strategy.kind) {
                 LocatorKind.TEXT_EXACT -> {
                     val matches = TextNormalizer.sameText(node.text, strategy.value) ||
-                        TextNormalizer.sameText(derivedLabel.text, strategy.value) ||
+                        (eligibleAncestor && TextNormalizer.sameText(derivedLabel.text, strategy.value)) ||
                         (node.editable && TextNormalizer.sameText(node.hintText, strategy.value))
                     if (matches) {
                         if (anchorTextUsed) {
@@ -299,7 +305,7 @@ class CandidateScorer {
                 }
                 LocatorKind.CONTENT_DESCRIPTION_EXACT -> {
                     val matches = TextNormalizer.sameText(node.contentDescription, strategy.value) ||
-                        TextNormalizer.sameText(derivedLabel.contentDescription, strategy.value)
+                        (eligibleAncestor && TextNormalizer.sameText(derivedLabel.contentDescription, strategy.value))
                     if (matches) {
                         if (anchorDescUsed) {
                             anchorDescUsed = false // consumed primary
@@ -515,4 +521,32 @@ class CandidateScorer {
 
     /** Delegates to the shared mapping so capture and matching always agree on roles. */
     fun inferRole(node: NodeSnapshot): NodeRole = NodeRoles.roleOf(node)
+
+    fun isActionable(node: NodeSnapshot): Boolean =
+        node.clickable || node.longClickable || node.editable ||
+            NodeAction.CLICK in node.actions || node.isActionable
+
+    fun ancestorDistance(ancestor: NodeSnapshot, descendantId: Int, window: WindowSnapshot): Int? {
+        var current = window.node(descendantId) ?: return null
+        var distance = 0
+        while (distance < 3) {
+            val parent = window.parent(current) ?: return null
+            distance++
+            if (parent.nodeId == ancestor.nodeId) return distance
+            current = parent
+        }
+        return null
+    }
+
+    fun isEligibleActionableAncestor(
+        node: NodeSnapshot,
+        derivedLabel: DerivedLabel,
+        window: WindowSnapshot
+    ): Boolean {
+        val sourceId = derivedLabel.sourceNodeId ?: return false
+        if (sourceId == node.nodeId) return false
+        if (!isActionable(node)) return false
+        val dist = ancestorDistance(node, sourceId, window) ?: return false
+        return dist in 1..3
+    }
 }

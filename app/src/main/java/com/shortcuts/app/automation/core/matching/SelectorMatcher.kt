@@ -3,6 +3,7 @@ package com.shortcuts.app.automation.core.matching
 import com.shortcuts.app.automation.core.tree.IntRect
 import com.shortcuts.app.automation.core.tree.NodeSnapshot
 import com.shortcuts.app.automation.core.tree.WindowSnapshot
+import com.shortcuts.app.automation.core.tree.labelOf
 import com.shortcuts.app.automation.model.ElementSelector
 import com.shortcuts.app.automation.model.NodeAction
 import kotlin.math.max
@@ -47,10 +48,37 @@ class SelectorMatcher(
             }
         }
 
+        // Bug 1: Collapse merged-semantics duplicates.
+        // When a candidate is the label source (labelOf(...).sourceNodeId) of another candidate
+        // that is one of its ancestors and that ancestor is actionable (clickable/long-clickable/editable or has CLICK),
+        // drop the label-source child from the candidate set — the actionable parent is the element.
+        val nodesToDrop = mutableSetOf<Int>()
+        for (parentCandidate in eligibleCandidates) {
+            if (!candidateScorer.isActionable(parentCandidate.node)) continue
+            val derivedLabel = window.labelOf(parentCandidate.node)
+            val sourceId = derivedLabel.sourceNodeId ?: continue
+            if (sourceId != parentCandidate.node.nodeId) {
+                for (childCandidate in eligibleCandidates) {
+                    if (childCandidate.node.nodeId == sourceId) {
+                        val ancestors = window.ancestors(childCandidate.node)
+                        if (ancestors.any { it.nodeId == parentCandidate.node.nodeId }) {
+                            nodesToDrop.add(sourceId)
+                        }
+                    }
+                }
+            }
+        }
+
+        val candidatesAfterCollapse = if (nodesToDrop.isNotEmpty()) {
+            eligibleCandidates.filterNot { it.node.nodeId in nodesToDrop }
+        } else {
+            eligibleCandidates
+        }
+
         // Uniqueness is evidence (Fix 3):
         // When exactly ONE candidate in the selected window passes the hard filters with an
         // exact id/text/desc/label anchor, add +10 ("unique exact anchor").
-        val exactAnchorCandidates = eligibleCandidates.filter {
+        val exactAnchorCandidates = candidatesAfterCollapse.filter {
             it.breakdown.anchorKind == AnchorKind.RESOURCE_ID ||
                 it.breakdown.anchorKind == AnchorKind.CONTENT_DESCRIPTION ||
                 it.breakdown.anchorKind == AnchorKind.TEXT
@@ -64,9 +92,9 @@ class SelectorMatcher(
                 selector = selector,
                 uniqueExactAnchor = true
             )
-            eligibleCandidates.map { if (it.node.nodeId == unique.node.nodeId) reScored else it }
+            candidatesAfterCollapse.map { if (it.node.nodeId == unique.node.nodeId) reScored else it }
         } else {
-            eligibleCandidates
+            candidatesAfterCollapse
         }
 
         val sortedCandidates = candidatesToUse.sortedWith(

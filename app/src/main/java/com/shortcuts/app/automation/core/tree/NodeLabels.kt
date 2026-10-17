@@ -42,11 +42,17 @@ fun WindowSnapshot.labelOf(
 
     // Search descendants breadth-first for a labelled child
     val descendants = breadthFirstDescendants(node)
-        .filter { it.visibleToUser && isInside(it.boundsInScreen, node.boundsInScreen) && hasDescendantLabel(it) }
+        .filter { isEligibleDescendantLabel(it, node) }
 
-    val candidate = descendants.firstOrNull { descendant ->
-        touchPoint != null && descendant.boundsInScreen.contains(touchPoint.x, touchPoint.y)
-    } ?: descendants.firstOrNull()
+    val candidate = if (touchPoint != null) {
+        descendants.firstOrNull { isInside(it.boundsInScreen, node.boundsInScreen) && it.boundsInScreen.contains(touchPoint.x, touchPoint.y) }
+            ?: descendants.firstOrNull { it.boundsInScreen.contains(touchPoint.x, touchPoint.y) }
+            ?: descendants.firstOrNull { isInside(it.boundsInScreen, node.boundsInScreen) }
+            ?: descendants.firstOrNull()
+    } else {
+        descendants.firstOrNull { isInside(it.boundsInScreen, node.boundsInScreen) }
+            ?: descendants.firstOrNull()
+    }
 
     if (candidate != null) {
         return DerivedLabel(
@@ -113,3 +119,26 @@ private fun testTag(resourceId: String?): String? {
 private fun isInside(inner: IntRect, outer: IntRect): Boolean =
     inner.left >= outer.left && inner.top >= outer.top &&
         inner.right <= outer.right && inner.bottom <= outer.bottom
+
+private fun isEligibleDescendantLabel(descendant: NodeSnapshot, target: NodeSnapshot): Boolean {
+    if (!descendant.visibleToUser || !hasDescendantLabel(descendant)) return false
+    val d = descendant.boundsInScreen
+    val t = target.boundsInScreen
+    if (isInside(d, t)) return true
+    if (!target.editable) return false
+
+    // BUG 2: for EDITABLE nodes accept descendant labels whose bounds intersect the node's bounds
+    // or lie within 48 px above its top edge (floating label), still preferring fully-inside ones.
+    if (boundsIntersect(d, t)) return true
+    val horizontalOverlap = maxOf(d.left, t.left) < minOf(d.right, t.right)
+    val within48PxAbove = d.bottom >= t.top - 48 && d.top <= t.top
+    return horizontalOverlap && within48PxAbove
+}
+
+private fun boundsIntersect(a: IntRect, b: IntRect): Boolean {
+    val interLeft = maxOf(a.left, b.left)
+    val interTop = maxOf(a.top, b.top)
+    val interRight = minOf(a.right, b.right)
+    val interBottom = minOf(a.bottom, b.bottom)
+    return interRight > interLeft && interBottom > interTop
+}
