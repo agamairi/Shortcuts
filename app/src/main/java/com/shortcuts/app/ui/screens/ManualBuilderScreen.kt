@@ -266,6 +266,30 @@ object ManualBuilderUtils {
         )
     }
 
+    fun safeEncodeWorkflow(doc: ShortcutDocument?, actions: List<Action>): Result<String?> = runCatching {
+        if (doc is ShortcutDocument.V2) {
+            ShortcutSteps.encode(doc, actions)
+        } else {
+            null
+        }
+    }
+
+    fun safeEncodeForSave(doc: ShortcutDocument?, actions: List<Action>): Result<String> = runCatching {
+        if (doc != null) {
+            ShortcutSteps.encode(doc, actions)
+        } else {
+            ActionConverter().fromActionList(actions)
+        }
+    }
+
+    fun preserveV2StepId(existing: Action, picked: Action): Action {
+        return if (existing.v2StepId != null) {
+            picked.copy(v2StepId = existing.v2StepId)
+        } else {
+            picked
+        }
+    }
+
     fun getActionSummary(action: Action, appLabelLookup: (String) -> String? = { null }): String {
         return when (action.actionType) {
             ActionType.APP_INTENT -> {
@@ -363,6 +387,7 @@ fun ManualBuilderScreen(
     var preflightReport by remember { mutableStateOf<ShortcutPreflightReport?>(null) }
     var pendingEditorRun by remember { mutableStateOf<PendingEditorRun?>(null) }
     var loadedDocument by remember { mutableStateOf<ShortcutDocument?>(null) }
+    var validationNotice by remember { mutableStateOf<String?>(null) }
     var initialDraftSnapshot by remember {
         mutableStateOf(
             ManualBuilderDraftSnapshot(
@@ -492,7 +517,7 @@ fun ManualBuilderScreen(
                     }
                 }
                 Box(Modifier.size(44.dp).clip(androidx.compose.foundation.shape.CircleShape).background(palette.tileContent).clickable {
-                    saveManualAutomation(context, shortcutName, actions.toList(), selectedColor, selectedIcon.name, viewModel, onSaveAutomation, onNavigateBack, snackbarHostState, coroutineScope, editingAutomationId, loadedDocument) { isSaving = it }
+                    saveManualAutomation(context, shortcutName, actions.toList(), selectedColor, selectedIcon.name, viewModel, onSaveAutomation, onNavigateBack, snackbarHostState, coroutineScope, editingAutomationId, loadedDocument, onValidationNotice = { validationNotice = it }) { isSaving = it }
                 }, contentAlignment = Alignment.Center) {
                     if (isSaving) CircularProgressIndicator(Modifier.size(20.dp), color = selectedColor) else Icon(Icons.Filled.Check, "Save shortcut", tint = selectedColor, modifier = Modifier.size(20.dp))
                 }
@@ -523,6 +548,15 @@ fun ManualBuilderScreen(
                     .padding(start = 24.dp, end = 24.dp, top = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(18.dp)
             ) {
+                validationNotice?.let { message ->
+                    item {
+                        Text(
+                            message,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = palette.tileContent.copy(alpha = 0.9f)
+                        )
+                    }
+                }
                 itemsIndexed(actions) { index, action ->
                     ManualSentenceRow(
                         index = index,
@@ -616,9 +650,16 @@ fun ManualBuilderScreen(
                             val snapshot = actions.toList()
                             val doc = loadedDocument
                             coroutineScope.launch {
+                                val encodeResult = ManualBuilderUtils.safeEncodeWorkflow(doc, snapshot)
+                                if (encodeResult.isFailure) {
+                                    val errorMsg = encodeResult.exceptionOrNull()?.localizedMessage ?: "Invalid step edits"
+                                    validationNotice = errorMsg
+                                    return@launch
+                                }
+                                validationNotice = null
+                                val v2Json = encodeResult.getOrNull()
                                 preflightReport = withContext(Dispatchers.IO) {
-                                    if (doc is ShortcutDocument.V2) {
-                                        val v2Json = ShortcutSteps.encode(doc, snapshot)
+                                    if (v2Json != null) {
                                         ShortcutRunner(context.applicationContext).preflight(v2Json)
                                     } else {
                                         ShortcutRunner(context.applicationContext).preflight(snapshot)
@@ -640,9 +681,14 @@ fun ManualBuilderScreen(
                             val name = shortcutName
                             val doc = loadedDocument
                             coroutineScope.launch {
-                                val v2Json = if (doc is ShortcutDocument.V2) {
-                                    ShortcutSteps.encode(doc, snapshot)
-                                } else null
+                                val encodeResult = ManualBuilderUtils.safeEncodeWorkflow(doc, snapshot)
+                                if (encodeResult.isFailure) {
+                                    val errorMsg = encodeResult.exceptionOrNull()?.localizedMessage ?: "Invalid step edits"
+                                    validationNotice = errorMsg
+                                    return@launch
+                                }
+                                validationNotice = null
+                                val v2Json = encodeResult.getOrNull()
                                 val report = withContext(Dispatchers.IO) {
                                     if (v2Json != null) {
                                         ShortcutRunner(context.applicationContext).preflight(v2Json)
@@ -1055,6 +1101,7 @@ fun Action.hasBothSelectorsForOverride(): Boolean {
                                         intentAction = shortcut.action,
                                         url = shortcut.data,
                                         target = shortcut.shortLabel,
+                                        targetClassName = shortcut.targetClass,
                                         delayMillis = 500L
                                     )
                                 )
@@ -1134,6 +1181,7 @@ private fun saveManualAutomation(
     scope: kotlinx.coroutines.CoroutineScope,
     editingAutomationId: Int = NEW_SHORTCUT_ID,
     loadedDocument: ShortcutDocument? = null,
+    onValidationNotice: ((String?) -> Unit)? = null,
     setSaving: (Boolean) -> Unit
 ) {
     if (name.isBlank() || actions.isEmpty()) {
@@ -1154,7 +1202,17 @@ private fun saveManualAutomation(
                 return@launch
             }
             val colorKey = com.shortcuts.app.widget.WidgetColorKey.entries.firstOrNull { it.composeColor == color }?.name ?: "TEAL"
-            val built = ManualBuilderUtils.buildManualAutomation(name, safe.filterNotNull(), colorKey, iconKey, document = loadedDocument)
+            val encodeResult = ManualBuilderUtils.safeEncodeForSave(loadedDocument, safe.filterNotNull())
+            if (encodeResult.isFailure) {
+                setSaving(false)
+                val errorMsg = encodeResult.exceptionOrNull()?.localizedMessage ?: "Invalid step edits"
+                onValidationNotice?.invoke(errorMsg)
+                snackbar.showSnackbar("Save failed: $errorMsg. Your draft has been kept.")
+                return@launch
+            }
+            onValidationNotice?.invoke(null)
+            val actionsJson = encodeResult.getOrThrow()
+            val built = ManualBuilderUtils.buildManualAutomation(name, safe.filterNotNull(), colorKey, iconKey).copy(actionsJson = actionsJson)
             // Carrying the id over turns the Room insert into a replace, so editing updates the existing
             // shortcut — and every widget already bound to that id — instead of creating a duplicate.
             val isEdit = editingAutomationId != NEW_SHORTCUT_ID

@@ -17,10 +17,12 @@ import com.shortcuts.app.automation.model.NormalizedRect
 import com.shortcuts.app.automation.model.RecordedDevice
 import com.shortcuts.app.automation.model.RevealDirection
 import com.shortcuts.app.automation.model.RevealPolicy
+import com.shortcuts.app.automation.model.ScreenFingerprint
 import com.shortcuts.app.automation.model.StepSafety
 import com.shortcuts.app.automation.model.TimedPoint
 import com.shortcuts.app.automation.model.UiOperation
 import com.shortcuts.app.automation.model.UiStep
+import com.shortcuts.app.automation.model.VerificationPostcondition
 import com.shortcuts.app.automation.model.VerificationSpec
 import com.shortcuts.app.automation.model.WaitStep
 import com.shortcuts.app.automation.model.WindowSelector
@@ -47,6 +49,16 @@ class ShortcutStepsTest {
         displayHeightPx = 2400,
         densityDpi = 420,
         rotation = 0
+    )
+
+    private fun sampleFingerprint(pkg: String = "com.example.app") = ScreenFingerprint(
+        version = 1,
+        packageName = pkg,
+        activityClass = "$pkg.MainActivity",
+        windowType = WindowType.APPLICATION,
+        structuralTokens = setOf(1L, 2L),
+        landmarkTokens = setOf(10L),
+        structureHash = 42L
     )
 
     private fun sampleWindow(pkg: String = "com.example.app") = WindowSelector(
@@ -904,5 +916,209 @@ class ShortcutStepsTest {
         assertEquals(2, decodedReordered.workflow.steps.size)
         assertEquals("s2", decodedReordered.workflow.steps[0].id)
         assertEquals("ime-inferred-1", decodedReordered.workflow.steps[1].id)
+    }
+
+    // NEW-1 (a): editing recorded SET_TEXT value replaces VerificationPostcondition.TextEquals
+    @Test
+    fun `editing recorded SET_TEXT value updates TextEquals postcondition`() {
+        val initialText = "hello world"
+        val updatedText = "goodbye world"
+
+        val uiStep = UiStep(
+            id = "set-text-1",
+            operation = UiOperation.SET_TEXT(initialText),
+            expectedWindow = sampleWindow("com.example.app"),
+            element = sampleElement(),
+            gesture = null,
+            verification = VerificationSpec(
+                postconditions = listOf(
+                    VerificationPostcondition.TextEquals(initialText)
+                )
+            )
+        )
+        val workflow = WorkflowV2(
+            workflowId = "wf-set-text",
+            recordedDevice = sampleDevice(),
+            steps = listOf(uiStep)
+        )
+        val doc = ShortcutSteps.decode(codec.encode(workflow)) as ShortcutDocument.V2
+        assertEquals(1, doc.actions.size)
+        assertEquals(initialText, doc.actions[0].textInput)
+
+        val editedAction = doc.actions[0].copy(textInput = updatedText)
+        val encoded = ShortcutSteps.encode(doc, listOf(editedAction))
+        val decodedResult = codec.decode(encoded) as com.shortcuts.app.automation.model.DecodeResult.Success
+        val decodedStep = decodedResult.workflow.steps[0] as UiStep
+
+        assertEquals(UiOperation.SET_TEXT(updatedText), decodedStep.operation)
+        assertEquals(1, decodedStep.verification.postconditions.size)
+        assertEquals(
+            VerificationPostcondition.TextEquals(updatedText),
+            decodedStep.verification.postconditions[0]
+        )
+    }
+
+    // NEW-1 (b): changing recorded LaunchAppStep app resets app-specific expectations
+    @Test
+    fun `changing LaunchAppStep package resets app-specific expectations`() {
+        val originalWindow = WindowSelector(
+            packageName = "com.old.app",
+            observedActivityClass = "com.old.app.MainActivity",
+            windowType = WindowType.APPLICATION,
+            titleToken = "Old Title",
+            boundsOnDisplay = NormalizedRect(0.1f, 0.1f, 0.9f, 0.9f),
+            displayId = 0,
+            fingerprint = sampleFingerprint("com.old.app")
+        )
+        val launchStep = LaunchAppStep(
+            id = "launch-1",
+            title = "Old App",
+            target = LaunchTarget.Launcher("com.old.app"),
+            policy = LaunchPolicy.RESET_TO_ROOT,
+            expectedWindow = originalWindow,
+            expectedBefore = sampleFingerprint("com.old.app"),
+            expectedAfter = sampleFingerprint("com.old.app")
+        )
+        val workflow = WorkflowV2(
+            workflowId = "wf-launch-reset",
+            recordedDevice = sampleDevice(),
+            steps = listOf(launchStep)
+        )
+        val doc = ShortcutSteps.decode(codec.encode(workflow)) as ShortcutDocument.V2
+        assertEquals(1, doc.actions.size)
+        assertEquals("com.old.app", doc.actions[0].packageName)
+
+        // Change package
+        val editedAction = doc.actions[0].copy(packageName = "com.new.app")
+        val encoded = ShortcutSteps.encode(doc, listOf(editedAction))
+        val decodedResult = codec.decode(encoded) as com.shortcuts.app.automation.model.DecodeResult.Success
+        val updatedStep = decodedResult.workflow.steps[0] as LaunchAppStep
+
+        assertEquals(LaunchTarget.Launcher("com.new.app"), updatedStep.target)
+        assertEquals("com.new.app", updatedStep.expectedWindow.packageName)
+        assertNull(updatedStep.expectedWindow.observedActivityClass)
+        assertNull(updatedStep.expectedWindow.titleToken)
+        assertNull(updatedStep.expectedWindow.fingerprint)
+        assertEquals(NormalizedRect(0f, 0f, 1f, 1f), updatedStep.expectedWindow.boundsOnDisplay)
+        assertNull(updatedStep.expectedBefore)
+        assertNull(updatedStep.expectedAfter)
+    }
+
+    // NEW-1 (c): picking app shortcut / deep link maps to matching LaunchTarget or blocks unrepresentable
+    @Test
+    fun `picking deep link on LaunchAppStep maps to DeepLink target and resets expectations`() {
+        val launchStep = LaunchAppStep(
+            id = "launch-dl",
+            target = LaunchTarget.Launcher("com.spotify.music"),
+            policy = LaunchPolicy.RESET_TO_ROOT,
+            expectedWindow = sampleWindow("com.spotify.music").copy(
+                observedActivityClass = "com.spotify.music.MainActivity",
+                titleToken = "Spotify",
+                fingerprint = sampleFingerprint("com.spotify.music")
+            ),
+            expectedBefore = sampleFingerprint("com.spotify.music"),
+            expectedAfter = sampleFingerprint("com.spotify.music")
+        )
+        val workflow = WorkflowV2(
+            workflowId = "wf-deep-link",
+            recordedDevice = sampleDevice(),
+            steps = listOf(launchStep)
+        )
+        val doc = ShortcutSteps.decode(codec.encode(workflow)) as ShortcutDocument.V2
+
+        val deepLinkAction = doc.actions[0].copy(
+            packageName = "com.spotify.music",
+            url = "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M",
+            target = "My Playlist"
+        )
+        val encoded = ShortcutSteps.encode(doc, listOf(deepLinkAction))
+        val decodedResult = codec.decode(encoded) as com.shortcuts.app.automation.model.DecodeResult.Success
+        val updatedStep = decodedResult.workflow.steps[0] as LaunchAppStep
+
+        assertEquals(LaunchTarget.DeepLink("com.spotify.music", "spotify:playlist:37i9dQZF1DXcBWIGoYBM5M"), updatedStep.target)
+        assertEquals(LaunchPolicy.DEEP_LINK, updatedStep.policy)
+        assertEquals("My Playlist", updatedStep.title)
+        assertNull(updatedStep.expectedWindow.observedActivityClass)
+        assertNull(updatedStep.expectedWindow.titleToken)
+        assertNull(updatedStep.expectedWindow.fingerprint)
+        assertNull(updatedStep.expectedBefore)
+        assertNull(updatedStep.expectedAfter)
+
+        // Project step round-trip check
+        val projected = ShortcutSteps.projectStep(updatedStep)
+        assertEquals("spotify:playlist:37i9dQZF1DXcBWIGoYBM5M", projected.url)
+        assertEquals("My Playlist", projected.target)
+    }
+
+    @Test
+    fun `picking component shortcut on LaunchAppStep maps to Component target and resets expectations`() {
+        val launchStep = LaunchAppStep(
+            id = "launch-comp",
+            target = LaunchTarget.Launcher("com.example.app"),
+            policy = LaunchPolicy.RESET_TO_ROOT,
+            expectedWindow = sampleWindow("com.example.app").copy(
+                observedActivityClass = "com.example.app.MainActivity",
+                fingerprint = sampleFingerprint("com.example.app")
+            ),
+            expectedBefore = sampleFingerprint("com.example.app"),
+            expectedAfter = sampleFingerprint("com.example.app")
+        )
+        val workflow = WorkflowV2(
+            workflowId = "wf-comp",
+            recordedDevice = sampleDevice(),
+            steps = listOf(launchStep)
+        )
+        val doc = ShortcutSteps.decode(codec.encode(workflow)) as ShortcutDocument.V2
+
+        val compAction = doc.actions[0].copy(
+            packageName = "com.example.app",
+            targetClassName = "com.example.app.DirectActivity",
+            target = "Direct Activity"
+        )
+        val encoded = ShortcutSteps.encode(doc, listOf(compAction))
+        val decodedResult = codec.decode(encoded) as com.shortcuts.app.automation.model.DecodeResult.Success
+        val updatedStep = decodedResult.workflow.steps[0] as LaunchAppStep
+
+        assertEquals(LaunchTarget.Component("com.example.app", "com.example.app.DirectActivity"), updatedStep.target)
+        assertEquals(LaunchPolicy.EXPLICIT_EXPORTED_ACTIVITY, updatedStep.policy)
+        assertEquals("Direct Activity", updatedStep.title)
+        assertNull(updatedStep.expectedWindow.observedActivityClass)
+        assertNull(updatedStep.expectedWindow.fingerprint)
+        assertNull(updatedStep.expectedBefore)
+        assertNull(updatedStep.expectedAfter)
+
+        // Project step round-trip check
+        val projected = ShortcutSteps.projectStep(updatedStep)
+        assertEquals("com.example.app.DirectActivity", projected.targetClassName)
+        assertEquals("Direct Activity", projected.target)
+    }
+
+    @Test
+    fun `unrepresentable intent action on LaunchAppStep throws IllegalArgumentException with explanation`() {
+        val launchStep = LaunchAppStep(
+            id = "launch-intent",
+            target = LaunchTarget.Launcher("com.example.app"),
+            policy = LaunchPolicy.RESET_TO_ROOT,
+            expectedWindow = sampleWindow("com.example.app")
+        )
+        val workflow = WorkflowV2(
+            workflowId = "wf-unrep",
+            recordedDevice = sampleDevice(),
+            steps = listOf(launchStep)
+        )
+        val doc = ShortcutSteps.decode(codec.encode(workflow)) as ShortcutDocument.V2
+
+        val unrepresentableAction = doc.actions[0].copy(
+            intentAction = "android.intent.action.VIEW",
+            url = null,
+            targetClassName = null
+        )
+
+        try {
+            ShortcutSteps.encode(doc, listOf(unrepresentableAction))
+            fail("Expected IllegalArgumentException for unrepresentable intent action")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message?.contains("cannot be represented as an Engine v2 launch target") == true)
+        }
     }
 }

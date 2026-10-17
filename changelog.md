@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Fixed
+- **Editing recorded Engine v2 text and app launches updates replay expectations correctly.** Editing typed text in a recorded step now updates the postcondition expectations (`TextEquals`) to match the new text so replay verifies the new value. Changing a recorded launch step's app resets app-specific activity and fingerprint expectations so replay waits only for the new package, and picking an app shortcut or deep link maps to the proper deep-link or component target (or reports an error if unrepresentable).
+- **Recorder review screen now locks unrepresentable fields and catches editing errors safely.** The recorder review screen now locks recorded tap targets identically to the manual builder, surfaces encoding errors gracefully as inline notices instead of crashing during Check, Run now, or Save, ensures confirmed runs execute on Engine v2 by passing the workflow through, and preserves step IDs when an app shortcut is chosen on a recorded step.
 - **Replay now keeps each screen snapshot's element IDs in their proper snapshot.** If a list or screen changes just before an action, RepeatKit re-finds the selected control and refuses stale dispatches instead of tapping whichever row inherited an old ID.
 - **Replay never taps a control twice after an uncertain result.** Once Android accepts a tap, a failed verification now stops that step rather than retrying it as a gesture; only a proven pre-delivery movement rejection can be retried.
 - **Stopping a shortcut now cancels that shortcut's own coroutine.** Stop no longer interrupts an unrelated worker that happens to reuse a pooled thread.
