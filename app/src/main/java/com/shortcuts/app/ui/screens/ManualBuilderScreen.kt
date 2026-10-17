@@ -278,17 +278,21 @@ object ManualBuilderUtils {
                 }
             }
             ActionType.UI_AUTOMATION -> {
-                val target = action.targetText?.ifBlank { null }
-                    ?: action.targetNodeId?.ifBlank { null }
-                    ?: action.target?.ifBlank { null }
-                val isTypeMode = action.uiActionType?.trim()?.uppercase() == "TYPE_TEXT"
-                when {
-                    isTypeMode && !action.textInput.isNullOrBlank() && target != null ->
-                        "Type '${action.textInput}' into '$target'"
-                    isTypeMode && !action.textInput.isNullOrBlank() ->
-                        "Type '${action.textInput}'"
-                    target != null -> "Tap '$target'"
-                    else -> "Tap or Type on Screen"
+                if (action.targetText == "Pressed the keyboard's Search/Send key (detected)" || action.target == "Pressed the keyboard's Search/Send key (detected)") {
+                    "Pressed the keyboard's Search/Send key (detected)"
+                } else {
+                    val target = action.targetText?.ifBlank { null }
+                        ?: action.targetNodeId?.ifBlank { null }
+                        ?: action.target?.ifBlank { null }
+                    val isTypeMode = action.uiActionType?.trim()?.uppercase() == "TYPE_TEXT"
+                    when {
+                        isTypeMode && !action.textInput.isNullOrBlank() && target != null ->
+                            "Type '${action.textInput}' into '$target'"
+                        isTypeMode && !action.textInput.isNullOrBlank() ->
+                            "Type '${action.textInput}'"
+                        target != null -> "Tap '$target'"
+                        else -> "Tap or Type on Screen"
+                    }
                 }
             }
             ActionType.SYSTEM_TOGGLE -> {
@@ -748,12 +752,17 @@ fun ManualBuilderScreen(
                             actions[index] = if (currentPicker.isSecondaryText) {
                                 action.copy(textInput = textInputState)
                             } else {
-                                when (action.actionType) {
-                                    ActionType.HTTP_REQUEST -> action.copy(url = textInputState)
-                                    ActionType.SEND_MESSAGE -> action.copy(target = textInputState)
-                                    ActionType.DIAL_NUMBER -> action.copy(target = textInputState)
-                                    ActionType.UI_AUTOMATION -> action.copy(targetText = textInputState)
-                                    else -> action
+                                if (action.v2StepId != null) {
+                                    // Recorded v2 step targets cannot be edited
+                                    action
+                                } else {
+                                    when (action.actionType) {
+                                        ActionType.HTTP_REQUEST -> action.copy(url = textInputState)
+                                        ActionType.SEND_MESSAGE -> action.copy(target = textInputState)
+                                        ActionType.DIAL_NUMBER -> action.copy(target = textInputState)
+                                        ActionType.UI_AUTOMATION -> action.copy(targetText = textInputState)
+                                        else -> action
+                                    }
                                 }
                             }
                         }
@@ -783,7 +792,12 @@ fun ManualBuilderScreen(
             }, onAppActionPicked = { pickedAction ->
                 val index = currentPicker.stepIndex
                 if (index in actions.indices) {
-                    actions[index] = pickedAction
+                    val existing = actions[index]
+                    actions[index] = if (existing.v2StepId != null) {
+                        pickedAction.copy(v2StepId = existing.v2StepId)
+                    } else {
+                        pickedAction
+                    }
                 }
                 picker = null
             })
@@ -853,6 +867,9 @@ fun Action.hasBothSelectorsForOverride(): Boolean {
                     DottedSlot(action.target?.takeIf { it.isNotBlank() } ?: "number") { onOpenPicker(ManualSlotPicker(index, ManualSlotKind.TEXT, "Phone number", action.target ?: "")) }
                 }
                 ActionType.UI_AUTOMATION -> {
+                    val isRecorded = action.v2StepId != null
+                    val isInferredIme = action.targetText == "Pressed the keyboard's Search/Send key (detected)" ||
+                        action.target == "Pressed the keyboard's Search/Send key (detected)"
                     val uiType = action.uiActionType?.trim()?.uppercase() ?: "TAP"
                     val typeLabel = when (uiType) {
                         "TYPE_TEXT" -> "Type"
@@ -860,31 +877,84 @@ fun Action.hasBothSelectorsForOverride(): Boolean {
                         "PRESS_ENTER" -> "Press Enter on"
                         else -> "Tap"
                     }
-                    DottedSlot(typeLabel) { onOpenPicker(ManualSlotPicker(index, ManualSlotKind.UI_ACTION_TYPE)) }
-                    Text(" ", fontSize = 21.sp, lineHeight = 31.5.sp, letterSpacing = (-0.2).sp, fontWeight = FontWeight.SemiBold, color = palette.tileContent)
-                    
-                    if (uiType == "TYPE_TEXT") {
-                        DottedSlot(action.textInput?.takeIf { it.isNotBlank() } ?: "text") { onOpenPicker(ManualSlotPicker(index, ManualSlotKind.TEXT, "Text to type", action.textInput ?: "", true)) }
-                        Text(" into ", fontSize = 21.sp, lineHeight = 31.5.sp, letterSpacing = (-0.2).sp, fontWeight = FontWeight.SemiBold, color = palette.tileContent)
-                    }
-                    
-                    DottedSlot(action.targetText?.takeIf { it.isNotBlank() } ?: "target") { onOpenPicker(ManualSlotPicker(index, ManualSlotKind.TEXT, "Target text", action.targetText ?: "")) }
-                    
-                    if (action.hasBothSelectorsForOverride()) {
-                        Spacer(Modifier.fillMaxWidth().height(8.dp))
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            @OptIn(ExperimentalMaterial3Api::class)
-                            FilterChip(
-                                selected = !action.preferCoordinateReplay,
-                                onClick = { onActionChange(action.copy(preferCoordinateReplay = false)) },
-                                label = { Text("Match by description") }
-                            )
-                            @OptIn(ExperimentalMaterial3Api::class)
-                            FilterChip(
-                                selected = action.preferCoordinateReplay,
-                                onClick = { onActionChange(action.copy(preferCoordinateReplay = true)) },
-                                label = { Text("Always tap this exact spot") }
-                            )
+                    if (isInferredIme) {
+                        Text(
+                            "Pressed the keyboard's Search/Send key (detected)",
+                            fontSize = 21.sp,
+                            lineHeight = 31.5.sp,
+                            letterSpacing = (-0.2).sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = palette.tileContent
+                        )
+                        RecordedLockIndicator(palette.tileContent)
+                        Spacer(Modifier.fillMaxWidth().height(4.dp))
+                        Text(
+                            "Inferred from keyboard action during recording.",
+                            fontSize = 12.sp,
+                            color = palette.tileContent.copy(alpha = 0.6f)
+                        )
+                    } else if (isRecorded) {
+                        // Action type and target element are read-only for recorded steps
+                        Text(
+                            typeLabel,
+                            fontSize = 21.sp,
+                            lineHeight = 31.5.sp,
+                            letterSpacing = (-0.2).sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = palette.tileContent
+                        )
+                        Text(" ", fontSize = 21.sp, lineHeight = 31.5.sp, letterSpacing = (-0.2).sp, fontWeight = FontWeight.SemiBold, color = palette.tileContent)
+
+                        if (uiType == "TYPE_TEXT") {
+                            // SET_TEXT textInput is editable!
+                            DottedSlot(action.textInput?.takeIf { it.isNotBlank() } ?: "text") {
+                                onOpenPicker(ManualSlotPicker(index, ManualSlotKind.TEXT, "Text to type", action.textInput ?: "", true))
+                            }
+                            Text(" into ", fontSize = 21.sp, lineHeight = 31.5.sp, letterSpacing = (-0.2).sp, fontWeight = FontWeight.SemiBold, color = palette.tileContent)
+                        }
+
+                        Text(
+                            action.targetText?.takeIf { it.isNotBlank() } ?: "target",
+                            fontSize = 21.sp,
+                            lineHeight = 31.5.sp,
+                            letterSpacing = (-0.2).sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = palette.tileContent
+                        )
+                        RecordedLockIndicator(palette.tileContent)
+                        Spacer(Modifier.fillMaxWidth().height(4.dp))
+                        Text(
+                            "Target element was captured during recording and cannot be edited.",
+                            fontSize = 12.sp,
+                            color = palette.tileContent.copy(alpha = 0.6f)
+                        )
+                    } else {
+                        DottedSlot(typeLabel) { onOpenPicker(ManualSlotPicker(index, ManualSlotKind.UI_ACTION_TYPE)) }
+                        Text(" ", fontSize = 21.sp, lineHeight = 31.5.sp, letterSpacing = (-0.2).sp, fontWeight = FontWeight.SemiBold, color = palette.tileContent)
+                        
+                        if (uiType == "TYPE_TEXT") {
+                            DottedSlot(action.textInput?.takeIf { it.isNotBlank() } ?: "text") { onOpenPicker(ManualSlotPicker(index, ManualSlotKind.TEXT, "Text to type", action.textInput ?: "", true)) }
+                            Text(" into ", fontSize = 21.sp, lineHeight = 31.5.sp, letterSpacing = (-0.2).sp, fontWeight = FontWeight.SemiBold, color = palette.tileContent)
+                        }
+                        
+                        DottedSlot(action.targetText?.takeIf { it.isNotBlank() } ?: "target") { onOpenPicker(ManualSlotPicker(index, ManualSlotKind.TEXT, "Target text", action.targetText ?: "")) }
+                        
+                        if (action.hasBothSelectorsForOverride()) {
+                            Spacer(Modifier.fillMaxWidth().height(8.dp))
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                @OptIn(ExperimentalMaterial3Api::class)
+                                FilterChip(
+                                    selected = !action.preferCoordinateReplay,
+                                    onClick = { onActionChange(action.copy(preferCoordinateReplay = false)) },
+                                    label = { Text("Match by description") }
+                                )
+                                @OptIn(ExperimentalMaterial3Api::class)
+                                FilterChip(
+                                    selected = action.preferCoordinateReplay,
+                                    onClick = { onActionChange(action.copy(preferCoordinateReplay = true)) },
+                                    label = { Text("Always tap this exact spot") }
+                                )
+                            }
                         }
                     }
                 }
@@ -905,6 +975,27 @@ fun Action.hasBothSelectorsForOverride(): Boolean {
                 DropdownMenuItem(text = { Text("Remove") }, onClick = { menuExpanded = false; onRemove() }, enabled = totalActions > 1)
             }
         }
+    }
+}
+
+@Composable fun RecordedLockIndicator(tint: androidx.compose.ui.graphics.Color) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = Modifier.padding(start = 6.dp)
+    ) {
+        Icon(
+            Icons.Filled.Lock,
+            contentDescription = "Recorded step target is read-only",
+            tint = tint.copy(alpha = 0.7f),
+            modifier = Modifier.size(13.dp)
+        )
+        Text(
+            "Recorded",
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            color = tint.copy(alpha = 0.7f)
+        )
     }
 }
 

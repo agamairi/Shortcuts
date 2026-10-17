@@ -43,6 +43,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.shortcuts.app.data.Action
 import com.shortcuts.app.data.ActionType
+import com.shortcuts.app.data.ShortcutDocument
+import com.shortcuts.app.data.ShortcutSteps
 import com.shortcuts.app.service.AutomationRecorder
 import com.shortcuts.app.ui.theme.LocalShortcutsPalette
 import com.shortcuts.app.util.AccessibilityStatusChecker
@@ -125,16 +127,28 @@ fun RecorderScreen(
     }
 
     val editableActions = remember { mutableStateListOf<Action>() }
+    var loadedDocument by remember { mutableStateOf<ShortcutDocument?>(null) }
     var wasRecording by remember { mutableStateOf(isRecording) }
 
     LaunchedEffect(isRecording, isAccessibilityServiceActive, recordedActionsFlow) {
-        if (!isRecording && recordedActionsFlow.isNotEmpty() && editableActions.isEmpty()) {
-            editableActions.addAll(recordedActionsFlow)
+        if (!isRecording && (recordedActionsFlow.isNotEmpty() || com.shortcuts.app.automation.android.capture.V2CaptureBridge.lastWorkflowJson != null) && editableActions.isEmpty()) {
+            val v2Json = com.shortcuts.app.automation.android.capture.V2CaptureBridge.lastWorkflowJson
+            val doc = if (!v2Json.isNullOrBlank()) {
+                ShortcutSteps.decode(v2Json)
+            } else null
+
+            if (doc is ShortcutDocument.V2 && doc.actions.isNotEmpty()) {
+                loadedDocument = doc
+                editableActions.addAll(doc.actions)
+            } else {
+                loadedDocument = ShortcutDocument.Legacy(recordedActionsFlow)
+                editableActions.addAll(recordedActionsFlow)
+            }
         }
         if (wasRecording && !isRecording) {
             val serviceStillActive = AccessibilityStatusChecker.isAccessibilityServiceActive(context)
             isAccessibilityServiceActive = serviceStillActive
-            if (!serviceStillActive && recordedActionsFlow.isNotEmpty()) {
+            if (!serviceStillActive && (recordedActionsFlow.isNotEmpty() || editableActions.isNotEmpty())) {
                 recordingStatusMessage = "Accessibility was turned off, so recording ended. Your captured steps are ready to review."
             }
         }
@@ -196,6 +210,8 @@ fun RecorderScreen(
             confirmButton = {
                 TextButton(onClick = {
                     AutomationRecorder.clearRecording()
+                    loadedDocument = null
+                    editableActions.clear()
                     showDiscardConfirmation = false
                     onNavigateBack()
                 }) { Text("Discard") }
@@ -281,17 +297,16 @@ fun RecorderScreen(
                                             snackbarHostState.showSnackbar("The web token couldn't be secured. Your shortcut was not saved.")
                                             return@launch
                                         }
-                                        val v07Actions = safe.filterNotNull()
-                                        val actionsJson = com.shortcuts.app.automation.android.capture.selectSaveActionsJson(
-                                            engineV2Enabled = com.shortcuts.app.automation.android.EngineV2.enabled,
-                                            v2WorkflowJson = com.shortcuts.app.automation.android.capture.V2CaptureBridge.lastWorkflowJson,
-                                            originalActions = recordedActionsFlow,
-                                            currentActions = editableActions.toList(),
-                                            v07ActionsJson = { com.shortcuts.app.data.ActionConverter().fromActionList(v07Actions) }
-                                        )
+                                        val currentActions = safe.filterNotNull()
+                                        val doc = loadedDocument
+                                        val actionsJson = if (doc is ShortcutDocument.V2) {
+                                            ShortcutSteps.encode(doc, currentActions)
+                                        } else {
+                                            com.shortcuts.app.data.ActionConverter().fromActionList(currentActions)
+                                        }
                                         val automation = ManualBuilderUtils.buildManualAutomation(
                                             shortcutName,
-                                            v07Actions,
+                                            currentActions,
                                             selectedColor.name,
                                             selectedIcon.name
                                         ).copy(actionsJson = actionsJson)
@@ -299,6 +314,8 @@ fun RecorderScreen(
 
                                         if (saveResult.isSuccess) {
                                             AutomationRecorder.clearRecording()
+                                            loadedDocument = null
+                                            editableActions.clear()
                                             isSaving = false
                                             onNavigateBack()
                                         } else {
@@ -489,6 +506,16 @@ fun RecorderScreen(
                             )
                         }
                     }
+                    if (loadedDocument !is ShortcutDocument.V2) {
+                        item {
+                            Text(
+                                "Recorded using legacy engine (Engine v2 workflow unavailable).",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = palette.ink.copy(alpha = 0.7f),
+                                modifier = Modifier.padding(bottom = 8.dp)
+                            )
+                        }
+                    }
                     itemsIndexed(editableActions) { index, action ->
                         ManualSentenceRow(
                             index = index,
@@ -589,9 +616,15 @@ fun RecorderScreen(
                             .border(1.5.dp, palette.ink.copy(alpha = .6f), androidx.compose.foundation.shape.RoundedCornerShape(26.dp))
                             .clickable {
                                 val snapshot = editableActions.toList()
+                                val doc = loadedDocument
                                 scope.launch {
                                     preflightReport = withContext(Dispatchers.IO) {
-                                        ShortcutRunner(context.applicationContext).preflight(snapshot)
+                                        if (doc is ShortcutDocument.V2) {
+                                            val v2Json = ShortcutSteps.encode(doc, snapshot)
+                                            ShortcutRunner(context.applicationContext).preflight(v2Json)
+                                        } else {
+                                            ShortcutRunner(context.applicationContext).preflight(snapshot)
+                                        }
                                     }
                                 }
                             },
@@ -607,21 +640,33 @@ fun RecorderScreen(
                             .clickable {
                                 val snapshot = editableActions.toList()
                                 val name = shortcutName
+                                val doc = loadedDocument
                                 scope.launch {
+                                    val v2Json = if (doc is ShortcutDocument.V2) {
+                                        ShortcutSteps.encode(doc, snapshot)
+                                    } else null
                                     val report = withContext(Dispatchers.IO) {
-                                        ShortcutRunner(context.applicationContext).preflight(snapshot)
+                                        if (v2Json != null) {
+                                            ShortcutRunner(context.applicationContext).preflight(v2Json)
+                                        } else {
+                                            ShortcutRunner(context.applicationContext).preflight(snapshot)
+                                        }
                                     }
                                     if (!report.canRun) {
                                         preflightReport = report
                                         return@launch
                                     }
-                                    val effects = ShortcutRunSafety.confirmationEffects(snapshot)
+                                    val effects = if (v2Json != null) {
+                                        ShortcutRunSafety.confirmationEffects(v2Json)
+                                    } else {
+                                        ShortcutRunSafety.confirmationEffects(snapshot)
+                                    }
                                     if (effects.isEmpty()) {
                                         snackbarHostState.showSnackbar(
-                                            runEditorDraftThroughGateway(context, name, snapshot).userMessage()
+                                            runEditorDraftThroughGateway(context, name, snapshot, actionsJson = v2Json).userMessage()
                                         )
                                     } else {
-                                        pendingEditorRun = PendingEditorRun(name, snapshot, effects)
+                                        pendingEditorRun = PendingEditorRun(name, snapshot, effects, actionsJson = v2Json)
                                     }
                                 }
                             },

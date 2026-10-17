@@ -110,11 +110,11 @@ object ShortcutSteps {
         }
     }
 
-    private fun projectWorkflow(workflow: WorkflowV2): List<Action> {
+    internal fun projectWorkflow(workflow: WorkflowV2): List<Action> {
         return workflow.steps.map { projectStep(it) }
     }
 
-    private fun projectStep(step: Step): Action {
+    internal fun projectStep(step: Step): Action {
         return when (step) {
             is LaunchAppStep -> {
                 val pkg = when (val target = step.target) {
@@ -141,6 +141,21 @@ object ShortcutSteps {
                 val className = element?.expectedClass
                 val screenX = element?.rawPoint?.displayPx?.x
                 val screenY = element?.rawPoint?.displayPx?.y
+
+                val isInferredIme = step.migrationWarnings.contains("INFERRED_IME_ACTION")
+                if (isInferredIme) {
+                    return Action(
+                        actionType = ActionType.UI_AUTOMATION,
+                        uiActionType = "PRESS_ENTER",
+                        target = "Pressed the keyboard's Search/Send key (detected)",
+                        targetText = "Pressed the keyboard's Search/Send key (detected)",
+                        targetContentDescription = contentDesc,
+                        targetNodeId = resId,
+                        targetClassName = className,
+                        targetPackageName = pkg,
+                        v2StepId = step.id
+                    )
+                }
 
                 when (val op = step.operation) {
                     UiOperation.TAP -> Action(
@@ -258,33 +273,25 @@ object ShortcutSteps {
 
         for (action in editedActions) {
             val stepId = action.v2StepId
-            val originalStep = if (stepId != null && !usedStepIds.contains(stepId)) {
-                originalStepsById[stepId]
-            } else {
-                null
-            }
+            if (stepId != null) {
+                if (usedStepIds.contains(stepId)) {
+                    throw IllegalArgumentException("Duplicate v2StepId in edited actions: $stepId")
+                }
+                val originalStep = originalStepsById[stepId]
+                    ?: throw IllegalArgumentException("Unknown v2StepId in edited actions: $stepId")
+                usedStepIds.add(stepId)
 
-            if (originalStep != null) {
-                usedStepIds.add(originalStep.id)
-                // Note: continueOnError has no v2 equivalent — keeping original step structure
-                if (originalStep is WaitStep) {
-                    val updatedStep = if (action.delayMillis != null && action.delayMillis != originalStep.durationMs) {
-                        originalStep.copy(durationMs = action.delayMillis, timeoutMs = action.delayMillis)
-                    } else {
-                        originalStep
-                    }
-                    newSteps.add(updatedStep)
-                } else {
-                    newSteps.add(originalStep)
-                    if (action.delayMillis != null && action.delayMillis > 0) {
-                        newSteps.add(
-                            WaitStep(
-                                id = UUID.randomUUID().toString(),
-                                durationMs = action.delayMillis,
-                                timeoutMs = action.delayMillis
-                            )
+                val updatedStep = updateV2Step(originalStep, action)
+                newSteps.add(updatedStep)
+
+                if (originalStep !is WaitStep && action.delayMillis != null && action.delayMillis > 0) {
+                    newSteps.add(
+                        WaitStep(
+                            id = UUID.randomUUID().toString(),
+                            durationMs = action.delayMillis,
+                            timeoutMs = action.delayMillis
                         )
-                    }
+                    )
                 }
             } else {
                 newSteps.add(
@@ -298,5 +305,89 @@ object ShortcutSteps {
 
         val newWorkflow = original.workflow.copy(steps = newSteps)
         return WorkflowCodec().encode(newWorkflow)
+    }
+
+    private fun updateV2Step(originalStep: Step, action: Action): Step {
+        if (action.continueOnError) {
+            throw IllegalArgumentException("continueOnError has no Engine v2 equivalent and is not supported for recorded step ${originalStep.id}")
+        }
+
+        return when (originalStep) {
+            is LaunchAppStep -> {
+                if (action.actionType != ActionType.APP_INTENT) {
+                    throw IllegalArgumentException("Cannot change actionType of recorded LaunchAppStep ${originalStep.id} to ${action.actionType}")
+                }
+                if (!action.uiActionType.isNullOrBlank() || !action.targetText.isNullOrBlank() ||
+                    !action.targetNodeId.isNullOrBlank() || !action.targetContentDescription.isNullOrBlank() ||
+                    !action.targetClassName.isNullOrBlank() || action.screenX != null || action.screenY != null
+                ) {
+                    throw IllegalArgumentException("Cannot set UI automation properties on recorded LaunchAppStep ${originalStep.id}")
+                }
+                val newPkg = action.packageName?.trim().orEmpty()
+                if (newPkg.isBlank()) {
+                    throw IllegalArgumentException("Package name cannot be blank for LaunchAppStep ${originalStep.id}")
+                }
+                originalStep.copy(
+                    target = LaunchTarget.Launcher(newPkg),
+                    expectedWindow = originalStep.expectedWindow.copy(packageName = newPkg)
+                )
+            }
+            is WaitStep -> {
+                if (action.actionType != ActionType.WAIT) {
+                    throw IllegalArgumentException("Cannot change actionType of recorded WaitStep ${originalStep.id} to ${action.actionType}")
+                }
+                if (!action.packageName.isNullOrBlank() || !action.uiActionType.isNullOrBlank() ||
+                    !action.targetText.isNullOrBlank() || !action.targetNodeId.isNullOrBlank()
+                ) {
+                    throw IllegalArgumentException("Cannot set non-wait properties on recorded WaitStep ${originalStep.id}")
+                }
+                val duration = action.delayMillis ?: originalStep.durationMs
+                if (duration <= 0) {
+                    throw IllegalArgumentException("Wait duration must be positive for WaitStep ${originalStep.id}")
+                }
+                originalStep.copy(
+                    durationMs = duration,
+                    timeoutMs = duration
+                )
+            }
+            is UiStep -> {
+                if (action.actionType != ActionType.UI_AUTOMATION) {
+                    throw IllegalArgumentException("Cannot change actionType of recorded UiStep ${originalStep.id} to ${action.actionType}")
+                }
+                val projected = projectStep(originalStep)
+
+                val editedUiType = action.uiActionType?.trim()?.uppercase()
+                val projectedUiType = projected.uiActionType?.trim()?.uppercase()
+                if (editedUiType != null && editedUiType != projectedUiType) {
+                    throw IllegalArgumentException("Cannot change uiActionType of recorded UiStep ${originalStep.id} from $projectedUiType to $editedUiType")
+                }
+
+                if (action.targetText != projected.targetText ||
+                    action.targetContentDescription != projected.targetContentDescription ||
+                    action.targetNodeId != projected.targetNodeId ||
+                    action.targetClassName != projected.targetClassName ||
+                    action.targetPackageName != projected.targetPackageName ||
+                    action.screenX != projected.screenX ||
+                    action.screenY != projected.screenY ||
+                    action.preferCoordinateReplay != projected.preferCoordinateReplay ||
+                    action.target != projected.target
+                ) {
+                    throw IllegalArgumentException("Target element and selectors are read-only for recorded UiStep ${originalStep.id}")
+                }
+
+                if (originalStep.operation is UiOperation.SET_TEXT) {
+                    val newText = action.textInput ?: ""
+                    originalStep.copy(operation = UiOperation.SET_TEXT(newText))
+                } else {
+                    if (action.textInput != null && action.textInput != projected.textInput) {
+                        throw IllegalArgumentException("Cannot set textInput on non-SET_TEXT UiStep ${originalStep.id}")
+                    }
+                    originalStep
+                }
+            }
+            is LegacyActionStep -> {
+                originalStep.copy(action = action.copy(v2StepId = null))
+            }
+        }
     }
 }
