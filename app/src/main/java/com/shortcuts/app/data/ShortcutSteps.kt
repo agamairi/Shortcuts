@@ -5,9 +5,12 @@ import com.shortcuts.app.automation.model.LaunchAppStep
 import com.shortcuts.app.automation.model.LaunchTarget
 import com.shortcuts.app.automation.model.LegacyActionStep
 import com.shortcuts.app.automation.model.LocatorKind
+import com.shortcuts.app.automation.model.LaunchPolicy
+import com.shortcuts.app.automation.model.NormalizedRect
 import com.shortcuts.app.automation.model.Step
 import com.shortcuts.app.automation.model.UiOperation
 import com.shortcuts.app.automation.model.UiStep
+import com.shortcuts.app.automation.model.VerificationPostcondition
 import com.shortcuts.app.automation.model.WaitStep
 import com.shortcuts.app.automation.model.WorkflowCodec
 import com.shortcuts.app.automation.model.WorkflowV2
@@ -123,10 +126,19 @@ object ShortcutSteps {
                     is LaunchTarget.DeepLink -> target.packageName
                 }.ifBlank { step.expectedWindow.packageName }
 
+                val (url, targetClassName) = when (val target = step.target) {
+                    is LaunchTarget.DeepLink -> Pair(target.uri, null)
+                    is LaunchTarget.Component -> Pair(null, target.className)
+                    is LaunchTarget.Launcher -> Pair(null, null)
+                }
+
                 Action(
                     actionType = ActionType.APP_INTENT,
                     packageName = pkg,
                     targetPackageName = step.expectedWindow.packageName.ifBlank { pkg },
+                    target = step.title,
+                    url = url,
+                    targetClassName = targetClassName,
                     v2StepId = step.id
                 )
             }
@@ -319,7 +331,7 @@ object ShortcutSteps {
                 }
                 if (!action.uiActionType.isNullOrBlank() || !action.targetText.isNullOrBlank() ||
                     !action.targetNodeId.isNullOrBlank() || !action.targetContentDescription.isNullOrBlank() ||
-                    !action.targetClassName.isNullOrBlank() || action.screenX != null || action.screenY != null
+                    action.screenX != null || action.screenY != null
                 ) {
                     throw IllegalArgumentException("Cannot set UI automation properties on recorded LaunchAppStep ${originalStep.id}")
                 }
@@ -327,9 +339,56 @@ object ShortcutSteps {
                 if (newPkg.isBlank()) {
                     throw IllegalArgumentException("Package name cannot be blank for LaunchAppStep ${originalStep.id}")
                 }
+
+                val oldPkg = originalStep.expectedWindow.packageName.ifBlank {
+                    when (val target = originalStep.target) {
+                        is LaunchTarget.Launcher -> target.packageName
+                        is LaunchTarget.Component -> target.packageName
+                        is LaunchTarget.DeepLink -> target.packageName
+                    }
+                }
+
+                val (target, policy) = when {
+                    !action.url.isNullOrBlank() -> {
+                        Pair(LaunchTarget.DeepLink(packageName = newPkg, uri = action.url), LaunchPolicy.DEEP_LINK)
+                    }
+                    !action.targetClassName.isNullOrBlank() -> {
+                        Pair(LaunchTarget.Component(packageName = newPkg, className = action.targetClassName), LaunchPolicy.EXPLICIT_EXPORTED_ACTIVITY)
+                    }
+                    !action.intentAction.isNullOrBlank() -> {
+                        throw IllegalArgumentException(
+                            "App shortcut with action '${action.intentAction}' cannot be represented as an Engine v2 launch target (requires deep link URI or component class)"
+                        )
+                    }
+                    else -> {
+                        val p = if (originalStep.target is LaunchTarget.Launcher) originalStep.policy else LaunchPolicy.RESET_TO_ROOT
+                        Pair(LaunchTarget.Launcher(newPkg), p)
+                    }
+                }
+
+                val isPackageChanged = newPkg != oldPkg
+                val isTargetChanged = target != originalStep.target
+                val shouldResetExpectations = isPackageChanged || isTargetChanged
+
+                val newExpectedWindow = if (shouldResetExpectations) {
+                    originalStep.expectedWindow.copy(
+                        packageName = newPkg,
+                        observedActivityClass = null,
+                        titleToken = null,
+                        fingerprint = null,
+                        boundsOnDisplay = NormalizedRect(0f, 0f, 1f, 1f)
+                    )
+                } else {
+                    originalStep.expectedWindow.copy(packageName = newPkg)
+                }
+
                 originalStep.copy(
-                    target = LaunchTarget.Launcher(newPkg),
-                    expectedWindow = originalStep.expectedWindow.copy(packageName = newPkg)
+                    title = action.target ?: (if (isPackageChanged) null else originalStep.title),
+                    target = target,
+                    policy = policy,
+                    expectedWindow = newExpectedWindow,
+                    expectedBefore = if (shouldResetExpectations) null else originalStep.expectedBefore,
+                    expectedAfter = if (shouldResetExpectations) null else originalStep.expectedAfter
                 )
             }
             is WaitStep -> {
@@ -376,8 +435,20 @@ object ShortcutSteps {
                 }
 
                 if (originalStep.operation is UiOperation.SET_TEXT) {
+                    val oldText = originalStep.operation.text
                     val newText = action.textInput ?: ""
-                    originalStep.copy(operation = UiOperation.SET_TEXT(newText))
+                    val updatedPostconditions = originalStep.verification.postconditions.map { postcondition ->
+                        if (postcondition is VerificationPostcondition.TextEquals && postcondition.value == oldText) {
+                            VerificationPostcondition.TextEquals(newText)
+                        } else {
+                            postcondition
+                        }
+                    }
+                    val updatedVerification = originalStep.verification.copy(postconditions = updatedPostconditions)
+                    originalStep.copy(
+                        operation = UiOperation.SET_TEXT(newText),
+                        verification = updatedVerification
+                    )
                 } else {
                     if (action.textInput != null && action.textInput != projected.textInput) {
                         throw IllegalArgumentException("Cannot set textInput on non-SET_TEXT UiStep ${originalStep.id}")

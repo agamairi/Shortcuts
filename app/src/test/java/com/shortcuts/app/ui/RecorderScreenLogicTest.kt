@@ -20,12 +20,15 @@ import com.shortcuts.app.data.ActionConverter
 import com.shortcuts.app.data.ActionType
 import com.shortcuts.app.data.ShortcutDocument
 import com.shortcuts.app.data.ShortcutSteps
+import com.shortcuts.app.ui.screens.ManualBuilderUtils
 import com.shortcuts.app.ui.screens.RecorderListOperations
 import com.shortcuts.app.ui.screens.RecorderSessionUiState
 import com.shortcuts.app.ui.screens.RecorderUiState
 import com.shortcuts.app.ui.screens.determineRecorderSessionUiState
 import com.shortcuts.app.ui.screens.determineRecorderUiState
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -229,5 +232,112 @@ class RecorderScreenLogicTest {
         assertEquals(2, reDecoded.actions.size)
         assertEquals(ActionType.SYSTEM_TOGGLE, reDecoded.actions[0].actionType)
         assertEquals(ActionType.APP_INTENT, reDecoded.actions[1].actionType)
+    }
+
+    // NEW-5 (d): picking an app shortcut on a recorded step must keep its v2StepId
+    @Test
+    fun `preserveV2StepId keeps v2StepId when picking app action`() {
+        val recordedAction = Action(
+            actionType = ActionType.APP_INTENT,
+            packageName = "com.old.app",
+            v2StepId = "v2-step-42"
+        )
+        val pickedAction = Action(
+            actionType = ActionType.APP_INTENT,
+            packageName = "com.spotify.music",
+            target = "My Playlist",
+            url = "spotify:playlist:123"
+        )
+
+        val merged = RecorderListOperations.preserveV2StepId(recordedAction, pickedAction)
+        assertEquals("v2-step-42", merged.v2StepId)
+        assertEquals("com.spotify.music", merged.packageName)
+        assertEquals("spotify:playlist:123", merged.url)
+
+        val unrecordedAction = Action(
+            actionType = ActionType.APP_INTENT,
+            packageName = "com.manual.app"
+        )
+        val mergedUnrecorded = RecorderListOperations.preserveV2StepId(unrecordedAction, pickedAction)
+        assertNull(mergedUnrecorded.v2StepId)
+    }
+
+    // NEW-5 (b): safeEncodeWorkflow returns Result failure instead of crashing
+    @Test
+    fun `safeEncodeWorkflow catches encode errors and returns Result failure`() {
+        val s1 = LaunchAppStep(
+            id = "s1",
+            target = LaunchTarget.Launcher("com.app"),
+            policy = LaunchPolicy.RESET_TO_ROOT,
+            expectedWindow = sampleWindow("com.app")
+        )
+        val workflow = WorkflowV2(
+            workflowId = "wf-safe-encode",
+            recordedDevice = sampleDevice(),
+            steps = listOf(s1)
+        )
+        val doc = ShortcutSteps.decode(WorkflowCodec().encode(workflow)) as ShortcutDocument.V2
+
+        // Valid actions encode successfully
+        val successResult = ManualBuilderUtils.safeEncodeWorkflow(doc, doc.actions)
+        assertTrue(successResult.isSuccess)
+        assertNotNull(successResult.getOrNull())
+
+        // Invalid edit: blank package name on LaunchAppStep
+        val invalidActions = listOf(doc.actions[0].copy(packageName = ""))
+        val failureResult = ManualBuilderUtils.safeEncodeWorkflow(doc, invalidActions)
+        assertTrue(failureResult.isFailure)
+        assertTrue(failureResult.exceptionOrNull()?.message?.contains("Package name cannot be blank") == true)
+
+        // Non-v2 doc returns null successfully
+        val legacyDoc = ShortcutDocument.Legacy(emptyList())
+        val legacyResult = ManualBuilderUtils.safeEncodeWorkflow(legacyDoc, emptyList())
+        assertTrue(legacyResult.isSuccess)
+        assertNull(legacyResult.getOrNull())
+    }
+
+    // NEW-5 (b): safeEncodeForSave returns Result failure on invalid v2 edit and success on valid
+    @Test
+    fun `safeEncodeForSave returns Result failure on invalid v2 edit and success for valid`() {
+        val s1 = LaunchAppStep(
+            id = "s1",
+            target = LaunchTarget.Launcher("com.app"),
+            policy = LaunchPolicy.RESET_TO_ROOT,
+            expectedWindow = sampleWindow("com.app")
+        )
+        val workflow = WorkflowV2(
+            workflowId = "wf-safe-save",
+            recordedDevice = sampleDevice(),
+            steps = listOf(s1)
+        )
+        val doc = ShortcutSteps.decode(WorkflowCodec().encode(workflow)) as ShortcutDocument.V2
+
+        val success = ManualBuilderUtils.safeEncodeForSave(doc, doc.actions)
+        assertTrue(success.isSuccess)
+
+        val invalidActions = listOf(doc.actions[0].copy(packageName = "   "))
+        val failure = ManualBuilderUtils.safeEncodeForSave(doc, invalidActions)
+        assertTrue(failure.isFailure)
+        assertTrue(failure.exceptionOrNull()?.message?.contains("Package name cannot be blank") == true)
+    }
+
+    // NEW-5 (c): EditorRunConfirmationDialog preserves actionsJson
+    @Test
+    fun `PendingEditorRun preserves actionsJson for confirmed execution`() {
+        val actions = listOf(Action(actionType = ActionType.APP_INTENT, packageName = "com.test"))
+        val effects = listOf("Opens an external application")
+        val v2Json = "{\"v2Workflow\": true}"
+
+        val pending = com.shortcuts.app.ui.screens.PendingEditorRun(
+            shortcutName = "V2 Shortcut",
+            actions = actions,
+            effects = effects,
+            actionsJson = v2Json
+        )
+
+        assertEquals("V2 Shortcut", pending.shortcutName)
+        assertEquals(actions, pending.actions)
+        assertEquals(effects, pending.effects)
+        assertEquals(v2Json, pending.actionsJson)
     }
 }
