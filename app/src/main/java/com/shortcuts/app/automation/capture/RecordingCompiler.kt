@@ -466,7 +466,7 @@ class RecordingCompiler(
             beforeSnapshot = context.snapshot,
             beforeWindow = window,
             safety = StepSafety.REVERSIBLE,
-            warnings = mutableListOf()
+            warnings = if (action.inferred) mutableListOf("INFERRED_BACK") else mutableListOf()
         )
     }
 

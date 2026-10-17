@@ -49,5 +49,7 @@ data class CapturedGlobalAction(
     val kind: String,
     val snapshot: WindowSetSnapshot,
     val actionAtUptimeMs: Long,
+    /** True when a quiet confirmed activity-stack pop indicated an otherwise invisible Back. */
+    val inferred: Boolean = false,
     val precomputedFingerprint: ScreenFingerprint? = null
 )

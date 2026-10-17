@@ -494,6 +494,45 @@ class V2CaptureBridgeTest {
     }
 
     @Test
+    fun testInferredBackIsDeliveredBeforeAppSwitchWithPreviousScreenSnapshot() {
+        val home = snapshot(screen("com.example.app", "Home", nodeId = 1), 1_000L)
+        val profile = snapshot(screen("com.example.app", "Profile", nodeId = 2), 2_000L)
+        val edit = snapshot(screen("com.example.app", "Edit", nodeId = 3), 3_000L)
+        var current = home
+        EngineV2.snapshotSource = WindowSnapshotSource { current }
+
+        val order = mutableListOf<String>()
+        val actions = mutableListOf<com.shortcuts.app.automation.capture.CapturedGlobalAction>()
+        val mockCompiler = mockk<RecordingCompiler>(relaxed = true)
+        every { mockCompiler.accept(any<com.shortcuts.app.automation.capture.CapturedGlobalAction>()) } answers {
+            order += "back"
+            actions.add(firstArg())
+        }
+        every { mockCompiler.accept(any<com.shortcuts.app.automation.capture.CapturedAppSwitch>()) } answers {
+            order += "switch"
+        }
+        V2CaptureBridge.setCompilerForTest(mockCompiler)
+
+        // Snapshots are taken on the capture queue, so let each switch drain before the screen changes.
+        V2CaptureBridge.onAppSwitch("com.example.app", "com.example.app.HomeActivity", 1_000L)
+        V2CaptureBridge.awaitCaptureIdleForTest()
+        current = profile
+        V2CaptureBridge.onAppSwitch("com.example.app", "com.example.app.ProfileActivity", 2_000L)
+        V2CaptureBridge.awaitCaptureIdleForTest()
+        current = edit
+        V2CaptureBridge.onAppSwitch("com.example.app", "com.example.app.EditActivity", 3_000L)
+        V2CaptureBridge.awaitCaptureIdleForTest()
+        current = profile
+        V2CaptureBridge.onAppSwitch("com.example.app", "com.example.app.ProfileActivity", 4_000L)
+        V2CaptureBridge.awaitCaptureIdleForTest()
+
+        assertEquals(listOf("switch", "switch", "switch", "back", "switch"), order)
+        assertEquals(1, actions.size)
+        assertTrue(actions.single().inferred)
+        assertEquals(edit, actions.single().snapshot)
+    }
+
+    @Test
     fun testQueueOrderingPreservedAcrossIngestionMethods() {
         val eventOrder = java.util.Collections.synchronizedList(mutableListOf<String>())
         val mockCompiler = mockk<RecordingCompiler>(relaxed = true)

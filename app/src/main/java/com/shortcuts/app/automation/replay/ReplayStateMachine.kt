@@ -116,7 +116,7 @@ class DefaultReplayEngine(
         workflow.steps.forEach { step ->
             if (step.id.isBlank()) add(ReplayFailure(ReplayFailureCode.DECODE_FAILED, null, "A step has no id"))
             if (step is UiStep) {
-                if (step.element == null && step.gesture == null) {
+                if (step.element == null && step.gesture == null && step.operation !is UiOperation.GLOBAL_ACTION) {
                     add(ReplayFailure(ReplayFailureCode.DECODE_FAILED, step.id, "UI step has neither an element nor a gesture"))
                 }
                 if (step.verification.postconditions.isEmpty() && !step.verification.allowBestEffort) {
@@ -202,6 +202,7 @@ class DefaultReplayEngine(
     }
 
     private suspend fun executeUi(step: UiStep, sink: TraceSink): ReplayFailure? {
+        if (isInferredBackAlreadySatisfied(step, sink)) return null
         transition(sink, step.id, ReplayState.WAITING_FOR_EXPECTED_SCREEN)
         val stepTimeoutMs = minOf(step.timeoutMs, timeouts.preStepScreenMs)
         val stepDeadline = clock() + stepTimeoutMs
@@ -314,6 +315,9 @@ class DefaultReplayEngine(
         stepDeadline: Long,
         sink: TraceSink
     ): LocatedTarget {
+        if (step.operation is UiOperation.GLOBAL_ACTION && step.element == null) {
+            return LocatedTarget(initialWindow.node(initialWindow.rootId), null)
+        }
         if (step.element == null && step.gesture != null) {
             val win = freshSelectedWindow(step.expectedWindow) ?: initialWindow
             return LocatedTarget(win.node(win.rootId), null)
@@ -628,11 +632,28 @@ class DefaultReplayEngine(
             is UiOperation.SET_TEXT -> setTextAttempt(step, window, node, operation.text, sink)
             is UiOperation.IME_ACTION -> imeAttempt(step, window, node, operation.kind, sink)
             is UiOperation.GLOBAL_ACTION -> {
+                if (isInferredBackAlreadySatisfied(step, sink)) return ActionAttempt(null)
                 val result = dispatch(step, UiActionRequest(operation, null, null, globalAction = operation.kind,
                     dispatchMethod = DispatchMethod.GLOBAL_ACTION), sink)
                 ActionAttempt(result.toFailure(step.id))
             }
         }
+    }
+
+    /** Avoid a second Back when an app has already completed the detected transition itself. */
+    private fun isInferredBackAlreadySatisfied(step: UiStep, sink: TraceSink): Boolean {
+        val operation = step.operation as? UiOperation.GLOBAL_ACTION ?: return false
+        if (!operation.kind.equals("BACK", ignoreCase = true) || "INFERRED_BACK" !in step.migrationWarnings) return false
+        val expectedAfter = step.expectedAfter ?: return false
+        val snapshot = environment.snapshotWindows()
+        val foreground = foregroundWindow(snapshot) ?: return false
+        val matchesAfter = fingerprinter.similarity(expectedAfter, fingerprint(foreground)) >= 0.80
+        val stillMatchesBefore = selectedWindow(snapshot, step.expectedWindow) != null
+        if (!matchesAfter || stillMatchesBefore) return false
+        transition(sink, step.id, ReplayState.ACTING)
+        sink.append(DispatchRecorded(clock(), step.id, DispatchMethod.GLOBAL_ACTION.name, accepted = true,
+            reason = "inferred back already satisfied"))
+        return true
     }
 
     private suspend fun clickAttempt(step: UiStep, window: WindowSnapshot, node: NodeSnapshot, action: NodeAction,
@@ -925,6 +946,11 @@ class DefaultReplayEngine(
 
     private fun selectedWindow(snapshot: WindowSetSnapshot, selector: WindowSelector): WindowSnapshot? =
         (windowMatcher.match(snapshot, selector, currentActivity(snapshot, selector)) as? WindowDecision.Selected)?.window
+    private fun foregroundWindow(snapshot: WindowSetSnapshot): WindowSnapshot? = snapshot.windows
+        .asSequence()
+        .filterNot { it.type == WindowType.ACCESSIBILITY_OVERLAY || it.type == WindowType.INPUT_METHOD }
+        .sortedWith(compareByDescending<WindowSnapshot> { it.isActive || it.isFocused }.thenByDescending { it.layer })
+        .firstOrNull()
     private fun freshSelectedWindow(selector: WindowSelector): WindowSnapshot? = selectedWindow(environment.snapshotWindows(), selector)
     private fun currentActivity(snapshot: WindowSetSnapshot, selector: WindowSelector): String? = snapshot.windows
         .firstOrNull { it.packageName == selector.packageName }?.let { environment.currentActivityClass(it.windowId) }

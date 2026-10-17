@@ -258,12 +258,14 @@ fun createCapturedGlobalAction(
     kind: String,
     snapshot: WindowSetSnapshot,
     actionAtUptimeMs: Long,
+    inferred: Boolean = false,
     precomputedFingerprint: ScreenFingerprint? = null
 ): CapturedGlobalAction {
     return CapturedGlobalAction(
         kind = kind,
         snapshot = snapshot,
         actionAtUptimeMs = actionAtUptimeMs,
+        inferred = inferred,
         precomputedFingerprint = precomputedFingerprint
     )
 }

@@ -116,4 +116,19 @@ class ActionDescriberTest {
             )
         )
     }
+
+    @Test
+    fun `detected Back is described as going back`() {
+        assertEquals(
+            "Go back (detected)",
+            ActionDescriber.describe(
+                Action(
+                    ActionType.UI_AUTOMATION,
+                    uiActionType = "GLOBAL_ACTION",
+                    globalAction = "BACK",
+                    targetText = "Go back (detected)"
+                )
+            )
+        )
+    }
 }
