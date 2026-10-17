@@ -1,0 +1,14 @@
+{
+  "id": "text_views",
+  "launcher_label": "Text input views",
+  "description": "Submit Search and send a message using Views text fields.",
+  "steps": [
+    {"tap": {"text": "Search"}},
+    {"type": "rk test"},
+    {"key": "ENTER"},
+    {"tap": {"text": "Message"}},
+    {"type": "hello"},
+    {"tap": {"text": "Send"}}
+  ],
+  "expect": "recorded"
+}

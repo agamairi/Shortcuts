@@ -1,0 +1,9 @@
+{
+  "id": "near_duplicates",
+  "launcher_label": "Near duplicates",
+  "description": "Tap the exact Internet button among near-duplicate labels.",
+  "steps": [
+    {"tap": {"text": "Internet"}}
+  ],
+  "expect": "recorded"
+}
