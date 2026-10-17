@@ -67,7 +67,11 @@ flowchart TD
 - **Node IDs**: Generates globally unique sequential integer IDs (1..N) across all windows in a snapshot. Each published snapshot also has an adapter-local generation; node IDs are valid only with that generation and are never carried into a later snapshot.
 - **Caps & Safeguards**: Bounded at 3000 nodes total and depth 60 per snapshot to eliminate memory bloat on large web views or list hierarchies.
 - **Recycling**: Calls `safeRecycle()` on every platform `AccessibilityNodeInfo` obtained during traversal on API < 33.
-- **Live Node Re-resolution**: Maintains a generation-scoped map `nodeId -> NodeLocator(windowId, childPath)` storing the zero-based child index path from the root. `AndroidUiEnvironment` rejects an action unless its request generation is still current, then validates the re-resolved node's class, resource ID, package, and any selector text/description identity before dispatch. This prevents an inserted row from reusing an old ID to target a different control.
+- **Live Node Re-resolution & Identity Validation**: Maintains a generation-scoped map `nodeId -> NodeLocator(windowId, childPath)` storing the zero-based child index path from the root. `AndroidUiEnvironment` rejects an action unless its request generation is still current, then strictly validates the live node against the snapshot node it was resolved from:
+  - Class name, package, and resource ID must match.
+  - Live screen bounds must overlap the expected snapshot bounds.
+  - For action requests with `isScrollRequest` (e.g. `SCROLL_FORWARD`, `SCROLL_BACKWARD`, `SCROLL_DOWN`, `SCROLL_UP`, `SCROLL_LEFT`, `SCROLL_RIGHT`, `SWIPE`), validation verifies the scroll container and bypasses label checks.
+  - For non-scroll actions, the target label (from snapshot `labelOf(expectedNode)`, or selector strategies, or normalized snapshot text/desc) is validated against the live node's own text/description OR any shallow descendant (depth $\le 3$) using `TextNormalizer.sameText`. This natively accommodates Jetpack Compose and composite UI hierarchies where clickable containers wrap unclickable text or icon elements.
 - **Thread contract**: Snapshot creation may run from a background worker. Publication and generation/locator state are synchronized; callers only receive immutable values and no Android node is retained across calls. The adapter deliberately uses no main-thread-only API.
 - **Registration**: Registered in `EngineV2.snapshotSource` in `AutomationAccessibilityService.onServiceConnected` and cleared in `onDestroy`.
 
@@ -78,9 +82,9 @@ flowchart TD
   - `TYPE_WINDOW_CONTENT_CHANGED`, `TYPE_VIEW_SCROLLED` -> `UiEnvironmentEvent.ContentChanged`
   - `TYPE_VIEW_FOCUSED` -> `UiEnvironmentEvent.FocusChanged`
   - Service `onDestroy` -> `UiEnvironmentEvent.AccessibilityDisconnected`
-- **Observed Activity**: Tracks the latest Activity className seen per package via `TYPE_WINDOW_STATE_CHANGED`, filtering out standard framework views and dialog wrappers.
+- **Observed Activity**: Tracks the latest Activity className seen per package via `TYPE_WINDOW_STATE_CHANGED`. It ignores Android framework views and non-activity UI components (`Dialog`, `PopupWindow`, `PopupDecorView`, `Snackbar`, `Toast`, `BottomSheet`, `Menu`). When available, it verifies candidate activity classes against `PackageManager.getActivityInfo(ComponentName(pkg, cls), 0)` (caching results) to accept legitimate activity classes that do not end in `"Activity"` (such as system `Settings` or `SubSettings`) while excluding dialogs and popups.
 - **Action Dispatch**:
-  - `SEMANTIC_ACTION`: Re-resolves the live node via `AccessibilitySnapshotAdapter.findLiveNode(generation, nodeId)`. A stale generation is rejected before delivery. The live node must match snapshot class, resource ID, package, and selector text/content-description identity when supplied; it is then dispatched (`SET_TEXT` with CharSequence argument bundle, `IME_ENTER` on API 30+, directional scrolls, click, focus). Always recycles the live node in a `finally` block.
+  - `SEMANTIC_ACTION`: Re-resolves the live node via `AccessibilitySnapshotAdapter.findLiveNode(generation, nodeId)`. A stale generation is rejected before delivery. The live node is validated via `validateLiveIdentity` (checking class, resource ID, package, bounds overlap, and shallow descendant labels for non-scroll actions); it is then dispatched (`SET_TEXT` with CharSequence argument bundle, `IME_ENTER` on API 30+, directional scrolls, click, focus). Always recycles the live node in a `finally` block.
   - `GESTURE`: Computes a `GesturePlan` via pure `buildGesturePlan`:
     - 1 point: 50 ms tap (or 600 ms hold for `LONG_PRESS`).
     - Multiple points: path through points over recorded duration (default 300 ms).

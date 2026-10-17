@@ -2,6 +2,8 @@ package com.shortcuts.app.automation.android.replay
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.content.ComponentName
+import android.content.pm.PackageManager
 import android.graphics.Path
 import android.graphics.Rect
 import android.os.Build
@@ -11,7 +13,11 @@ import android.view.accessibility.AccessibilityNodeInfo
 import androidx.core.os.bundleOf
 import com.shortcuts.app.automation.android.AccessibilitySnapshotAdapter
 import com.shortcuts.app.automation.android.AccessibilitySnapshotAdapter.Companion.safeRecycle
+import com.shortcuts.app.automation.core.matching.WindowMatcher
+import com.shortcuts.app.automation.core.text.TextNormalizer
+import com.shortcuts.app.automation.core.tree.DerivedLabel
 import com.shortcuts.app.automation.core.tree.WindowSetSnapshot
+import com.shortcuts.app.automation.core.tree.labelOf
 import com.shortcuts.app.automation.model.CapturedGesture
 import com.shortcuts.app.automation.model.GestureKind
 import com.shortcuts.app.automation.model.IntPoint
@@ -23,6 +29,7 @@ import com.shortcuts.app.automation.replay.DispatchResult
 import com.shortcuts.app.automation.replay.UiActionRequest
 import com.shortcuts.app.automation.replay.UiEnvironment
 import com.shortcuts.app.automation.replay.UiEnvironmentEvent
+import com.shortcuts.app.automation.replay.isScrollRequest
 import com.shortcuts.app.service.AutomationAccessibilityService
 import kotlinx.coroutines.channels.BufferOverflow
 import kotlinx.coroutines.flow.Flow
@@ -42,6 +49,19 @@ object AndroidUiEventHub {
     val events: SharedFlow<UiEnvironmentEvent> = _events.asSharedFlow()
 
     private val packageToActivityClass = ConcurrentHashMap<String, String>()
+    private val activityClassCache = ConcurrentHashMap<Pair<String, String>, Boolean>()
+
+    @Volatile
+    var packageManager: PackageManager? = null
+
+    fun resetForTesting() {
+        packageToActivityClass.clear()
+        activityClassCache.clear()
+        packageManager = null
+    }
+
+    private fun getEffectivePackageManager(): PackageManager? =
+        packageManager ?: runCatching { AutomationAccessibilityService.instance?.packageManager }.getOrNull()
 
     fun onAccessibilityEvent(event: AccessibilityEvent) {
         val now = SystemClock.uptimeMillis()
@@ -50,8 +70,8 @@ object AndroidUiEventHub {
         if (eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
             val pkg = event.packageName?.toString()
             val cls = event.className?.toString()
-            if (!pkg.isNullOrBlank() && isLikelyActivityClass(cls)) {
-                packageToActivityClass[pkg] = cls!!
+            if (!pkg.isNullOrBlank() && !cls.isNullOrBlank() && isLikelyActivity(pkg, cls)) {
+                packageToActivityClass[pkg] = cls
             }
         }
 
@@ -86,14 +106,27 @@ object AndroidUiEventHub {
         if (!className.contains('.')) return false
         if (className.startsWith("android.widget.") ||
             className.startsWith("android.view.") ||
-            className.startsWith("androidx.compose.") ||
-            className.endsWith("Dialog") ||
-            className.endsWith("PopupWindow") ||
-            className.endsWith("Menu")
+            className.startsWith("androidx.compose.")
         ) {
             return false
         }
+        val simpleName = className.substringAfterLast('.')
+        if (WindowMatcher.NON_ACTIVITY_TOKENS.any { simpleName.contains(it) }) {
+            return false
+        }
         return true
+    }
+
+    fun isLikelyActivity(packageName: String, className: String): Boolean {
+        if (!isLikelyActivityClass(className)) return false
+        val pm = getEffectivePackageManager() ?: return true
+        val key = Pair(packageName, className)
+        return activityClassCache.computeIfAbsent(key) {
+            runCatching {
+                pm.getActivityInfo(ComponentName(packageName, className), 0)
+                true
+            }.getOrDefault(false)
+        }
     }
 }
 
@@ -179,7 +212,18 @@ class AndroidUiEnvironment(
             ?: return DispatchResult.Rejected("Target node $nodeId is no longer present on screen")
 
         try {
-            validateLiveIdentity(liveNode, expectedNode, request.targetSelector)?.let { return it }
+            val snapshot = adapter.snapshotForGeneration(request.snapshotGeneration)
+            val window = snapshot?.windows?.firstOrNull { it.node(expectedNode.nodeId) != null }
+            val derivedLabel = window?.labelOf(expectedNode)
+            val isScroll = isScrollRequest(request)
+
+            validateLiveIdentity(
+                liveNode = liveNode,
+                expectedNode = expectedNode,
+                selector = request.targetSelector,
+                isScroll = isScroll,
+                derivedLabel = derivedLabel
+            )?.let { return it }
 
             val actionToPerform = request.semanticAction
             val operation = request.operation
@@ -312,16 +356,29 @@ class AndroidUiEnvironment(
         val liveNode = adapter.findLiveNode(request.snapshotGeneration, nodeId)
             ?: return DispatchResult.Rejected("Target node $nodeId is no longer present on screen")
         return try {
-            validateLiveIdentity(liveNode, expectedNode, request.targetSelector)
+            val snapshot = adapter.snapshotForGeneration(request.snapshotGeneration)
+            val window = snapshot?.windows?.firstOrNull { it.node(expectedNode.nodeId) != null }
+            val derivedLabel = window?.labelOf(expectedNode)
+            val isScroll = isScrollRequest(request)
+
+            validateLiveIdentity(
+                liveNode = liveNode,
+                expectedNode = expectedNode,
+                selector = request.targetSelector,
+                isScroll = isScroll,
+                derivedLabel = derivedLabel
+            )
         } finally {
             liveNode.safeRecycle()
         }
     }
 
-    private fun validateLiveIdentity(
+    internal fun validateLiveIdentity(
         liveNode: AccessibilityNodeInfo,
         expectedNode: com.shortcuts.app.automation.core.tree.NodeSnapshot,
-        selector: com.shortcuts.app.automation.model.ElementSelector?
+        selector: com.shortcuts.app.automation.model.ElementSelector? = null,
+        isScroll: Boolean = false,
+        derivedLabel: DerivedLabel? = null
     ): DispatchResult.Rejected? {
         if (liveNode.className?.toString().orEmpty() != expectedNode.className) {
             return DispatchResult.Rejected("Class mismatch for snapshot target")
@@ -333,25 +390,79 @@ class AndroidUiEnvironment(
             return DispatchResult.Rejected("Package mismatch for snapshot target")
         }
         val liveBounds = Rect().also(liveNode::getBoundsInScreen)
-        val expectedBounds = Rect(
-            expectedNode.boundsInScreen.left,
-            expectedNode.boundsInScreen.top,
-            expectedNode.boundsInScreen.right,
-            expectedNode.boundsInScreen.bottom
-        )
-        if (!Rect.intersects(liveBounds, expectedBounds)) {
+        val expectedBounds = expectedNode.boundsInScreen
+        val boundsOverlap = maxOf(liveBounds.left, expectedBounds.left) < minOf(liveBounds.right, expectedBounds.right) &&
+            maxOf(liveBounds.top, expectedBounds.top) < minOf(liveBounds.bottom, expectedBounds.bottom)
+        if (!boundsOverlap) {
             return DispatchResult.Rejected("Bounds mismatch for snapshot target")
         }
-        selector?.strategies?.forEach { strategy ->
-            val liveValue = when (strategy.kind) {
-                LocatorKind.TEXT_EXACT -> liveNode.text?.toString()
-                LocatorKind.CONTENT_DESCRIPTION_EXACT -> liveNode.contentDescription?.toString()
-                LocatorKind.RESOURCE_ID_EXACT, LocatorKind.TEST_TAG_EXACT, LocatorKind.WEB_DOM_ID_EXACT -> liveNode.viewIdResourceName
+        if (isScroll) {
+            return null
+        }
+
+        val targetText = derivedLabel?.text
+            ?: selector?.strategies?.firstOrNull { it.kind == LocatorKind.TEXT_EXACT }?.value
+            ?: TextNormalizer.normalize(expectedNode.text)
+
+        val targetDesc = derivedLabel?.contentDescription
+            ?: selector?.strategies?.firstOrNull { it.kind == LocatorKind.CONTENT_DESCRIPTION_EXACT }?.value
+            ?: TextNormalizer.normalize(expectedNode.contentDescription)
+
+        if (targetText != null) {
+            val matches = liveNodeMatches(liveNode, maxDepth = 3) { node ->
+                TextNormalizer.sameText(node.text?.toString(), targetText) ||
+                    TextNormalizer.sameText(node.contentDescription?.toString(), targetText)
             }
-            if (liveValue != strategy.value) {
+            if (!matches) {
                 return DispatchResult.Rejected("Selector identity changed for snapshot target")
             }
         }
+
+        if (targetDesc != null) {
+            val matches = liveNodeMatches(liveNode, maxDepth = 3) { node ->
+                TextNormalizer.sameText(node.contentDescription?.toString(), targetDesc) ||
+                    TextNormalizer.sameText(node.text?.toString(), targetDesc)
+            }
+            if (!matches) {
+                return DispatchResult.Rejected("Selector identity changed for snapshot target")
+            }
+        }
+
         return null
+    }
+
+    internal fun liveNodeMatches(
+        root: AccessibilityNodeInfo,
+        maxDepth: Int = 3,
+        predicate: (AccessibilityNodeInfo) -> Boolean
+    ): Boolean {
+        if (predicate(root)) return true
+        if (maxDepth <= 0) return false
+        return searchDescendants(root, currentDepth = 1, maxDepth = maxDepth, predicate = predicate)
+    }
+
+    private fun searchDescendants(
+        node: AccessibilityNodeInfo,
+        currentDepth: Int,
+        maxDepth: Int,
+        predicate: (AccessibilityNodeInfo) -> Boolean
+    ): Boolean {
+        val count = runCatching { node.childCount }.getOrDefault(0)
+        for (i in 0 until count) {
+            val child = runCatching { node.getChild(i) }.getOrNull() ?: continue
+            try {
+                if (predicate(child)) {
+                    return true
+                }
+                if (currentDepth < maxDepth) {
+                    if (searchDescendants(child, currentDepth + 1, maxDepth, predicate)) {
+                        return true
+                    }
+                }
+            } finally {
+                child.safeRecycle()
+            }
+        }
+        return false
     }
 }

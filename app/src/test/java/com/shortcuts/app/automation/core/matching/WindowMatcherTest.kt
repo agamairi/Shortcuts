@@ -255,4 +255,42 @@ class WindowMatcherTest {
 
         assertTrue(decision is WindowDecision.NotFound)
     }
+
+    @Test
+    fun `real activities without Activity suffix are recognized and score activity weight`() {
+        assertTrue(WindowMatcher.looksLikeActivity("com.android.settings.Settings"))
+        assertTrue(WindowMatcher.looksLikeActivity("com.android.settings.SubSettings"))
+        assertTrue(WindowMatcher.looksLikeActivity("com.example.app.Main"))
+        assertTrue(WindowMatcher.looksLikeActivity("com.example.app.Settings\$WifiSettings"))
+
+        val candidate = window("com.android.settings", id = 1) {
+            node("android.widget.FrameLayout", id = 1)
+        }
+        val selector = windowSelector(
+            packageName = "com.android.settings",
+            observedActivityClass = "com.android.settings.Settings"
+        )
+
+        val scored = matcher.scoreWindow(
+            candidate,
+            selector,
+            currentActivityClass = "com.android.settings.Settings"
+        )
+
+        assertTrue(scored.breakdown.activityMatched)
+        assertEquals(40.0, scored.breakdown.activityWeight, 0.001)
+        assertEquals(60.0, scored.breakdown.applicableWeight, 0.001)
+    }
+
+    @Test
+    fun `obvious non-activity classes are rejected by looksLikeActivity`() {
+        assertFalse(WindowMatcher.looksLikeActivity(""))
+        assertFalse(WindowMatcher.looksLikeActivity("android.widget.PopupWindow\$PopupDecorView"))
+        assertFalse(WindowMatcher.looksLikeActivity("android.widget.PopupWindow"))
+        assertFalse(WindowMatcher.looksLikeActivity("androidx.appcompat.app.AlertDialog"))
+        assertFalse(WindowMatcher.looksLikeActivity("com.google.android.material.snackbar.Snackbar\$SnackbarLayout"))
+        assertFalse(WindowMatcher.looksLikeActivity("android.widget.Toast\$TN"))
+        assertFalse(WindowMatcher.looksLikeActivity("com.google.android.material.bottomsheet.BottomSheetDialog"))
+        assertFalse(WindowMatcher.looksLikeActivity("androidx.appcompat.view.menu.MenuPopupHelper"))
+    }
 }
