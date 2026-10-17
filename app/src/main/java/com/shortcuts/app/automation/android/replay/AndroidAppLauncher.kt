@@ -58,14 +58,21 @@ class AndroidAppLauncher(
             context.startActivity(intent)
             LaunchDispatchResult.Accepted
         } catch (e: ActivityNotFoundException) {
-            Log.e(TAG, "Activity not found launching ${step.target}", e)
-            LaunchDispatchResult.Rejected("App not found: ${e.message}")
+            Log.e(TAG, "Activity not found launching ${step.target.javaClass.simpleName} for ${step.target.packageNameForLog()}")
+            LaunchDispatchResult.Rejected("App not found")
         } catch (e: SecurityException) {
-            Log.e(TAG, "Security exception launching ${step.target}", e)
-            LaunchDispatchResult.Rejected("Security exception: ${e.message}")
+            Log.e(TAG, "Security exception launching ${step.target.javaClass.simpleName} for ${step.target.packageNameForLog()}")
+            LaunchDispatchResult.Rejected("The app refused to open")
         } catch (e: Exception) {
-            Log.e(TAG, "Failed to launch ${step.target}", e)
-            LaunchDispatchResult.Rejected("Failed to launch app: ${e.message}")
+            Log.e(TAG, "Failed to launch ${step.target.javaClass.simpleName} for ${step.target.packageNameForLog()}: ${e.javaClass.simpleName}")
+            LaunchDispatchResult.Rejected("The app could not be opened")
         }
     }
+}
+
+/** Package name only: never log a target's URI or component details, which can carry private data. */
+private fun com.shortcuts.app.automation.model.LaunchTarget.packageNameForLog(): String = when (this) {
+    is com.shortcuts.app.automation.model.LaunchTarget.Launcher -> packageName
+    is com.shortcuts.app.automation.model.LaunchTarget.Component -> packageName
+    is com.shortcuts.app.automation.model.LaunchTarget.DeepLink -> packageName
 }
