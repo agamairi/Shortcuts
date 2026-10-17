@@ -570,6 +570,20 @@ def reset_fixture(adb, scenario_id, clear_log=True):
         adb.run(["logcat", "-c"], timeout=15)
 
 
+class DeviceNotReady(HarnessError):
+    """The phone is asleep or locked; every scenario would fail for the same non-app reason."""
+
+
+def ensure_device_ready(adb):
+    power = adb.shell_text(["dumpsys", "power"])
+    window = adb.shell_text(["dumpsys", "window"])
+    awake = bool(re.search(r"mWakefulness=Awake", power))
+    locked = bool(re.search(r"isKeyguardShowing=true|mShowingLockscreen=true", window))
+    if not awake or locked:
+        raise DeviceNotReady("Phone is %s — unlock it and keep the screen on, then re-run."
+                             % ("asleep" if not awake else "locked"))
+
+
 def run_one_scenario(adb, scenario, run_dir, settle_ms):
     run_dir.mkdir(parents=True, exist_ok=True)
     record_log = ""
@@ -579,6 +593,7 @@ def run_one_scenario(adb, scenario, run_dir, settle_ms):
     replay_seconds = None
     error = None
     phase = "record"
+    ensure_device_ready(adb)
     try:
         reset_fixture(adb, scenario["id"])
         # Like a person: open RepeatKit, start recording there, go Home, then open the app.
