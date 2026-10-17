@@ -579,6 +579,13 @@ class RecordingCompiler(
             )
             return VerificationSpec(listOf(VerificationPostcondition.ExpectedWindow(selector)))
         }
+        // The screen after a tap that leads into typing is only captured once the text is committed,
+        // so it shows what the typing did (suggestions, filtered results), not what the tap did. Replay
+        // checks right after the tap and would never match it; check that the field to type into is there.
+        val nextTextField = nextUi?.takeIf { it.operation is UiOperation.SET_TEXT }?.element
+        if (nextTextField != null) {
+            return VerificationSpec(listOf(VerificationPostcondition.NextTargetConfidence(nextTextField)))
+        }
         if (beforeFingerprint != null && afterFingerprint != null &&
             screenFingerprinter.similarity(beforeFingerprint, afterFingerprint) < SCREEN_CHANGE_THRESHOLD
         ) {

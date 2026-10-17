@@ -184,6 +184,15 @@ open class AutomationAccessibilityService : AccessibilityService() {
         // Handle UI Automation feedback here
     }
 
+    /** Debug builds: `dumpsys activity service <this> rk-ui` prints the screen for the E2E harness. */
+    override fun dump(fd: java.io.FileDescriptor?, writer: java.io.PrintWriter, args: Array<out String>?) {
+        if (com.shortcuts.app.BuildConfig.DEBUG && args?.contains("rk-ui") == true) {
+            DebugUiDump.write(runCatching { windows }.getOrNull().orEmpty(), writer)
+            return
+        }
+        super.dump(fd, writer, args)
+    }
+
     override fun onKeyEvent(event: KeyEvent): Boolean {
         // Only a recording needs to know where a key went; reading windows while idle is not needed.
         if (!AutomationRecorder.isRecording.value) return false

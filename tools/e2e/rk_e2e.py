@@ -8,6 +8,7 @@ plain functions so they can be tested without a phone.
 
 import argparse
 import json
+import os
 import re
 import statistics
 import subprocess
@@ -239,10 +240,35 @@ def _extract_hierarchy(raw):
     return text[start : end + len("</hierarchy>")]
 
 
+def dump_ui_xml_via_service(adb):
+    """Ask RepeatKit Dev's own accessibility service for the screen (debug builds only).
+
+    `uiautomator dump` connects a UiAutomation, and Android unbinds every other accessibility
+    service while one is connected, so each uiautomator dump restarted RepeatKit's service in the
+    middle of recordings and runs. Reading through the service disturbs nothing.
+    """
+    raw = adb.text(["shell", "dumpsys", "activity", "service", DEV_COMPONENT, "rk-ui"], timeout=15, check=False)
+    xml = _extract_hierarchy(raw)
+    if xml:
+        parse_ui_nodes(xml)
+    return xml
+
+
 def dump_ui_xml(adb, retries=5, backoff=0.4):
     """Dump the current hierarchy, tolerating transient animation failures."""
     last_error = None
     for attempt in range(retries):
+        try:
+            xml = dump_ui_xml_via_service(adb)
+            if xml and parse_ui_nodes(xml):
+                return xml
+            last_error = "RepeatKit Dev service returned no hierarchy"
+        except (HarnessError, OSError) as exc:
+            last_error = str(exc)
+        if os.environ.get("RK_ALLOW_UIAUTOMATOR") != "1":
+            if attempt + 1 < retries:
+                time.sleep(backoff)
+            continue
         try:
             xml = _extract_hierarchy(adb.exec_out(["uiautomator", "dump", "/dev/tty"], timeout=15))
             if xml:

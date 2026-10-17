@@ -61,6 +61,18 @@ class V2CaptureBridgeTest {
     }
 
     @Test
+    fun `a burst of content changes with nothing waiting on the screen takes no snapshots`() {
+        V2CaptureBridge.setCompilerForTest(mockk(relaxed = true))
+        val snapshots = java.util.concurrent.atomic.AtomicInteger(0)
+        EngineV2.snapshotSource = WindowSnapshotSource { snapshots.incrementAndGet(); initialSnapshot }
+
+        repeat(200) { V2CaptureBridge.onScreenChanged(1_000L + it) }
+        V2CaptureBridge.awaitCaptureIdleForTest()
+
+        assertEquals(0, snapshots.get())
+    }
+
+    @Test
     fun testDegradedModeWhenNoSnapshotSource() {
         EngineV2.snapshotSource = null
 

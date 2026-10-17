@@ -61,6 +61,8 @@ object V2CaptureBridge {
         val uptimeMs: Long
     )
     private val pendingAppSwitches = ArrayDeque<PendingAppSwitch>()
+    private val screenCheckQueued = java.util.concurrent.atomic.AtomicBoolean(false)
+    @Volatile private var latestScreenChangeUptimeMs = 0L
     private data class PendingTextContext(
         val packageName: String,
         val resourceId: String?,
@@ -637,11 +639,24 @@ object V2CaptureBridge {
         }
     }
 
-    /** Inspects a focus/content/IME-window change without treating it as an application switch. */
+    /**
+     * Inspects a focus/content/IME-window change without treating it as an application switch.
+     *
+     * Content changes arrive dozens of times a second in busy apps. Taking a full snapshot for each one
+     * backed the capture queue up so far that stopping a recording timed out and the shortcut was saved
+     * in the legacy format. So: keep at most one check queued, and only snapshot when something is
+     * actually waiting on a screen change (a typed field that may have been submitted, or an app switch
+     * that arrived while snapshots were unavailable).
+     */
     fun onScreenChanged(uptimeMs: Long) {
+        latestScreenChangeUptimeMs = uptimeMs
+        if (!screenCheckQueued.compareAndSet(false, true)) return
         captureExecutor.execute {
+            screenCheckQueued.set(false)
             synchronized(lock) {
                 if (!EngineV2.enabled || compiler == null) return@synchronized
+                if (imeInference.candidate == null && pendingAppSwitches.isEmpty()) return@synchronized
+                val uptimeMs = latestScreenChangeUptimeMs
                 val snapshot = EngineV2.snapshotSource?.snapshot() ?: return@synchronized
                 flushPendingAppSwitchesLocked(snapshot)
                 imeInference.onScreenEffect(

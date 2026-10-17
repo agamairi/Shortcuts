@@ -341,6 +341,37 @@ class RecordingCompilerTest {
     }
 
     @Test
+    fun `tap that leads into typing verifies the field, not the screen captured mid-typing`() {
+        val home = window(APP) {
+            node("android.widget.FrameLayout", id = 1) {
+                node("android.widget.ImageButton", id = 2, resourceId = "example.app:id/search_button",
+                    contentDescription = "Search", bounds = r(900, 100, 1000, 200), clickable = true,
+                    actions = setOf(NodeAction.CLICK))
+                node("android.widget.TextView", id = 3, text = "Quick picks", bounds = r(0, 300, 1000, 400))
+                node("android.widget.TextView", id = 4, text = "Listen again", bounds = r(0, 500, 1000, 600))
+            }
+        }
+        // By the time the text is committed, the screen is the search page full of suggestions.
+        val typing = window(APP) {
+            node("android.widget.FrameLayout", id = 1) {
+                node("android.widget.EditText", id = 10, resourceId = "example.app:id/search_edit_text",
+                    text = "lofi beats", bounds = r(100, 100, 900, 200), editable = true, focused = true,
+                    actions = setOf(NodeAction.CLICK, NodeAction.SET_TEXT))
+                (11..16).forEach { node("android.widget.TextView", id = it, text = "lofi beats $it", bounds = r(0, it * 100, 1000, it * 100 + 90)) }
+            }
+        }
+        val compiler = compiler()
+        compiler.start(CaptureScreenContext("search", snapshot(home, 1_000)))
+        compiler.accept(interaction(snapshot(home, 1_100), nodeId = 2, down = 1_100, start = IntPoint(950, 150)))
+        compiler.accept(CapturedTextCommit(typing.node(10)!!, "lofi beats", typing, 2_500))
+
+        val tap = compiler.finish().steps.filterIsInstance<UiStep>().first { it.operation == UiOperation.TAP }
+
+        val postcondition = tap.verification.postconditions.single()
+        assertTrue(postcondition is com.shortcuts.app.automation.model.VerificationPostcondition.NextTargetConfidence)
+    }
+
+    @Test
     fun `focusing tap remains before text commit and unchanged screen verifies next target confidence`() {
         val form = window(APP) {
             node("android.widget.FrameLayout", id = 1) {
