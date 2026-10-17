@@ -4,6 +4,7 @@ import android.view.KeyEvent
 import com.shortcuts.app.data.ActionType
 import io.mockk.every
 import io.mockk.mockk
+import io.mockk.verify
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Before
@@ -115,6 +116,91 @@ class AutomationRecorderTest {
                 android.view.accessibility.AccessibilityEvent.TYPE_WINDOWS_CHANGED
             )
         )
+    }
+
+    @Test
+    fun `focused text fallback does no window tree work when no editable is tracked`() {
+        val service = mockk<AutomationAccessibilityService>(relaxed = true)
+
+        assertEquals(
+            FocusedTextSnapshotResult.NOT_TRACKED,
+            AutomationRecorder.refreshTrackedFocusedText(service, occurredAtMillis = 1_000L)
+        )
+        verify(exactly = 0) { service.windows }
+        verify(exactly = 0) { service.getRootNode() }
+    }
+
+    @Test
+    fun `captured Chrome tap re-reads live omnibox text and commits before result URL`() {
+        val chromePackage = "com.android.chrome"
+        val service = mockk<AutomationAccessibilityService>(relaxed = true)
+        every { service.packageName } returns myPackage
+        every { service.applicationContext } returns service
+
+        val appWindow = mockk<android.view.accessibility.AccessibilityWindowInfo>(relaxed = true)
+        every { appWindow.type } returns android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION
+        every { appWindow.id } returns 7
+        val appRoot = mockk<android.view.accessibility.AccessibilityNodeInfo>(relaxed = true)
+        every { appRoot.packageName } returns chromePackage
+        every { appWindow.root } returns appRoot
+
+        val imeWindow = mockk<android.view.accessibility.AccessibilityWindowInfo>(relaxed = true)
+        every { imeWindow.type } returns android.view.accessibility.AccessibilityWindowInfo.TYPE_INPUT_METHOD
+        val imeRoot = mockk<android.view.accessibility.AccessibilityNodeInfo>(relaxed = true)
+        every { imeRoot.packageName } returns "com.google.android.inputmethod.latin"
+        every { imeWindow.root } returns imeRoot
+
+        val omnibox = mockk<android.view.accessibility.AccessibilityNodeInfo>(relaxed = true)
+        var liveText: CharSequence = "repeatkit android"
+        every { omnibox.packageName } returns chromePackage
+        every { omnibox.className } returns "android.widget.EditText"
+        every { omnibox.viewIdResourceName } returns "com.android.chrome:id/url_bar"
+        every { omnibox.windowId } returns 7
+        every { omnibox.isFocused } returns true
+        every { omnibox.isEditable } returns false
+        every { omnibox.isPassword } returns false
+        every { omnibox.text } answers { liveText }
+        every { appRoot.findFocus(android.view.accessibility.AccessibilityNodeInfo.FOCUS_INPUT) } returns omnibox
+        every { service.windows } returns listOf(imeWindow, appWindow)
+        AutomationAccessibilityService.instance = service
+
+        try {
+            AutomationRecorder.recordCapturedGesture(
+                RecorderEvent(
+                    eventType = RecorderEventType.CLICK,
+                    packageName = chromePackage,
+                    sourceText = "Search or type web address",
+                    sourceContentDescription = null,
+                    sourceViewId = "com.android.chrome:id/url_bar",
+                    enteredText = "",
+                    sourceClassName = "android.widget.EditText",
+                    sourceIsEditable = false,
+                    occurredAtMillis = 1_000L,
+                    windowId = 7
+                )
+            )
+
+            val typedKey = mockk<KeyEvent>()
+            every { typedKey.action } returns KeyEvent.ACTION_UP
+            every { typedKey.keyCode } returns KeyEvent.KEYCODE_D
+            every { typedKey.eventTime } returns 1_200L
+            assertTrue(!AutomationRecorder.onKeyEvent(typedKey, service, chromePackage))
+
+            liveText = "https://www.google.com/search?q=repeatkit+android"
+            every { service.windows } returns listOf(appWindow)
+            assertEquals(
+                FocusedTextSnapshotResult.FOCUS_LOST,
+                AutomationRecorder.refreshTrackedFocusedText(service, occurredAtMillis = 1_300L)
+            )
+
+            assertEquals(
+                listOf("TAP", "TYPE_TEXT"),
+                AutomationRecorder.recordedActions.value.map { it.uiActionType }
+            )
+            assertEquals("repeatkit android", AutomationRecorder.recordedActions.value.last().textInput)
+        } finally {
+            AutomationAccessibilityService.instance = null
+        }
     }
 
     @Test

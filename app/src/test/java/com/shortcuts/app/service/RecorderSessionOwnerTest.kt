@@ -11,6 +11,75 @@ class RecorderSessionOwnerTest {
     private val launcherPackage = "com.example.launcher"
 
     @Test
+    fun `captured Chrome omnibox tap tracks live text and commits query before URL replacement`() {
+        val recorder = RecorderSessionOwner()
+        val commits = mutableListOf<RecorderEvent>()
+        recorder.onTextCommitListener = { commits.add(it) }
+        recorder.start()
+
+        val capturedTap = RecorderEvent(
+            eventType = RecorderEventType.CLICK,
+            packageName = "com.android.chrome",
+            sourceText = "Search or type web address",
+            sourceContentDescription = null,
+            sourceViewId = "com.android.chrome:id/url_bar",
+            enteredText = "",
+            sourceClassName = "android.widget.EditText",
+            // Chrome can omit this flag in the overlay's pre-tap snapshot.
+            sourceIsEditable = false,
+            occurredAtMillis = 1_000L,
+            windowId = 7
+        )
+        recorder.processCapturedGesture(capturedTap, myPackage)
+
+        val typed = capturedTap.copy(
+            eventType = RecorderEventType.TEXT_CHANGE,
+            sourceText = "repeatkit android",
+            enteredText = "repeatkit android",
+            sourceIsEditable = true,
+            occurredAtMillis = 1_200L
+        )
+        assertEquals(
+            FocusedTextSnapshotResult.UPDATED,
+            recorder.processLiveFocusedTextSnapshot(typed, keyboardVisible = true)
+        )
+
+        // Enter navigates in the same activity. Chrome can expose the URL before dropping focus,
+        // but Gboard has already disappeared, so the URL must not replace the buffered query.
+        val resultUrl = typed.copy(
+            sourceText = "https://www.google.com/search?q=repeatkit+android",
+            enteredText = "https://www.google.com/search?q=repeatkit+android",
+            occurredAtMillis = 1_300L
+        )
+        assertEquals(
+            FocusedTextSnapshotResult.FOCUS_LOST,
+            recorder.processLiveFocusedTextSnapshot(resultUrl, keyboardVisible = false)
+        )
+
+        assertEquals("repeatkit android", commits.single().enteredText)
+        assertEquals(listOf("TAP", "TYPE_TEXT"), recorder.recordedActions.value.map { it.uiActionType })
+        assertEquals("repeatkit android", recorder.recordedActions.value.last().textInput)
+    }
+
+    @Test
+    fun `captured non-editable tap leaves live text fallback untracked`() {
+        val recorder = RecorderSessionOwner()
+        recorder.start()
+        recorder.processCapturedGesture(clickEvent(1_000L), myPackage)
+
+        assertEquals(null, recorder.trackedFocusedEditableField())
+        assertEquals(
+            FocusedTextSnapshotResult.NOT_TRACKED,
+            recorder.processLiveFocusedTextSnapshot(
+                clickEvent(1_100L).copy(
+                    eventType = RecorderEventType.TEXT_CHANGE,
+                    enteredText = "ignored"
+                )
+            )
+        )
+    }
+
+    @Test
     fun `launcher to Chrome typing and Enter records the intended replayable sequence`() {
         val recorder = RecorderSessionOwner()
         val chromePackage = "com.android.chrome"
