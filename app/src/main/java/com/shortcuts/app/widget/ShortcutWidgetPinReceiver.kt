@@ -78,6 +78,11 @@ class ShortcutWidgetPinReceiver : BroadcastReceiver() {
                 // on "Tap to set up" with no clue why. A pinned widget failing to bind is exactly
                 // the thing worth a log line.
                 Log.e(TAG, "Failed to bind pinned widget ${pinData.appWidgetId} to automation ${pinData.automationId}", t)
+                com.shortcuts.app.diagnostics.Diagnostics.log(
+                    "widget",
+                    "error",
+                    mapOf("errorClass" to t.javaClass.name, "where" to "ShortcutWidgetPinReceiver.onReceive")
+                )
             } finally {
                 pendingResult.finish()
             }

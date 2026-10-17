@@ -79,6 +79,12 @@ Clear the current recorder session without saving it:
 adb shell am start -n com.shortcuts.app.dev/com.shortcuts.app.debug.DebugControlActivity --es cmd clear_recording
 ```
 
+Flush and export the on-device diagnostics log:
+
+```sh
+adb shell am start -n com.shortcuts.app.dev/com.shortcuts.app.debug.DebugControlActivity --es cmd dump_diagnostics
+```
+
 ## Output files
 
 All files are private to the debug app and live under `filesDir/debug/`:
@@ -89,6 +95,8 @@ All files are private to the debug app and live under `filesDir/debug/`:
 - `last_run.json` — the selected automation ID/name, one zero-based result entry per step with
   action type, UI action type, success, failure reason, and message, plus accessibility replay
   `matches`, `waits`, and `startUptimeMillis`/`endUptimeMillis`.
+- `diagnostics_export.txt` — text export of the on-device diagnostics log with metadata header lines
+  followed by all JSON Lines records ordered oldest to newest.
 
 The harness can read them without touching the release install:
 
@@ -96,6 +104,7 @@ The harness can read them without touching the release install:
 adb exec-out run-as com.shortcuts.app.dev cat files/debug/last_recording.json
 adb exec-out run-as com.shortcuts.app.dev cat files/debug/automations.json
 adb exec-out run-as com.shortcuts.app.dev cat files/debug/last_run.json
+adb exec-out run-as com.shortcuts.app.dev cat files/debug/diagnostics_export.txt
 ```
 
 ## Completion contract

@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A pause before pressing Search no longer loses the search.** A keyboard submit was only detected within 2 seconds of the last keystroke, so stopping to read suggestions first meant the Search press wasn't recorded. The 2 seconds now count from the last moment the field was seen still focused, holding the typed text, with the keyboard up.
 
 ### Added
+- **Diagnostics log you can share.** Settings → Diagnostics keeps a private log of what RepeatKit did while recording and running shortcuts (which app and screen, which step, why it failed, crashes) and shares it as a text file. It never contains what you type or what's on screen, stays on the phone until you share it, and can be turned off or cleared.
 - **The test harness can type like a person.** New `gtype` and `ime` scenario steps tap the on-screen keyboard's keys and its Search/Go key, read through RepeatKit Dev's own service (`rk-ime`), instead of injecting text with adb. `tools/e2e/rk_realapps.py` records and replays the real-app flows (Settings, Calculator, Chrome and YouTube Music search, with both typing methods) and checks the end screen.
 
 ## [0.8.0] - 2026-10-17

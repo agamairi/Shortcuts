@@ -21,6 +21,7 @@ import java.util.concurrent.atomic.AtomicBoolean
 import com.shortcuts.app.automation.android.AccessibilitySnapshotAdapter
 import com.shortcuts.app.automation.android.EngineV2
 import com.shortcuts.app.automation.android.replay.AndroidUiEventHub
+import com.shortcuts.app.diagnostics.Diagnostics
 import java.util.Collections
 import java.util.IdentityHashMap
 import kotlin.math.abs
@@ -156,6 +157,7 @@ open class AutomationAccessibilityService : AccessibilityService() {
         EngineV2.snapshotSource = AccessibilitySnapshotAdapter(this)
         AutomationRecorder.onAccessibilityServiceConnected()
         Log.d(TAG, "AutomationAccessibilityService connected with flags=${configuredInfo.flags}")
+        Diagnostics.log("service", "connected")
     }
 
     override fun onDestroy() {
@@ -170,6 +172,7 @@ open class AutomationAccessibilityService : AccessibilityService() {
             AutomationRecorder.stopForAccessibilityDisconnect(this)
         }
         Log.d(TAG, "AutomationAccessibilityService destroyed")
+        Diagnostics.log("service", "destroyed")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
@@ -291,6 +294,7 @@ open class AutomationAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {
         Log.d(TAG, "Interrupted")
+        Diagnostics.log("service", "interrupted")
     }
 
     open fun getRootNode(): AccessibilityNodeInfo? = rootInActiveWindow

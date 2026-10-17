@@ -769,6 +769,34 @@ class ShortcutRunner(
         return ShortcutPreflight(environment).check(actionsJson)
     }
 
+    /** Diagnostics only: runs after the run was accepted and must never change its outcome. */
+    private fun logRunStart(
+        shortcutId: Int?,
+        shortcutName: String,
+        actionsJson: String,
+        legacyActionCount: Int?,
+        source: ShortcutRunSource
+    ) {
+        runCatching {
+            val stepCount = if (actionsJson.isNotBlank()) {
+                com.shortcuts.app.data.ShortcutSteps.stepCount(actionsJson)
+            } else {
+                legacyActionCount
+            }
+            com.shortcuts.app.diagnostics.Diagnostics.log(
+                "replay",
+                "run_start",
+                mapOf(
+                    "shortcutId" to shortcutId,
+                    "shortcutName" to shortcutName,
+                    "engine" to if (actionsJson.trimStart().startsWith("{")) "v2" else "legacy",
+                    "stepCount" to stepCount,
+                    "source" to source.name.lowercase()
+                )
+            )
+        }
+    }
+
     suspend fun run(request: ShortcutRunRequest): ShortcutRunOutcome {
         val shortcut = (try {
             store.findShortcut(request.shortcutId)
@@ -788,6 +816,7 @@ class ShortcutRunner(
 
         return try {
             acceptedRunStarter.start(shortcut.id, lease.runId)
+            logRunStart(shortcut.id, shortcut.name, shortcut.actionsJson, null, request.source)
             ShortcutRunOutcome.Started(request, shortcut.name, lease.runId)
         } catch (_: Exception) {
             admission.release(lease.runId)
@@ -849,6 +878,7 @@ class ShortcutRunner(
 
         return try {
             starter.start(request.shortcutName.trim(), request.actions, request.actionsJson, lease.runId)
+            logRunStart(null, request.shortcutName.trim(), request.actionsJson, request.actions.size, request.source)
             ShortcutRunOutcome.EditorStarted(request, lease.runId)
         } catch (_: Exception) {
             admission.release(lease.runId)

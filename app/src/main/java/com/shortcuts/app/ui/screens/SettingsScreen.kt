@@ -50,6 +50,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -100,6 +101,8 @@ fun SettingsScreen(
 
     val downloadState by vm.downloadState.collectAsState()
     val isAccessibilityEnabled by vm.isAccessibilityServiceEnabled.collectAsState()
+    val diagState by vm.diagnosticsState.collectAsState()
+    var showClearDialog by remember { mutableStateOf(false) }
 
     remember(context) { vm.getThemePreferences(context) }
     val themeMode by vm.themeMode.collectAsState()
@@ -121,6 +124,8 @@ fun SettingsScreen(
         val observer = LifecycleEventObserver { _, event ->
             if (event == Lifecycle.Event.ON_RESUME) {
                 notificationsGranted = currentNotificationsGranted()
+                // The log grows in the background; show its current size whenever Settings returns.
+                vm.refreshDiagnostics()
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -438,6 +443,106 @@ fun SettingsScreen(
                 }
             }
 
+            // Diagnostics Section
+            ElevatedCard(
+                modifier = Modifier.fillMaxWidth(),
+                colors = CardDefaults.elevatedCardColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                )
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(16.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(
+                            imageVector = Icons.Filled.Info,
+                            contentDescription = null,
+                            tint = palette.ink
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(
+                            text = stringResource(R.string.settings_diagnostics_title),
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold)
+                        )
+                    }
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = stringResource(R.string.settings_diagnostics_keep_log),
+                                style = MaterialTheme.typography.bodyLarge,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = stringResource(R.string.settings_diagnostics_description),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = palette.inkMuted
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(16.dp))
+                        Switch(
+                            checked = diagState.enabled,
+                            onCheckedChange = { vm.setDiagnosticsEnabled(context, it) }
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    val statusText = if (diagState.isEmpty) {
+                        stringResource(R.string.settings_diagnostics_empty)
+                    } else if (diagState.sinceLabel.isNotBlank()) {
+                        "${diagState.sizeLabel}, ${diagState.sinceLabel}"
+                    } else {
+                        diagState.sizeLabel
+                    }
+
+                    Text(
+                        text = statusText,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = palette.inkMuted
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Button(
+                            onClick = {
+                                vm.diagnosticsShareIntent(context)?.let { shareIntent ->
+                                    context.startActivity(shareIntent)
+                                }
+                            },
+                            enabled = !diagState.isEmpty,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(stringResource(R.string.settings_diagnostics_share))
+                        }
+
+                        TextButton(
+                            onClick = { showClearDialog = true },
+                            enabled = !diagState.isEmpty
+                        ) {
+                            Text(
+                                stringResource(R.string.settings_diagnostics_clear),
+                                color = if (diagState.isEmpty) palette.inkMuted else MaterialTheme.colorScheme.error
+                            )
+                        }
+                    }
+                }
+            }
+
+            Spacer(modifier = Modifier.height(16.dp))
+
             // Section 3: About
             ElevatedCard(
                 modifier = Modifier.fillMaxWidth(),
@@ -531,6 +636,29 @@ fun SettingsScreen(
             },
             dismissButton = {
                 TextButton(onClick = { showDeleteDialog = false }) {
+                    Text("Cancel")
+                }
+            }
+        )
+    }
+
+    if (showClearDialog) {
+        AlertDialog(
+            onDismissRequest = { showClearDialog = false },
+            title = { Text(stringResource(R.string.settings_diagnostics_clear_confirm_title)) },
+            text = { Text(stringResource(R.string.settings_diagnostics_clear_confirm_body)) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        showClearDialog = false
+                        vm.clearDiagnostics()
+                    }
+                ) {
+                    Text(stringResource(R.string.settings_diagnostics_clear), color = MaterialTheme.colorScheme.error)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showClearDialog = false }) {
                     Text("Cancel")
                 }
             }

@@ -158,7 +158,33 @@ class AutomationExecutionService : Service() {
         super.onDestroy()
     }
 
+    /** Diagnostics only; it must never stop the result from being published. */
+    private fun logRunFinished(result: RunResult, automationId: Int) = runCatching {
+        val stepsList = result.steps.map { step ->
+            when (step) {
+                is StepResult.Success -> "ok"
+                is StepResult.Failed -> "failed:${step.reason.name}"
+                is StepResult.NeedsPermission -> "needs_permission"
+                is StepResult.Skipped -> "skipped"
+            }
+        }
+        val firstFailure = result.firstFailure
+        val diagFields = mutableMapOf<String, Any?>(
+            "automationId" to automationId,
+            "runId" to currentRunId,
+            "success" to result.allSucceeded,
+            "steps" to stepsList
+        )
+        result.firstIncompleteIndex.takeIf { it != -1 }?.let { diagFields["failingStepIndex"] = it }
+        if (firstFailure != null) {
+            diagFields["failureReason"] = firstFailure.reason.name
+            diagFields["userMessage"] = firstFailure.userMessage.take(300)
+        }
+        com.shortcuts.app.diagnostics.Diagnostics.log("replay", "run_finished", diagFields)
+    }
+
     private fun publishResult(result: RunResult, automationId: Int = NO_AUTOMATION_ID) {
+        logRunFinished(result, automationId)
         RunResultBus.tryEmit(RunResultEvent(automationId, currentRunId, result))
         if (result.allSucceeded) {
             announce(result.userSummary())

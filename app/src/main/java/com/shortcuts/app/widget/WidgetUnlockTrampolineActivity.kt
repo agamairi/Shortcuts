@@ -56,6 +56,11 @@ class WidgetUnlockTrampolineActivity : Activity() {
             override fun onDismissError() {
                 super.onDismissError()
                 Log.e(TAG, "Keyguard dismiss error")
+                com.shortcuts.app.diagnostics.Diagnostics.log(
+                    "widget",
+                    "error",
+                    mapOf("errorClass" to "KeyguardDismissError", "where" to "WidgetUnlockTrampolineActivity.onDismissError")
+                )
                 finish()
             }
         })
@@ -76,6 +81,11 @@ class WidgetUnlockTrampolineActivity : Activity() {
                 }
             } catch (t: Throwable) {
                 Log.e(TAG, "Error executing shortcut $automationId from trampoline", t)
+                com.shortcuts.app.diagnostics.Diagnostics.log(
+                    "widget",
+                    "error",
+                    mapOf("errorClass" to t.javaClass.name, "where" to "WidgetUnlockTrampolineActivity.runShortcutAndFinish")
+                )
             } finally {
                 withContext(Dispatchers.Main) {
                     finish()

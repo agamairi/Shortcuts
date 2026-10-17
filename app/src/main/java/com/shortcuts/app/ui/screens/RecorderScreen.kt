@@ -45,6 +45,7 @@ import com.shortcuts.app.data.Action
 import com.shortcuts.app.data.ActionType
 import com.shortcuts.app.data.ShortcutDocument
 import com.shortcuts.app.data.ShortcutSteps
+import com.shortcuts.app.diagnostics.Diagnostics
 import com.shortcuts.app.service.AutomationRecorder
 import com.shortcuts.app.ui.theme.LocalShortcutsPalette
 import com.shortcuts.app.util.AccessibilityStatusChecker
@@ -311,6 +312,16 @@ fun RecorderScreen(
                                         }
                                         validationNotice = null
                                         val actionsJson = encodeResult.getOrThrow()
+                                        val isV2 = actionsJson.trimStart().startsWith("{")
+                                        val format = if (isV2) "v2" else "legacy"
+                                        val isEdited = (doc is ShortcutDocument.V2 && currentActions != doc.actions) ||
+                                            (doc is ShortcutDocument.Legacy && currentActions != doc.actions)
+                                        val why = when {
+                                            !com.shortcuts.app.automation.android.EngineV2.enabled || doc !is ShortcutDocument.V2 -> "v2_unavailable"
+                                            isEdited -> "edited"
+                                            else -> "v2"
+                                        }
+                                        Diagnostics.log("recording", "save", mapOf("format" to format, "why" to why))
                                         val automation = ManualBuilderUtils.buildManualAutomation(
                                             shortcutName,
                                             currentActions,

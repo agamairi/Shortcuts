@@ -17,9 +17,16 @@ import com.shortcuts.app.automation.core.tree.WindowSetSnapshot
 import com.shortcuts.app.automation.core.tree.WindowSnapshot
 import com.shortcuts.app.automation.model.DecodeResult
 import com.shortcuts.app.automation.model.GestureKind
+import com.shortcuts.app.automation.model.LaunchAppStep
+import com.shortcuts.app.automation.model.LegacyActionStep
+import com.shortcuts.app.automation.model.Step
+import com.shortcuts.app.automation.model.UiOperation
+import com.shortcuts.app.automation.model.UiStep
+import com.shortcuts.app.automation.model.WaitStep
 import com.shortcuts.app.automation.model.WindowType
 import com.shortcuts.app.automation.model.WorkflowCodec
 import com.shortcuts.app.automation.model.WorkflowV2
+import com.shortcuts.app.diagnostics.Diagnostics
 import com.shortcuts.app.service.RecorderEvent
 import com.shortcuts.app.service.capture.TouchSample
 import java.io.File
@@ -258,8 +265,25 @@ object V2CaptureBridge {
                     lastWorkflowJson = json
                     store?.saveLastWorkflow(json)
                     Log.d(TAG, "Recording stopped: steps=${workflow.steps.size}")
+                    Diagnostics.log(
+                        "capture",
+                        "compiled",
+                        mapOf(
+                            "stepCount" to workflow.steps.size,
+                            "stepTypes" to workflow.steps.map(::formatStepType),
+                            "warnings" to workflow.steps.flatMap { it.migrationWarnings }
+                        )
+                    )
                 }.onFailure { error ->
                     Log.w(TAG, "Failed to compile v2 workflow", error)
+                    Diagnostics.log(
+                        "capture",
+                        "compile_failed",
+                        mapOf(
+                            "errorClass" to error.javaClass.name,
+                            "message" to (error.message ?: "")
+                        )
+                    )
                     lastWorkflow = null
                     lastWorkflowJson = null
                     store?.clearLastWorkflow()
@@ -401,6 +425,18 @@ object V2CaptureBridge {
                 TAG,
                 "Delivered Interaction: kind=$kind pkg=${window?.packageName} nodeClass=${targetNode?.className} windowId=${interaction.hitWindowId} nodeId=${interaction.hitNodeId} viewId=${targetNode?.resourceId} points=${interaction.points.size} down=${interaction.downUptimeMs} up=${interaction.upUptimeMs}"
             )
+            Diagnostics.log(
+                "capture",
+                "interaction",
+                mapOf(
+                    "kind" to kind.name,
+                    "pkg" to window?.packageName,
+                    "nodeClass" to targetNode?.className,
+                    "viewId" to targetNode?.resourceId,
+                    "points" to interaction.points.size,
+                    "lateSnapshot" to lateSnapshot
+                )
+            )
         }
         }
     }
@@ -456,6 +492,17 @@ object V2CaptureBridge {
                     TAG,
                     "Delivered TextCommit: pkg=${window.packageName} nodeClass=${fieldNode.className} windowId=${window.windowId} nodeId=${fieldNode.nodeId} viewId=${fieldNode.resourceId} isEditable=${fieldNode.editable} password=${fieldNode.password} at=${commit.committedAtUptimeMs} queueLagMs=${liveSnapshot?.let { it.capturedAtUptimeMs - event.occurredAtMillis }}"
                 )
+                Diagnostics.log(
+                    "capture",
+                    "text_commit",
+                    mapOf(
+                        "pkg" to window.packageName,
+                        "nodeClass" to fieldNode.className,
+                        "viewId" to fieldNode.resourceId,
+                        "textLength" to committedText.length,
+                        "queueLagMs" to liveSnapshot?.let { it.capturedAtUptimeMs - event.occurredAtMillis }
+                    )
+                )
                 // A commit flushed because the field just lost focus (the submit itself) is often the
                 // last text event: judge the screen it left behind now rather than waiting for the
                 // next screen change, which may never come on a quiet results screen.
@@ -504,6 +551,14 @@ object V2CaptureBridge {
                 Log.d(
                     TAG,
                     "Delivered ImeAction: kind=$kind pkg=${window.packageName} nodeClass=${fieldNode.className} windowId=${window.windowId} nodeId=${fieldNode.nodeId} viewId=${fieldNode.resourceId} at=$uptimeMs"
+                )
+                Diagnostics.log(
+                    "capture",
+                    "ime_action",
+                    mapOf(
+                        "kind" to kind.name,
+                        "inferred" to false
+                    )
                 )
             }
         }
@@ -599,6 +654,15 @@ object V2CaptureBridge {
         Log.d(
             TAG,
             "Delivered AppSwitch: from=${appSwitch.fromPackageName} to=$toPackage activityClass=$activityClass at=$uptimeMs"
+        )
+        Diagnostics.log(
+            "capture",
+            "app_switch",
+            mapOf(
+                "from" to appSwitch.fromPackageName,
+                "to" to toPackage,
+                "activityClass" to activityClass
+            )
         )
     }
 
@@ -803,6 +867,14 @@ object V2CaptureBridge {
         backInference.onInteraction(inferred.action.actionAtUptimeMs)
         persistEventLocked(PersistedV2EventWrapper(type = "ime_action", imeAction = inferred.action, inferredImeReason = inferred.reason))
         Log.w(TAG, "Inferred ImeAction (reason=${inferred.reason}; INFERRED_IME_ACTION)")
+        Diagnostics.log(
+            "capture",
+            "ime_inferred",
+            mapOf(
+                "reason" to inferred.reason,
+                "diagnostics" to imeInference.lastEffectDiagnostics
+            )
+        )
     }
 
     private fun deliverInferredBackLocked(
@@ -822,6 +894,22 @@ object V2CaptureBridge {
         Log.d(
             TAG,
             "Inferred GlobalAction BACK (from=${inferred.fromActivityClass} to=${inferred.toActivityClass}; INFERRED_BACK)"
+        )
+        Diagnostics.log(
+            "capture",
+            "back_inferred",
+            mapOf(
+                "from" to inferred.fromActivityClass,
+                "to" to inferred.toActivityClass
+            )
+        )
+        Diagnostics.log(
+            "capture",
+            "global_action",
+            mapOf(
+                "kind" to "BACK",
+                "inferred" to true
+            )
         )
     }
 
@@ -849,6 +937,14 @@ object V2CaptureBridge {
                 persistEventLocked(PersistedV2EventWrapper(type = "global_action", globalAction = globalAction))
                 primaryApplicationPackage(snapshot)?.let { rememberSnapshotLocked(it, snapshot) }
                 Log.d(TAG, "Delivered GlobalAction: kind=$kind at=$eventTime")
+                Diagnostics.log(
+                    "capture",
+                    "global_action",
+                    mapOf(
+                        "kind" to kind,
+                        "inferred" to false
+                    )
+                )
             }
         }
         return false
@@ -943,6 +1039,7 @@ object V2CaptureBridge {
     private fun logDegraded(reason: String) {
         if (!degradedLogged) {
             Log.w(TAG, "Degraded mode: $reason")
+            Diagnostics.log("capture", "degraded", mapOf("reason" to reason))
             degradedLogged = true
         }
     }
@@ -1030,6 +1127,20 @@ object V2CaptureBridge {
 
     internal fun awaitCaptureIdleForTest() {
         runCatching { captureExecutor.submit {}.get(2, TimeUnit.SECONDS) }
+    }
+
+    internal fun formatStepType(step: Step): String = when (step) {
+        is LaunchAppStep -> "launch_app"
+        is WaitStep -> "wait"
+        is LegacyActionStep -> "legacy"
+        is UiStep -> when (val op = step.operation) {
+            is UiOperation.TAP -> "tap"
+            is UiOperation.LONG_PRESS -> "long_press"
+            is UiOperation.SWIPE -> "swipe"
+            is UiOperation.SET_TEXT -> "set_text"
+            is UiOperation.IME_ACTION -> "ime_action"
+            is UiOperation.GLOBAL_ACTION -> op.kind.lowercase()
+        }
     }
 
     private const val SNAPSHOT_ATTEMPTS = 3

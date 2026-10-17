@@ -23,6 +23,7 @@ import com.shortcuts.app.service.capture.PassiveCaptureEvent
 import com.shortcuts.app.service.capture.RecorderCaptureMode
 import com.shortcuts.app.service.capture.RecorderCaptureModePreferences
 import com.shortcuts.app.service.capture.TouchCaptureOverlay
+import com.shortcuts.app.diagnostics.Diagnostics
 import com.shortcuts.app.util.AccessibilityStatusChecker
 import kotlinx.coroutines.flow.StateFlow
 import kotlin.collections.ArrayDeque
@@ -172,6 +173,7 @@ object AutomationRecorder {
         cancelPendingTextFinalizer()
         Log.d(TAG, "Starting recording")
         cacheCaptureMode(context)
+        Diagnostics.log("recording", "start", mapOf("captureMode" to recordingCaptureMode.name))
         sessionOwner.start()
         com.shortcuts.app.automation.android.capture.V2CaptureBridge.start(context)
         resetSilentTapSuggestionTracking(
@@ -195,6 +197,7 @@ object AutomationRecorder {
         TapMarkOverlay.disarm()
         TouchCaptureOverlay.hide()
         Log.d(TAG, "Stopping recording")
+        Diagnostics.log("recording", "stop", mapOf("reason" to reason.name, "legacyActionCount" to recordedActions.value.size))
         sessionOwner.stop()
         com.shortcuts.app.automation.android.capture.V2CaptureBridge.stop(compileWorkflow = reason != RecorderSessionStopReason.DISCARDED)
         RecordingHudOverlay.hide()
@@ -204,6 +207,7 @@ object AutomationRecorder {
 
     /** Stops and discards a recording the user backed out of, without presenting it as completed. */
     fun discardRecording(context: Context) {
+        Diagnostics.log("recording", "discard")
         stopRecording(context, RecorderSessionStopReason.DISCARDED)
         clearRecording()
     }

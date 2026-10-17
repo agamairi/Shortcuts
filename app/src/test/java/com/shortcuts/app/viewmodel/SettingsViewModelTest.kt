@@ -28,6 +28,10 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import io.mockk.coEvery
 import io.mockk.coVerify
 import org.junit.Test
+import com.shortcuts.app.diagnostics.DiagnosticsController
+import com.shortcuts.app.diagnostics.DiagnosticsState
+import android.content.Intent
+import kotlinx.coroutines.flow.StateFlow
 
 class SettingsViewModelTest {
 
@@ -162,5 +166,116 @@ class SettingsViewModelTest {
                 "com.shortcuts.app.dev"
             )
         )
+    }
+
+    @Test
+    fun `diagnosticsState exposes controller state`() {
+        val fakeController = FakeDiagnosticsController(
+            DiagnosticsState(enabled = true, totalBytes = 2048L, oldestMillis = 1700000000000L)
+        )
+        val viewModel = SettingsViewModel(diagnosticsController = fakeController)
+
+        val uiState = viewModel.diagnosticsState.value
+        assertTrue(uiState.enabled)
+        assertEquals("2.0 KB", uiState.sizeLabel)
+        assertFalse(uiState.isEmpty)
+    }
+
+    @Test
+    fun `setDiagnosticsEnabled delegates to controller and updates state`() {
+        val fakeController = FakeDiagnosticsController(
+            DiagnosticsState(enabled = false, totalBytes = 0L, oldestMillis = null)
+        )
+        val viewModel = SettingsViewModel(diagnosticsController = fakeController)
+        val context = mockk<Context>(relaxed = true)
+
+        viewModel.setDiagnosticsEnabled(context, true)
+
+        assertEquals(true, fakeController.setEnabledCalledWith)
+        assertTrue(viewModel.diagnosticsState.value.enabled)
+    }
+
+    @Test
+    fun `clearDiagnostics delegates to controller and updates state`() {
+        val fakeController = FakeDiagnosticsController(
+            DiagnosticsState(enabled = true, totalBytes = 1024L * 1024L, oldestMillis = 1700000000000L)
+        )
+        val viewModel = SettingsViewModel(diagnosticsController = fakeController)
+
+        viewModel.clearDiagnostics()
+
+        assertTrue(fakeController.clearCalled)
+        assertTrue(viewModel.diagnosticsState.value.isEmpty)
+        assertEquals("0 B", viewModel.diagnosticsState.value.sizeLabel)
+    }
+
+    @Test
+    fun `diagnosticsShareIntent delegates to controller`() {
+        val expectedIntent = mockk<Intent>()
+        val fakeController = FakeDiagnosticsController()
+        fakeController.returnShareIntent = expectedIntent
+        val viewModel = SettingsViewModel(diagnosticsController = fakeController)
+        val context = mockk<Context>()
+
+        val resultIntent = viewModel.diagnosticsShareIntent(context)
+
+        assertEquals(expectedIntent, resultIntent)
+    }
+
+    @Test
+    fun `refreshDiagnostics shows a log that grew after Settings was created`() = runTest(StandardTestDispatcher()) {
+        // Seen on device: the section said "Empty" while the log held 31 KB, because the size was
+        // only read once at app start, before anything had been written.
+        val dispatcher = StandardTestDispatcher(testScheduler)
+        Dispatchers.setMain(dispatcher)
+        try {
+            val fakeController = FakeDiagnosticsController(DiagnosticsState(enabled = true, totalBytes = 0L, oldestMillis = null))
+            val viewModel = SettingsViewModel(diagnosticsController = fakeController, diagnosticsDispatcher = dispatcher)
+            assertTrue(viewModel.diagnosticsState.value.isEmpty)
+
+            fakeController.stateOnRefresh = DiagnosticsState(enabled = true, totalBytes = 31_708L, oldestMillis = 1700000000000L)
+            viewModel.refreshDiagnostics()
+            advanceUntilIdle()
+
+            assertTrue(!viewModel.diagnosticsState.value.isEmpty)
+            assertEquals("31.0 KB", viewModel.diagnosticsState.value.sizeLabel)
+        } finally {
+            Dispatchers.resetMain()
+        }
+    }
+
+    private class FakeDiagnosticsController(
+        initialState: DiagnosticsState = DiagnosticsState(enabled = true, totalBytes = 1024L * 1024L, oldestMillis = 1700000000000L)
+    ) : DiagnosticsController {
+        private val _state = MutableStateFlow(initialState)
+        override val state: StateFlow<DiagnosticsState> = _state
+
+        var setEnabledCalledWith: Boolean? = null
+        var clearCalled = false
+        var buildExportFile: File = File("/fake/export.txt")
+        var returnShareIntent: Intent? = mockk<Intent>()
+
+        override fun setEnabled(context: Context, enabled: Boolean) {
+            setEnabledCalledWith = enabled
+            _state.value = _state.value.copy(enabled = enabled)
+        }
+
+        override fun isEnabled(): Boolean = _state.value.enabled
+
+        override fun clear() {
+            clearCalled = true
+            _state.value = _state.value.copy(totalBytes = 0L, oldestMillis = null)
+        }
+
+        /** Simulates the log having grown since the view model was created. */
+        var stateOnRefresh: DiagnosticsState? = null
+
+        override fun refreshState() {
+            stateOnRefresh?.let { _state.value = it }
+        }
+
+        override fun buildExport(context: Context): File = buildExportFile
+
+        override fun shareIntent(context: Context, file: File): Intent = returnShareIntent ?: mockk()
     }
 }

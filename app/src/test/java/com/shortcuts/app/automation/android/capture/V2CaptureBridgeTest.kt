@@ -32,11 +32,14 @@ import io.mockk.every
 import io.mockk.mockk
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
+import com.shortcuts.app.diagnostics.Diagnostics
+import com.shortcuts.app.diagnostics.DiagnosticsLog
 
 class V2CaptureBridgeTest {
 
@@ -58,6 +61,7 @@ class V2CaptureBridgeTest {
         V2CaptureBridge.resetForTest()
         EngineV2.snapshotSource = null
         EngineV2.enabled = false
+        Diagnostics.setLogForTest(null)
     }
 
     @Test
@@ -987,5 +991,32 @@ class V2CaptureBridgeTest {
 
         // Activity class verified
         assertTrue(V2CaptureBridge.isConfirmedActivity("com.example.app", "com.example.app.MainActivity"))
+    }
+
+    @Test
+    fun testDiagnosticsPrivacyNeverLogsTypedText() {
+        val tempDir = java.nio.file.Files.createTempDirectory("diag-privacy-test").toFile()
+        try {
+            val diagLog = DiagnosticsLog(dir = tempDir)
+            Diagnostics.setLogForTest(diagLog)
+
+            val current = musicTypingSnapshot("lofi beats", 1_000L)
+            EngineV2.snapshotSource = WindowSnapshotSource { current }
+            V2CaptureBridge.setCompilerForTest(mockk(relaxed = true))
+
+            V2CaptureBridge.onTextChanged(musicText("lofi beats", 1_000L))
+            V2CaptureBridge.onTextCommit(musicText("lofi beats", 1_000L))
+            V2CaptureBridge.awaitCaptureIdleForTest()
+
+            diagLog.flush()
+            val export = diagLog.export()
+
+            assertTrue("Expected text_commit in log: $export", export.contains("\"ev\":\"text_commit\""))
+            assertTrue("Expected textLength 10 in log: $export", export.contains("\"textLength\":10"))
+            assertFalse("Log must not contain typed text 'lofi': $export", export.contains("lofi"))
+        } finally {
+            Diagnostics.setLogForTest(null)
+            tempDir.deleteRecursively()
+        }
     }
 }

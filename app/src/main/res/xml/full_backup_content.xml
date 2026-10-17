@@ -8,5 +8,6 @@
     <exclude domain="file" path="functiongemma.litertlm" />
     <exclude domain="file" path="v2_capture" />
     <exclude domain="file" path="debug" />
+    <exclude domain="file" path="diagnostics" />
     <exclude domain="sharedpref" path="v2_capture_bridge.xml" />
 </full-backup-content>
