@@ -310,8 +310,17 @@ class ImeSubmitInference(
         val keyboardWentAway = current.keyboardWasVisible && !keyboardVisible
         if (!focusLost && !keyboardWentAway) return null
 
-        val replacementText = currentField?.text
-            ?.takeUnless { it.isBlank() || it == current.text || it == currentField.hintText }
+        // Still typing: the field keeps focus and its text only grew or shrank from what was committed.
+        // (Seen with YouTube Music: suggestions changed and the keyboard hid mid-word, and "lofi b" was
+        // recorded as a submitted search.) Text that extends what was typed is never a replacement.
+        val liveText = currentField?.text
+        val stillTyping = currentField != null && currentField.focused && liveText != null &&
+            liveText != current.text && (liveText.startsWith(current.text) || current.text.startsWith(liveText))
+        if (stillTyping) return null
+        val replacementText = liveText
+            ?.takeUnless {
+                it.isBlank() || it == current.text || it == currentField.hintText || it.startsWith(current.text)
+            }
         val textWasReplaced = replacementText != null
         val currentFingerprint = screenFingerprinter.fingerprint(appWindow, activityClass)
         val screenChanged = screenFingerprinter.similarity(

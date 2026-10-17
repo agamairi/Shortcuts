@@ -561,6 +561,32 @@ class ImeSubmitInferenceTest {
     }
 
     @Test
+    fun testTypingThatContinuesWhileSuggestionsChangeIsNotASubmit() {
+        inference = ImeSubmitInference(screenFingerprinter = fakeFingerprinter)
+        val field = createFieldNode(text = "lofi b")
+            .copy(actions = setOf(NodeAction.SET_TEXT, NodeAction.IME_ENTER))
+        val before = createWindow(nodes = mapOf(field.nodeId to field))
+        val keyboard = createWindow(windowId = 9, nodes = emptyMap(), packageName = "example.ime")
+            .copy(type = WindowType.INPUT_METHOD)
+        inference.onTextCommit(
+            createCapturedTextCommit(field, "lofi b", before, 1_000L)!!,
+            "com.example.app.SearchActivity",
+            snapshot(before, 1_000L).copy(windows = listOf(before, keyboard))
+        )
+
+        // The keyboard hid and the suggestions changed, but the field still has focus and the text grew.
+        val suggestions = field.copy(
+            nodeId = 12, resourceId = "com.example.app:id/suggestions",
+            className = "androidx.recyclerview.widget.RecyclerView", text = null,
+            editable = false, focused = false, actions = emptySet()
+        )
+        val typing = field.copy(text = "lofi be", focused = true)
+        val after = createWindow(nodes = mapOf(typing.nodeId to typing, suggestions.nodeId to suggestions))
+
+        assertNull(inference.onScreenEffect(snapshot(after, 1_300L), 1_300L, "com.example.app.SearchActivity"))
+    }
+
+    @Test
     fun testKeyboardDismissalWithoutScreenChangeDoesNotInferEffectSubmit() {
         inference = ImeSubmitInference(screenFingerprinter = fakeFingerprinter)
         val field = createFieldNode(text = "repeatkit")
