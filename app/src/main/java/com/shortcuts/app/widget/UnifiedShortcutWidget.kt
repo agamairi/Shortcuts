@@ -5,10 +5,14 @@ import android.appwidget.AppWidgetManager
 import android.content.Context
 import android.content.Intent
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.datastore.preferences.core.Preferences
 import androidx.glance.GlanceId
 import androidx.glance.GlanceModifier
 import androidx.glance.GlanceTheme
@@ -27,11 +31,13 @@ import androidx.glance.appwidget.lazy.LazyColumn
 import androidx.glance.appwidget.lazy.items
 import androidx.glance.appwidget.provideContent
 import androidx.glance.background
+import androidx.glance.currentState
 import androidx.glance.layout.Alignment
 import androidx.glance.layout.Box
 import androidx.glance.layout.Column
 import androidx.glance.layout.Row
 import androidx.glance.layout.Spacer
+import androidx.glance.layout.fillMaxHeight
 import androidx.glance.layout.fillMaxSize
 import androidx.glance.layout.fillMaxWidth
 import androidx.glance.layout.height
@@ -46,9 +52,17 @@ import com.google.gson.Gson
 import com.google.gson.reflect.TypeToken
 import com.shortcuts.app.data.AppDatabase
 import com.shortcuts.app.data.Automation
+import com.shortcuts.app.data.CustomWidgetTemplate
 import com.shortcuts.app.data.WidgetConfig
-import com.shortcuts.app.data.WidgetLayoutKey
 import com.shortcuts.app.data.WidgetConfigSource
+import com.shortcuts.app.data.WidgetLayoutKey
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.withContext
 
 /** Parses legacy JSON defensively, so a corrupt old binding becomes setup rather than a blank UI. */
 object WidgetConfigParser {
@@ -62,7 +76,7 @@ object WidgetConfigParser {
     }
 }
 
-private data class ShortcutTileModel(
+internal data class ShortcutTileModel(
     val automation: Automation,
     val label: String,
     val colorKey: String?,
@@ -75,6 +89,72 @@ private data class ShortcutTileModel(
         )
 }
 
+internal data class WidgetSnapshot(
+    val shortcuts: List<ShortcutTileModel>,
+    val layout: WidgetLayoutKey
+)
+
+internal fun resolveWidgetSnapshot(
+    config: WidgetConfig?,
+    automations: List<Automation>,
+    templates: List<CustomWidgetTemplate>
+): WidgetSnapshot {
+    if (config == null) {
+        return WidgetSnapshot(emptyList(), WidgetLayoutKey.AUTO)
+    }
+    val automationsById = automations.associateBy { it.id }
+    val templatesById = templates.associateBy { it.id }
+
+    val shortcuts = if (config.sourceType == WidgetConfigSource.GRID.name) {
+        WidgetConfigParser.automationIds(config.templateIdsJson).mapNotNull { templateId ->
+            val template = templatesById[templateId] ?: return@mapNotNull null
+            val automation = automationsById[template.automationId] ?: return@mapNotNull null
+            ShortcutTileModel(automation, template.label, template.colorKey, template.iconKey)
+        }
+    } else {
+        val template = config.templateId?.let { templatesById[it] }
+        val ids = WidgetConfigParser.automationIds(config.automationIdsJson)
+        val orderedAutomations = ids.mapNotNull { automationsById[it] }
+        val isSingle = orderedAutomations.size == 1
+        orderedAutomations.map { automation ->
+            val label = if (isSingle) {
+                config.label?.takeIf { it.isNotBlank() }
+                    ?: template?.label?.takeIf { it.isNotBlank() }
+                    ?: automation.name
+            } else {
+                automation.name
+            }
+            ShortcutTileModel(
+                automation = automation,
+                label = label,
+                colorKey = config.colorKey ?: template?.colorKey,
+                iconKey = config.iconKey ?: template?.iconKey
+            )
+        }
+    }
+
+    val layout = WidgetLayoutKey.fromKeyOrAuto(config.layoutKey)
+    return WidgetSnapshot(shortcuts, layout)
+}
+
+internal fun observeWidgetSnapshot(
+    db: AppDatabase,
+    appWidgetId: Int,
+    sourceType: WidgetConfigSource
+): Flow<WidgetSnapshot> = combine(
+    db.widgetConfigDao().observeAllConfigs(),
+    db.automationDao().getAllAutomations(),
+    db.customWidgetTemplateDao().getAll()
+) { configs, automations, templates ->
+    val config = configs.firstOrNull { it.widgetId == appWidgetId && it.sourceType == sourceType.name }
+        ?: if (sourceType != WidgetConfigSource.UNIFIED) {
+            configs.firstOrNull { it.widgetId == appWidgetId && it.sourceType == WidgetConfigSource.UNIFIED.name }
+        } else {
+            null
+        }
+    resolveWidgetSnapshot(config, automations, templates)
+}.distinctUntilChanged().flowOn(Dispatchers.IO)
+
 /** Shared Glance implementation used by the new provider and all legacy-provider shims. */
 open class UnifiedShortcutWidget(
     private val sourceType: WidgetConfigSource,
@@ -86,54 +166,56 @@ open class UnifiedShortcutWidget(
     )
 
     override suspend fun provideGlance(context: Context, id: GlanceId) {
-        val appWidgetId = GlanceAppWidgetManager(context).getAppWidgetId(id)
-        val db = AppDatabase.getDatabase(context)
-        // A legacy provider can receive a newly allocated ID from the launcher. Its retained
-        // configuration Activity forwards to the adaptive picker, which writes UNIFIED. Prefer
-        // the legacy row for widgets that were already placed, then fall back to UNIFIED so the
-        // forwarded setup renders in that retained provider as well.
-        val config = db.widgetConfigDao().getConfig(appWidgetId, sourceType.name)
-            ?: if (sourceType != WidgetConfigSource.UNIFIED) {
-                db.widgetConfigDao().getConfig(appWidgetId, WidgetConfigSource.UNIFIED.name)
-            } else {
-                null
-            }
-        val shortcuts = config?.let { resolveShortcuts(db, it) }.orEmpty()
-        val layout = WidgetLayoutKey.fromKeyOrAuto(config?.layoutKey)
+        val appWidgetId = runCatching {
+            GlanceAppWidgetManager(context).getAppWidgetId(id)
+        }.getOrDefault(AppWidgetManager.INVALID_APPWIDGET_ID)
+
         val configIntent = Intent(context, configActivity).putExtra(
             AppWidgetManager.EXTRA_APPWIDGET_ID,
             appWidgetId
         )
 
+        if (appWidgetId == AppWidgetManager.INVALID_APPWIDGET_ID) {
+            provideContent {
+                GlanceTheme {
+                    NeedsSetup(configIntent)
+                }
+            }
+        }
+
+        val db = AppDatabase.getDatabase(context)
+        val initialSnapshot = runCatching {
+            withContext(Dispatchers.IO) {
+                val configs = db.widgetConfigDao().getAllConfigs()
+                val config = configs.firstOrNull { it.widgetId == appWidgetId && it.sourceType == sourceType.name }
+                    ?: if (sourceType != WidgetConfigSource.UNIFIED) {
+                        configs.firstOrNull { it.widgetId == appWidgetId && it.sourceType == WidgetConfigSource.UNIFIED.name }
+                    } else {
+                        null
+                    }
+                val automations = db.automationDao().getAllAutomations().first()
+                val templates = db.customWidgetTemplateDao().getAll().first()
+                resolveWidgetSnapshot(config, automations, templates)
+            }
+        }.getOrDefault(WidgetSnapshot(emptyList(), WidgetLayoutKey.AUTO))
+
         provideContent {
+            val flow = remember(appWidgetId) {
+                observeWidgetSnapshot(db, appWidgetId, sourceType)
+            }
+            val snapshot by flow.collectAsState(initial = initialSnapshot)
+
+            val prefs = currentState<Preferences>()
+            // Reading this preference registers a recomposition dependency when updateAppWidgetState is called
+            prefs[PREF_KEY_LAST_UPDATE]
+
             GlanceTheme {
-                AdaptiveShortcutWidgetContent(shortcuts, configIntent, layout)
+                AdaptiveShortcutWidgetContent(
+                    shortcuts = snapshot.shortcuts,
+                    configIntent = configIntent,
+                    layout = snapshot.layout
+                )
             }
-        }
-    }
-
-    private suspend fun resolveShortcuts(
-        db: AppDatabase,
-        config: WidgetConfig
-    ): List<ShortcutTileModel> {
-        if (config.sourceType == WidgetConfigSource.GRID.name) {
-            return WidgetConfigParser.automationIds(config.templateIdsJson).mapNotNull { templateId ->
-                val template = db.customWidgetTemplateDao().getById(templateId) ?: return@mapNotNull null
-                val automation = db.automationDao().getAutomationById(template.automationId)
-                    ?: return@mapNotNull null
-                ShortcutTileModel(automation, template.label, template.colorKey, template.iconKey)
-            }
-        }
-
-        val template = config.templateId?.let { db.customWidgetTemplateDao().getById(it) }
-        return WidgetConfigParser.automationIds(config.automationIdsJson).mapNotNull { automationId ->
-            val automation = db.automationDao().getAutomationById(automationId) ?: return@mapNotNull null
-            ShortcutTileModel(
-                automation = automation,
-                label = config.label ?: template?.label ?: automation.name,
-                colorKey = config.colorKey ?: template?.colorKey,
-                iconKey = config.iconKey ?: template?.iconKey
-            )
         }
     }
 }
@@ -219,15 +301,26 @@ private fun ShortcutTile(shortcut: ShortcutTileModel, compact: Boolean) {
 
 @Composable
 private fun ShortcutGrid(shortcuts: List<ShortcutTileModel>) {
+    val rows = shortcuts.chunked(2)
     Column(modifier = GlanceModifier.fillMaxSize().padding(4.dp)) {
-        shortcuts.chunked(2).forEach { row ->
-            Row(modifier = GlanceModifier.fillMaxWidth()) {
-                row.forEach { shortcut ->
-                    Box(modifier = GlanceModifier.defaultWeight().height(52.dp).padding(2.dp)) {
+        for (row in rows) {
+            Row(
+                modifier = GlanceModifier.fillMaxWidth().defaultWeight(),
+                verticalAlignment = Alignment.Vertical.CenterVertically
+            ) {
+                for (shortcut in row) {
+                    Box(
+                        modifier = GlanceModifier
+                            .defaultWeight()
+                            .fillMaxHeight()
+                            .padding(2.dp)
+                    ) {
                         ShortcutTile(shortcut, compact = true)
                     }
                 }
-                if (row.size == 1) Spacer(modifier = GlanceModifier.defaultWeight())
+                if (row.size == 1) {
+                    Spacer(modifier = GlanceModifier.defaultWeight())
+                }
             }
         }
     }
@@ -236,7 +329,7 @@ private fun ShortcutGrid(shortcuts: List<ShortcutTileModel>) {
 @Composable
 private fun ShortcutList(shortcuts: List<ShortcutTileModel>) {
     LazyColumn(modifier = GlanceModifier.fillMaxSize().padding(6.dp)) {
-        items(shortcuts) { shortcut ->
+        items(shortcuts, itemId = { it.automation.id.toLong() }) { shortcut ->
             val appearance = shortcut.appearance
             Row(
                 modifier = GlanceModifier.fillMaxWidth().padding(vertical = 3.dp)
