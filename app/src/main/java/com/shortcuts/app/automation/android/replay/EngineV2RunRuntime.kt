@@ -214,7 +214,8 @@ class EngineV2RunRuntime(
 
         val windowMatcher = WindowMatcher(
             fingerprinter = DefaultScreenFingerprinter(),
-            titleTokenizer = ::sha256TitleTokenizer
+            // Same salted, normalized tokens the recorder wrote (review finding #10).
+            titleTokenizer = com.shortcuts.app.automation.android.InstallTokens.tokenizer(context)::tokenize
         )
 
         val engine = DefaultReplayEngine(
