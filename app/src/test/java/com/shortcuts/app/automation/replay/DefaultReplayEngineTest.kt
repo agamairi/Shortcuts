@@ -164,6 +164,21 @@ class DefaultReplayEngineTest {
         job.join()
     }
 
+    @Test fun `launch accepts the right app even when its start screen looks different`() = runTest {
+        // Recorded start screen: a feed that will have changed by replay time.
+        val recordedStart = DefaultScreenFingerprinter().fingerprint(
+            window("settings") { node("Root") { (1..6).forEach { node("TextView", text = "Recommended $it") } } },
+            "SettingsActivity"
+        )
+        val target = WindowSelector("settings", "SettingsActivity", WindowType.APPLICATION, null, NormalizedRect(0f, 0f, 1f, 1f), 0, recordedStart)
+        val env = FakeEnvironment(screenFor("settings")) { DispatchResult.Rejected("not reached") }
+        env.activities[1] = "SettingsActivity"
+
+        val result = engine(env, { testScheduler.currentTime }).run(workflow(launchStep(target, timeoutMs = 3_000)), RecordingSink())
+
+        assertEquals(ReplayResult.Success(1), result)
+    }
+
     @Test fun `launch timeout identifies requested package and activity`() = runTest {
         val target = WindowSelector("settings", "SettingsActivity", WindowType.APPLICATION, null, NormalizedRect(0f, 0f, 1f, 1f), 0, null)
         val env = FakeEnvironment(screenFor("other")) { DispatchResult.Rejected("not reached") }

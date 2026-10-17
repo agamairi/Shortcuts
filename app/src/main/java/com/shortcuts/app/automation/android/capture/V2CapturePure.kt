@@ -124,8 +124,16 @@ fun queryHomePackages(packageManager: PackageManager): Set<String> = runCatching
         @Suppress("DEPRECATION")
         packageManager.queryIntentActivities(intent, 0)
     }
-    resolveHomePackages(list.mapNotNull { it.activityInfo?.packageName })
+    resolveHomePackages(realHomeActivities(list.map { it.activityInfo?.packageName to it.priority }))
 }.getOrDefault(emptySet())
+
+/**
+ * Home activities that are real launchers. Settings ships `FallbackHome` (priority -1000), a
+ * placeholder shown only before the first unlock after boot; counting it made the recorder treat all
+ * of Settings as the home screen, so Settings recordings never compiled in the new format.
+ */
+fun realHomeActivities(activities: List<Pair<String?, Int>>): List<String?> =
+    activities.filter { (_, priority) -> priority >= 0 }.map { (packageName, _) -> packageName }
 
 /**
  * Single pure decision function for determining whether to save Engine v2 JSON or legacy v0.7 JSON.

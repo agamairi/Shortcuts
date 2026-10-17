@@ -27,6 +27,7 @@ SCENARIO_DIR = Path(__file__).resolve().parent / "scenarios"
 RESULTS_DIR = Path(__file__).resolve().parent / "results"
 DEBUG_COMMAND_TIMEOUT = 30
 RUN_TIMEOUT = 120
+TYPE_SETTLE_MS = 700
 DEBUG_TAG = "RepeatKitDebug"
 FIXTURE_TAG = "FixtureEvent"
 LOGCAT_TAGS = [
@@ -374,7 +375,10 @@ def execute_step(adb, step, settle_ms=700):
         time.sleep(float(value) / 1000.0)
     else:
         raise HarnessError("Unsupported scenario action: %s" % action)
-    time.sleep(float(settle_ms) / 1000.0)
+    # People press Enter right after typing. After a longer pause, an injected Enter sometimes no
+    # longer submits the field (seen with Gboard even with no recording running), so typing keeps
+    # the short pause while screens still get the full settle.
+    time.sleep(float(min(settle_ms, TYPE_SETTLE_MS) if action == "type" else settle_ms) / 1000.0)
 
 
 def validate_scenario(data):
@@ -522,13 +526,14 @@ def v2_ui_step_count(recording_v2_text):
 def record_quality(scenario, recording, recording_v2_text=None):
     issues = []
     recorded = v2_ui_step_count(recording_v2_text) if recording_v2_text else None
+    expected = scenario_human_step_count(scenario)
     if recorded is None:
         recorded = recorded_ui_step_count(recording)
-    if recorded < scenario_human_step_count(scenario):
-        issues.append(
-            "recorded %d UI steps for %d human actions"
-            % (recorded, scenario_human_step_count(scenario))
-        )
+    else:
+        # Engine v2 folds a scroll that reveals the next target into that target's step.
+        expected -= sum(1 for step in scenario["steps"] if next(iter(step)) in {"scroll_until", "swipe"})
+    if recorded < expected:
+        issues.append("recorded %d UI steps for %d human actions" % (recorded, expected))
     if has_unresolved(recording):
         issues.append("recording contains an UNRESOLVED step")
     return ("missing_steps" if issues else "ok"), issues

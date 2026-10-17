@@ -167,14 +167,32 @@ class DefaultReplayEngine(
             is LaunchDispatchResult.Rejected -> return failure(ReplayFailureCode.DISPATCH_REJECTED, step.id, launch.reason)
         }
         transition(sink, step.id, ReplayState.WAITING_FOR_EXPECTED_SCREEN)
-        return waitForExpectedWindow(
+        val deadline = clock() + minOf(step.timeoutMs, timeouts.launchMs)
+        // The launched app's window must match (package, activity, type, title, bounds), as for UI steps.
+        val selected = waitForExpectedWindow(
             stepId = step.id,
             selector = step.expectedWindow,
-            expected = step.expectedAfter ?: step.expectedWindow.fingerprint,
-            timeoutMs = minOf(step.timeoutMs, timeouts.launchMs),
+            expected = null,
+            timeoutMs = (deadline - clock()).coerceAtLeast(0),
             sink = sink,
             timeoutCode = ReplayFailureCode.EXPECTED_SCREEN_TIMEOUT
-        )?.failure
+        ) ?: return failure(ReplayFailureCode.EXPECTED_SCREEN_TIMEOUT, step.id, "Launched app's window never appeared")
+        selected.failure?.let { return it }
+        // What the start screen shows is only a hint, as for UI steps: personalised home screens (a music
+        // feed, a news app) never look the same twice, and a hard fingerprint gate failed every replay of
+        // them. The next step's target lookup is what proves the app is where it should be.
+        val expected = step.expectedAfter ?: step.expectedWindow.fingerprint
+        if (expected != null) {
+            val fingerprintSatisfied = waitForSoftFingerprint(
+                stepId = step.id,
+                selector = step.expectedWindow,
+                expected = expected,
+                timeoutMs = minOf(timeouts.expectedScreenFingerprintMs, (deadline - clock()).coerceAtLeast(0)),
+                sink = sink
+            )
+            sink.append(ExpectedScreenRecorded(clock(), step.id, fingerprintSatisfied = fingerprintSatisfied))
+        }
+        return null
     }
 
     private suspend fun executeWait(step: WaitStep, sink: TraceSink): ReplayFailure? {
