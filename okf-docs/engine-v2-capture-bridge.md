@@ -38,24 +38,55 @@ review-and-save pipeline.
 
 ## Core Components
 
-### Capture hardening
+### Capture hardening & Background Queue Ordering
 
-Finger-down snapshotting is started on a single dedicated capture worker, never in the overlay
-input callback. At lift the overlay gives that immutable pre-tap snapshot at most 120 ms before
-starting relay; a late result is tagged as late evidence and a missing result leaves the legacy
-coordinate fallback intact. The worker receives compiler acceptance and persistence only after
-`dispatchGesture` accepted the relay.
+All bridge ingestion (`onGestureClassified`, `onTextCommit`, `onImeAction`, `onAppSwitch`,
+`onTextChanged`, `onKeyEvent`) is dispatched to a single background `captureExecutor` queue.
+Synchronous full-window snapshots are never taken on the Android main thread, preventing UI stalls
+during typing or rapid gestures while strictly preserving causal ordering between touch gestures
+and keyboard/window events.
 
-In-progress persistence uses a versioned JSONL event log plus an atomic session manifest. Each
-record is fsynced; manifests and finished workflows are written via temp file, fsync and rename.
-The cache is capped at 500 events / 2 MiB, stores only target selector context rather than whole
-screens, accepts a truncated final JSONL record, and reports any earlier corruption as an
-unrecoverable v2 session so the save path can use legacy recording safely.
+Finger-down snapshotting is scheduled asynchronously on this dedicated queue. At finger lift,
+the overlay waits at most 120 ms for the pre-tap snapshot before initiating relay:
+- If the snapshot is late or unavailable, legacy capture falls back to an immediate bounded
+  live-tree hit-test at `ACTION_DOWN` (walking at most 300 nodes of the topmost non-overlay window)
+  and falls back to the topmost application window package (`OverlayRegionPolicy.topAppPackage`),
+  guaranteeing legacy v0.7 sessions never drop the tap due to an empty package name.
+- When `snapshotFuture.isDone` is already true, relay begins immediately without waiting.
 
-IME inference is deliberately narrow: a committed non-empty focused field with a real node ID may
-yield an `INFERRED_IME_ACTION` only for a same-package *different Activity*, or a one-event clear
-of that same still-focused field. Dialogs, popups, content updates and progressive deletion are not
-submission evidence. Explicit IME actions require the focused editable field.
+### Session Persistence & Compaction (`V2CaptureStore.kt`)
+
+In-progress persistence uses a versioned JSONL event log plus an atomic session manifest:
+- **Compaction Window Selection**: When no specific target node is specified (e.g. `appSwitch` or `globalAction`),
+  compaction chooses the primary `APPLICATION` window (`type == WindowType.APPLICATION`), ensuring
+  higher-layer system bars (e.g. `StatusBar`, `NavigationBar` with `type == WindowType.SYSTEM`) never wipe
+  the application node hierarchy.
+- **Row Context Retention**: Compaction preserves all siblings within the nearest row/container ancestor
+  (`depth <= 2`), regardless of class name, ensuring label and control pairs survive across process restoration.
+- **ScreenFingerprint Stability**: `ScreenFingerprint` is computed and stored before node compaction occurs,
+  preventing structural hash drift between live recording and restored sessions.
+- **Append Performance**: Event appends write strictly to the append-only `v2_capture_events.v1.jsonl` log,
+  updating event byte and count tallies in memory rather than re-serializing the full `initialSnapshot`
+  manifest on every keystroke or tap.
+
+### IME Inference & Activity Validation
+
+- **Stable Field Tracking**: Fields are matched across snapshots by `(packageName, resourceId, boundsInScreen)`
+  rather than sequential `nodeId` counters, surviving layout shifts and dynamic hierarchy redraws.
+- **Accidental Clear / Backspace Guard**: Inferring submission on field clearing requires committed text
+  length $\ge 2$ and checks that no touch interaction landed inside the field's bounds (e.g. tapping a clear "X" icon).
+- **Migration Warnings**: Inferred IME actions set `inferred = true`, prompting `RecordingCompiler` to attach
+  the `"INFERRED_IME_ACTION"` migration warning on the compiled `UiStep`.
+- **Activity Class Confirmation**: Observed activity classes from `TYPE_WINDOW_STATE_CHANGED` are verified via
+  `PackageManager.getActivityInfo(ComponentName(pkg, cls), 0)` (memoized in an activity cache) and filtered
+  against transient UI components (Dialog, Popup, Snackbar, Toast, BottomSheet) so transient views never
+  corrupt the recorded activity.
+
+### Disconnect & Lifecycle Cleanup
+
+When `AutomationRecorder.stopForAccessibilityDisconnect` executes, any pending scroll finalizer is immediately
+cancelled, and `V2CaptureBridge.stop(compileWorkflow = false)` purges active capture cache files without
+compiling incomplete workflows.
 
 ### 1. Pure Mappings (`V2CapturePure.kt`)
 To keep business logic isolated and testable without Android mocks or Robolectric, capture

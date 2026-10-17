@@ -287,4 +287,65 @@ class AutomationRecorderTest {
         val result = deriveNodeLabel(deepest)
         assertEquals(null, result.text) // Should not reach "Too Deep" because maxDepth = 3
     }
+
+    @Test
+    fun `stopForAccessibilityDisconnect cancels pending scroll and stops v2 bridge without compiling`() {
+        val context = mockk<android.content.Context>(relaxed = true)
+        val appContext = mockk<android.content.Context>(relaxed = true)
+        every { context.applicationContext } returns appContext
+        val notifManager = mockk<android.app.NotificationManager>(relaxed = true)
+        every { appContext.getSystemService(android.content.Context.NOTIFICATION_SERVICE) } returns notifManager
+        every { appContext.packageName } returns "com.shortcuts.app"
+        val appInfo = android.content.pm.ApplicationInfo().apply { targetSdkVersion = 34 }
+        every { appContext.applicationInfo } returns appInfo
+
+        val testStore = com.shortcuts.app.automation.android.capture.InMemoryV2CaptureStore()
+        com.shortcuts.app.automation.android.capture.V2CaptureBridge.resetForTest()
+        com.shortcuts.app.automation.android.capture.V2CaptureBridge.setStoreForTest(testStore)
+        com.shortcuts.app.automation.android.EngineV2.enabled = true
+        val snap = com.shortcuts.app.automation.core.tree.WindowSetSnapshot(1L, 100, 100, 0, 1f, emptyList())
+        com.shortcuts.app.automation.android.EngineV2.snapshotSource = com.shortcuts.app.automation.android.WindowSnapshotSource { snap }
+
+        // Start recording
+        AutomationRecorder.setRecordingForTest(true)
+        com.shortcuts.app.automation.android.capture.V2CaptureBridge.start(context)
+        testStore.saveActiveSession(com.shortcuts.app.automation.android.capture.PersistedV2Session("wf-test", snap))
+
+        // Set pending scroll finalizer
+        AutomationRecorder.setPendingScrollFinalizerForTest(Runnable {})
+        assertTrue(AutomationRecorder.hasPendingScrollFinalizerForTest())
+
+        // Create monitor with synchronous execution
+        val directScheduler = GracePeriodScheduler { _, task ->
+            task()
+            GracePeriodCancellation {}
+        }
+        val monitor = AccessibilityServiceDisconnectMonitor(
+            scheduler = directScheduler,
+            isRecording = { AutomationRecorder.isRecording.value }
+        )
+        AutomationRecorder.setDisconnectMonitorForTest(monitor)
+
+        // Mock accessibility disabled
+        io.mockk.mockkObject(com.shortcuts.app.util.AccessibilityStatusChecker)
+        every { com.shortcuts.app.util.AccessibilityStatusChecker.isAccessibilityEnabled(any()) } returns false
+        io.mockk.mockkObject(RecorderSessionNotifier)
+        every { RecorderSessionNotifier.showAccessibilityDisconnected(any()) } returns Unit
+
+        try {
+            // Trigger disconnect
+            AutomationRecorder.stopForAccessibilityDisconnect(context)
+
+            // Verify pending scroll finalizer was cancelled
+            assertTrue(!AutomationRecorder.hasPendingScrollFinalizerForTest())
+
+            // Verify v2 bridge was stopped without compiling (capture files cleared, no last workflow)
+            org.junit.Assert.assertNull(com.shortcuts.app.automation.android.capture.V2CaptureBridge.lastWorkflow)
+            org.junit.Assert.assertNull(testStore.loadActiveSession())
+            org.junit.Assert.assertNull(testStore.loadLastWorkflow())
+        } finally {
+            io.mockk.unmockkObject(com.shortcuts.app.util.AccessibilityStatusChecker)
+            io.mockk.unmockkObject(RecorderSessionNotifier)
+        }
+    }
 }

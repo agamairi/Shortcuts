@@ -2,6 +2,7 @@ package com.shortcuts.app.automation.android.capture
 
 import android.content.ComponentName
 import android.content.Context
+import android.content.pm.PackageManager
 import android.os.Build
 import android.provider.Settings
 import android.util.Log
@@ -44,11 +45,13 @@ object V2CaptureBridge {
     private val captureExecutor = Executors.newSingleThreadExecutor { runnable ->
         Thread(runnable, "v2-capture-compiler").apply { isDaemon = true }
     }
+    private var appContext: Context? = null
     private var store: V2CaptureStore? = null
     private var compiler: RecordingCompiler? = null
     private var activeSession: PersistedV2Session? = null
     private var lastForegroundPackage: String? = null
     private val lastActivitiesByPackage = mutableMapOf<String, String>()
+    private val activityCache = java.util.concurrent.ConcurrentHashMap<Pair<String, String>, Boolean>()
     private val imeInference = ImeSubmitInference()
     private var degradedLogged = false
 
@@ -60,113 +63,172 @@ object V2CaptureBridge {
     var lastWorkflowJson: String? = null
         private set
 
+    internal fun isConfirmedActivity(
+        packageName: String,
+        className: String?
+    ): Boolean {
+        if (className.isNullOrBlank()) return false
+        if (isIgnoredUiClass(className)) return false
+        val key = packageName to className
+        activityCache[key]?.let { return it }
+
+        val context = appContext
+        val pm = context?.packageManager
+        val confirmed = if (pm != null) {
+            val fullClassName = if (className.startsWith(".")) "$packageName$className" else className
+            val component = ComponentName(packageName, fullClassName)
+            runCatching {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                    pm.getActivityInfo(component, PackageManager.ComponentInfoFlags.of(0))
+                } else {
+                    @Suppress("DEPRECATION")
+                    pm.getActivityInfo(component, 0)
+                }
+                true
+            }.getOrDefault(false)
+        } else {
+            looksLikeActivityClass(className)
+        }
+        activityCache[key] = confirmed
+        return confirmed
+    }
+
     /**
      * Starts or re-arms the v2 compiler when a recording session begins.
      */
     fun start(context: Context) {
-        synchronized(lock) {
-            if (!EngineV2.enabled) return@synchronized
-            val currentStore = ensureStore(context)
-            compiler = null
-            activeSession = null
-            lastWorkflow = null
-            lastWorkflowJson = null
-            lastForegroundPackage = null
-            lastActivitiesByPackage.clear()
-            imeInference.reset()
-            degradedLogged = false
-            currentStore.clearAll()
+        val future = captureExecutor.submit {
+            synchronized(lock) {
+                if (!EngineV2.enabled) return@synchronized
+                appContext = context.applicationContext ?: context
+                val currentStore = ensureStore(context)
+                compiler = null
+                activeSession = null
+                lastWorkflow = null
+                lastWorkflowJson = null
+                lastForegroundPackage = null
+                lastActivitiesByPackage.clear()
+                activityCache.clear()
+                imeInference.reset()
+                degradedLogged = false
+                currentStore.clearAll()
 
-            val snapshot = EngineV2.snapshotSource?.snapshot()
-            if (snapshot == null) {
-                logDegraded("Snapshot source unavailable at start")
-                return@synchronized
+                val snapshot = EngineV2.snapshotSource?.snapshot()
+                if (snapshot == null) {
+                    logDegraded("Snapshot source unavailable at start")
+                    return@synchronized
+                }
+
+                val launcherPackages = queryHomePackages(context.packageManager)
+                val recorderPackage = context.packageName ?: "com.shortcuts.app"
+                val tokenizer = com.shortcuts.app.automation.android.InstallTokens.tokenizer(context)
+                val deviceMetadata = RecordingDeviceMetadata(
+                    manufacturer = Build.MANUFACTURER ?: "unknown",
+                    model = Build.MODEL ?: "unknown",
+                    sdkInt = Build.VERSION.SDK_INT
+                )
+                val imePackages = resolveImePackages(context)
+                val workflowId = UUID.randomUUID().toString()
+
+                val newCompiler = RecordingCompiler(
+                    launcherPackageNames = launcherPackages,
+                    recorderPackageName = recorderPackage,
+                    screenFingerprinter = DefaultScreenFingerprinter(),
+                    textTokenizer = tokenizer,
+                    deviceMetadata = deviceMetadata,
+                    systemPackageNames = setOf("com.android.systemui"),
+                    imePackageNames = imePackages
+                )
+
+                newCompiler.start(CaptureScreenContext(workflowId, snapshot))
+                compiler = newCompiler
+                val session = PersistedV2Session(workflowId, snapshot)
+                activeSession = session
+                currentStore.saveActiveSession(session)
+                Log.d(TAG, "Recording started: workflowId=$workflowId")
             }
-
-            val launcherPackages = queryHomePackages(context.packageManager)
-            val recorderPackage = context.packageName ?: "com.shortcuts.app"
-            val tokenizer = com.shortcuts.app.automation.android.InstallTokens.tokenizer(context)
-            val deviceMetadata = RecordingDeviceMetadata(
-                manufacturer = Build.MANUFACTURER ?: "unknown",
-                model = Build.MODEL ?: "unknown",
-                sdkInt = Build.VERSION.SDK_INT
-            )
-            val imePackages = resolveImePackages(context)
-            val workflowId = UUID.randomUUID().toString()
-
-            val newCompiler = RecordingCompiler(
-                launcherPackageNames = launcherPackages,
-                recorderPackageName = recorderPackage,
-                screenFingerprinter = DefaultScreenFingerprinter(),
-                textTokenizer = tokenizer,
-                deviceMetadata = deviceMetadata,
-                systemPackageNames = setOf("com.android.systemui"),
-                imePackageNames = imePackages
-            )
-
-            newCompiler.start(CaptureScreenContext(workflowId, snapshot))
-            compiler = newCompiler
-            val session = PersistedV2Session(workflowId, snapshot)
-            activeSession = session
-            currentStore.saveActiveSession(session)
-            Log.d(TAG, "Recording started: workflowId=$workflowId")
         }
+        runCatching { future.get(3, TimeUnit.SECONDS) }
     }
 
     /**
      * Finishes compilation of the active recording into a [WorkflowV2].
+     *
+     * @param compileWorkflow If false, capture files and compiler are cleared without producing a workflow.
      */
-    fun stop() {
-        synchronized(lock) {
-            val activeCompiler = compiler
-            if (!EngineV2.enabled || activeCompiler == null) {
+    fun stop(compileWorkflow: Boolean = true) {
+        val future = captureExecutor.submit {
+            synchronized(lock) {
+                if (!compileWorkflow) {
+                    compiler = null
+                    activeSession = null
+                    lastWorkflow = null
+                    lastWorkflowJson = null
+                    lastForegroundPackage = null
+                    lastActivitiesByPackage.clear()
+                    activityCache.clear()
+                    imeInference.reset()
+                    degradedLogged = false
+                    store?.clearAll()
+                    Log.d(TAG, "Recording stopped without compiling; capture files deleted")
+                    return@synchronized
+                }
+
+                val activeCompiler = compiler
+                if (!EngineV2.enabled || activeCompiler == null) {
+                    compiler = null
+                    activeSession = null
+                    store?.clearActiveSession()
+                    return@synchronized
+                }
+
+                val finalSnapshot = EngineV2.snapshotSource?.snapshot()
+                if (finalSnapshot != null) {
+                    runCatching { activeCompiler.updateScreen(finalSnapshot) }
+                }
+
+                val finishResult = runCatching { activeCompiler.finish() }
+                finishResult.onSuccess { workflow ->
+                    val json = WorkflowCodec().encode(workflow)
+                    lastWorkflow = workflow
+                    lastWorkflowJson = json
+                    store?.saveLastWorkflow(json)
+                    Log.d(TAG, "Recording stopped: steps=${workflow.steps.size}")
+                }.onFailure { error ->
+                    Log.w(TAG, "Failed to compile v2 workflow", error)
+                    lastWorkflow = null
+                    lastWorkflowJson = null
+                    store?.clearLastWorkflow()
+                }
+
                 compiler = null
                 activeSession = null
                 store?.clearActiveSession()
-                return@synchronized
             }
-
-            val finalSnapshot = EngineV2.snapshotSource?.snapshot()
-            if (finalSnapshot != null) {
-                runCatching { activeCompiler.updateScreen(finalSnapshot) }
-            }
-
-            val finishResult = runCatching { activeCompiler.finish() }
-            finishResult.onSuccess { workflow ->
-                val json = WorkflowCodec().encode(workflow)
-                lastWorkflow = workflow
-                lastWorkflowJson = json
-                store?.saveLastWorkflow(json)
-                Log.d(TAG, "Recording stopped: steps=${workflow.steps.size}")
-            }.onFailure { error ->
-                Log.w(TAG, "Failed to compile v2 workflow", error)
-                lastWorkflow = null
-                lastWorkflowJson = null
-                store?.clearLastWorkflow()
-            }
-
-            compiler = null
-            activeSession = null
-            store?.clearActiveSession()
         }
+        runCatching { future.get(3, TimeUnit.SECONDS) }
     }
 
     /**
      * Drops any compiled workflow and deletes persisted session files.
      */
     fun clear() {
-        synchronized(lock) {
-            compiler = null
-            activeSession = null
-            lastWorkflow = null
-            lastWorkflowJson = null
-            lastForegroundPackage = null
-            lastActivitiesByPackage.clear()
-            imeInference.reset()
-            degradedLogged = false
-            store?.clearAll()
-            Log.d(TAG, "Recording cleared")
+        val future = captureExecutor.submit {
+            synchronized(lock) {
+                compiler = null
+                activeSession = null
+                lastWorkflow = null
+                lastWorkflowJson = null
+                lastForegroundPackage = null
+                lastActivitiesByPackage.clear()
+                activityCache.clear()
+                imeInference.reset()
+                degradedLogged = false
+                store?.clearAll()
+                Log.d(TAG, "Recording cleared")
+            }
         }
+        runCatching { future.get(2, TimeUnit.SECONDS) }
     }
 
     /**
@@ -252,7 +314,8 @@ object V2CaptureBridge {
             }
 
             val interaction = createCapturedInteraction(kind, samples, beforeSnapshot, ownPackage)
-            imeInference.onOverlayInteraction(samples.firstOrNull()?.uptimeMs)
+            val firstSample = samples.firstOrNull()
+            imeInference.onOverlayInteraction(firstSample?.x?.toInt(), firstSample?.y?.toInt(), firstSample?.uptimeMs)
             activeCompiler.accept(interaction)
             persistEventLocked(PersistedV2EventWrapper(type = "interaction", interaction = interaction, lateSnapshot = lateSnapshot))
 
@@ -270,39 +333,41 @@ object V2CaptureBridge {
      * Delivers a committed field text edit to the compiler.
      */
     fun onTextCommit(event: RecorderEvent) {
-        synchronized(lock) {
-            if (!EngineV2.enabled) return@synchronized
-            val activeCompiler = compiler ?: return@synchronized
-            if (event.enteredText.isEmpty()) return@synchronized
+        captureExecutor.execute {
+            synchronized(lock) {
+                if (!EngineV2.enabled) return@synchronized
+                val activeCompiler = compiler ?: return@synchronized
+                if (event.enteredText.isEmpty()) return@synchronized
 
-            val snapshot = EngineV2.snapshotSource?.snapshot()
-            if (snapshot == null) {
-                logDegraded("Snapshot source unavailable for text commit")
-                return@synchronized
+                val snapshot = EngineV2.snapshotSource?.snapshot()
+                if (snapshot == null) {
+                    logDegraded("Snapshot source unavailable for text commit")
+                    return@synchronized
+                }
+
+                val window = (event.windowId?.let { snapshot.window(it) })
+                    ?: snapshot.windows.firstOrNull { it.packageName == event.packageName && it.type != WindowType.ACCESSIBILITY_OVERLAY && it.type != WindowType.INPUT_METHOD }
+                    ?: snapshot.windows.maxByOrNull { it.layer }
+                    ?: return@synchronized
+
+                val focusedEditable = window.nodes.values.firstOrNull { it.focused && it.editable }
+                val fieldNode = focusedEditable ?: window.nodes.values.firstOrNull { candidate ->
+                    (event.sourceViewId != null && candidate.resourceId == event.sourceViewId) ||
+                        (candidate.className == event.sourceClassName && candidate.editable)
+                } ?: return@synchronized
+
+                val commit = createCapturedTextCommit(fieldNode, event.enteredText, window, event.occurredAtMillis)
+                    ?: return@synchronized
+                activeCompiler.accept(commit)
+                persistEventLocked(PersistedV2EventWrapper(type = "text_commit", textCommit = commit))
+                val currentActivity = lastActivitiesByPackage[window.packageName]
+                imeInference.onTextCommit(commit, currentActivity)
+
+                Log.d(
+                    TAG,
+                    "Delivered TextCommit: pkg=${window.packageName} nodeClass=${fieldNode.className} windowId=${window.windowId} nodeId=${fieldNode.nodeId} viewId=${fieldNode.resourceId} isEditable=${fieldNode.editable} password=${fieldNode.password} at=${commit.committedAtUptimeMs}"
+                )
             }
-
-            val window = (event.windowId?.let { snapshot.window(it) })
-                ?: snapshot.windows.firstOrNull { it.packageName == event.packageName && it.type != WindowType.ACCESSIBILITY_OVERLAY && it.type != WindowType.INPUT_METHOD }
-                ?: snapshot.windows.maxByOrNull { it.layer }
-                ?: return@synchronized
-
-            val focusedEditable = window.nodes.values.firstOrNull { it.focused && it.editable }
-            val fieldNode = focusedEditable ?: window.nodes.values.firstOrNull { candidate ->
-                (event.sourceViewId != null && candidate.resourceId == event.sourceViewId) ||
-                    (candidate.className == event.sourceClassName && candidate.editable)
-            } ?: return@synchronized
-
-            val commit = createCapturedTextCommit(fieldNode, event.enteredText, window, event.occurredAtMillis)
-                ?: return@synchronized
-            activeCompiler.accept(commit)
-            persistEventLocked(PersistedV2EventWrapper(type = "text_commit", textCommit = commit))
-            val currentActivity = lastActivitiesByPackage[window.packageName]
-            imeInference.onTextCommit(commit, currentActivity)
-
-            Log.d(
-                TAG,
-                "Delivered TextCommit: pkg=${window.packageName} nodeClass=${fieldNode.className} windowId=${window.windowId} nodeId=${fieldNode.nodeId} viewId=${fieldNode.resourceId} isEditable=${fieldNode.editable} password=${fieldNode.password} at=${commit.committedAtUptimeMs}"
-            )
         }
     }
 
@@ -310,36 +375,38 @@ object V2CaptureBridge {
      * Delivers an IME submit action (or enter key) to the compiler.
      */
     fun onImeAction(label: String?, uptimeMs: Long) {
-        synchronized(lock) {
-            if (!EngineV2.enabled) return@synchronized
-            val activeCompiler = compiler ?: return@synchronized
-            imeInference.reset()
-            val kind = mapImeLabelToActionKind(label)
+        captureExecutor.execute {
+            synchronized(lock) {
+                if (!EngineV2.enabled) return@synchronized
+                val activeCompiler = compiler ?: return@synchronized
+                imeInference.reset()
+                val kind = mapImeLabelToActionKind(label)
 
-            val snapshot = EngineV2.snapshotSource?.snapshot()
-            if (snapshot == null) {
-                logDegraded("Snapshot source unavailable for IME action")
-                return@synchronized
+                val snapshot = EngineV2.snapshotSource?.snapshot()
+                if (snapshot == null) {
+                    logDegraded("Snapshot source unavailable for IME action")
+                    return@synchronized
+                }
+
+                val window = snapshot.windows
+                    .filterNot { it.type == WindowType.ACCESSIBILITY_OVERLAY || it.type == WindowType.INPUT_METHOD }
+                    .sortedWith(compareByDescending<WindowSnapshot> { it.isActive || it.isFocused }.thenByDescending { it.layer })
+                    .firstOrNull() ?: return@synchronized
+
+                // An explicit IME action is only meaningful for the editable Android reports as
+                // focused; selecting an arbitrary field manufactured submissions on unrelated inputs.
+                val fieldNode = window.nodes.values.firstOrNull { it.focused && it.editable }
+                    ?: return@synchronized
+
+                val action = createCapturedImeAction(fieldNode, kind, window, uptimeMs)
+                activeCompiler.accept(action)
+                persistEventLocked(PersistedV2EventWrapper(type = "ime_action", imeAction = action))
+
+                Log.d(
+                    TAG,
+                    "Delivered ImeAction: kind=$kind pkg=${window.packageName} nodeClass=${fieldNode.className} windowId=${window.windowId} nodeId=${fieldNode.nodeId} viewId=${fieldNode.resourceId} at=$uptimeMs"
+                )
             }
-
-            val window = snapshot.windows
-                .filterNot { it.type == WindowType.ACCESSIBILITY_OVERLAY || it.type == WindowType.INPUT_METHOD }
-                .sortedWith(compareByDescending<WindowSnapshot> { it.isActive || it.isFocused }.thenByDescending { it.layer })
-                .firstOrNull() ?: return@synchronized
-
-            // An explicit IME action is only meaningful for the editable Android reports as
-            // focused; selecting an arbitrary field manufactured submissions on unrelated inputs.
-            val fieldNode = window.nodes.values.firstOrNull { it.focused && it.editable }
-                ?: return@synchronized
-
-            val action = createCapturedImeAction(fieldNode, kind, window, uptimeMs)
-            activeCompiler.accept(action)
-            persistEventLocked(PersistedV2EventWrapper(type = "ime_action", imeAction = action))
-
-            Log.d(
-                TAG,
-                "Delivered ImeAction: kind=$kind pkg=${window.packageName} nodeClass=${fieldNode.className} windowId=${window.windowId} nodeId=${fieldNode.nodeId} viewId=${fieldNode.resourceId} at=$uptimeMs"
-            )
         }
     }
 
@@ -351,44 +418,46 @@ object V2CaptureBridge {
         className: CharSequence?,
         uptimeMs: Long
     ) {
-        synchronized(lock) {
-            if (!EngineV2.enabled) return@synchronized
-            val activeCompiler = compiler ?: return@synchronized
+        val classNameStr = className?.toString()
+        captureExecutor.execute {
+            synchronized(lock) {
+                if (!EngineV2.enabled) return@synchronized
+                val activeCompiler = compiler ?: return@synchronized
 
-            val snapshot = EngineV2.snapshotSource?.snapshot()
-            if (snapshot == null) {
-                logDegraded("Snapshot source unavailable for app switch")
-                return@synchronized
+                val snapshot = EngineV2.snapshotSource?.snapshot()
+                if (snapshot == null) {
+                    logDegraded("Snapshot source unavailable for app switch")
+                    return@synchronized
+                }
+
+                val activityClass = if (isConfirmedActivity(toPackage, classNameStr)) {
+                    if (classNameStr != null) lastActivitiesByPackage[toPackage] = classNameStr
+                    classNameStr
+                } else {
+                    lastActivitiesByPackage[toPackage]
+                }
+
+                val inferred = imeInference.onActivityChanged(toPackage, activityClass, uptimeMs)
+                if (inferred != null) {
+                    deliverInferredImeSubmitLocked(inferred)
+                }
+
+                val appSwitch = createCapturedAppSwitch(
+                    fromPackage = lastForegroundPackage,
+                    toPackage = toPackage,
+                    activityClass = activityClass,
+                    snapshot = snapshot,
+                    switchedAtUptimeMs = uptimeMs
+                )
+                activeCompiler.accept(appSwitch)
+                persistEventLocked(PersistedV2EventWrapper(type = "app_switch", appSwitch = appSwitch))
+                lastForegroundPackage = toPackage
+
+                Log.d(
+                    TAG,
+                    "Delivered AppSwitch: from=${appSwitch.fromPackageName} to=$toPackage activityClass=$activityClass at=$uptimeMs"
+                )
             }
-
-            val activityClass = if (looksLikeActivityClass(className)) {
-                val act = className?.toString()
-                if (act != null) lastActivitiesByPackage[toPackage] = act
-                act
-            } else {
-                lastActivitiesByPackage[toPackage]
-            }
-
-            val inferred = imeInference.onActivityChanged(toPackage, activityClass, uptimeMs)
-            if (inferred != null) {
-                deliverInferredImeSubmitLocked(inferred)
-            }
-
-            val appSwitch = createCapturedAppSwitch(
-                fromPackage = lastForegroundPackage,
-                toPackage = toPackage,
-                activityClass = activityClass,
-                snapshot = snapshot,
-                switchedAtUptimeMs = uptimeMs
-            )
-            activeCompiler.accept(appSwitch)
-            persistEventLocked(PersistedV2EventWrapper(type = "app_switch", appSwitch = appSwitch))
-            lastForegroundPackage = toPackage
-
-            Log.d(
-                TAG,
-                "Delivered AppSwitch: from=${appSwitch.fromPackageName} to=$toPackage activityClass=$activityClass at=$uptimeMs"
-            )
         }
     }
 
@@ -396,18 +465,21 @@ object V2CaptureBridge {
      * Inspects a text change event for field clearing (the "sent" pattern) or in-progress typing.
      */
     fun onTextChanged(event: RecorderEvent) {
-        synchronized(lock) {
-            if (!EngineV2.enabled || compiler == null) return@synchronized
-            val snapshot = EngineV2.snapshotSource?.snapshot() ?: return@synchronized
-            val window = (event.windowId?.let { snapshot.window(it) })
-                ?: snapshot.windows.firstOrNull { it.packageName == event.packageName && it.type != WindowType.ACCESSIBILITY_OVERLAY && it.type != WindowType.INPUT_METHOD }
-                ?: return@synchronized
-            val field = window.nodes.values.firstOrNull { candidate ->
-                candidate.editable && candidate.focused && event.sourceViewId != null &&
-                    candidate.resourceId == event.sourceViewId
-            } ?: return@synchronized
-            imeInference.onFieldTextChanged(field, event.enteredText, event.occurredAtMillis)
-                ?.let(::deliverInferredImeSubmitLocked)
+        captureExecutor.execute {
+            synchronized(lock) {
+                if (!EngineV2.enabled || compiler == null) return@synchronized
+                val snapshot = EngineV2.snapshotSource?.snapshot() ?: return@synchronized
+                val window = (event.windowId?.let { snapshot.window(it) })
+                    ?: snapshot.windows.firstOrNull { it.packageName == event.packageName && it.type != WindowType.ACCESSIBILITY_OVERLAY && it.type != WindowType.INPUT_METHOD }
+                    ?: return@synchronized
+                val field = window.nodes.values.firstOrNull { candidate ->
+                    candidate.editable && candidate.focused &&
+                        (event.sourceViewId == null || candidate.resourceId == event.sourceViewId) &&
+                        (event.sourceClassName == null || candidate.className == event.sourceClassName)
+                } ?: window.nodes.values.firstOrNull { it.editable && it.focused } ?: return@synchronized
+                imeInference.onFieldTextChanged(field, event.enteredText, event.occurredAtMillis, window)
+                    ?.let(::deliverInferredImeSubmitLocked)
+            }
         }
     }
 
@@ -430,24 +502,27 @@ object V2CaptureBridge {
      * Inspects a key event for global navigation actions (BACK, HOME, RECENTS).
      */
     fun onKeyEvent(event: KeyEvent): Boolean {
-        synchronized(lock) {
-            if (!EngineV2.enabled || compiler == null) return false
-            if (event.action != KeyEvent.ACTION_UP) return false
+        if (event.action != KeyEvent.ACTION_UP) return false
+        val keyCode = event.keyCode
+        val eventTime = event.eventTime
+        captureExecutor.execute {
+            synchronized(lock) {
+                if (!EngineV2.enabled || compiler == null) return@synchronized
+                imeInference.onKeyEvent(keyCode, eventTime)
+                val kind = mapKeyCodeToGlobalAction(keyCode) ?: return@synchronized
+                val snapshot = EngineV2.snapshotSource?.snapshot()
+                if (snapshot == null) {
+                    logDegraded("Snapshot source unavailable for global action $kind")
+                    return@synchronized
+                }
 
-            imeInference.onKeyEvent(event.keyCode, event.eventTime)
-            val kind = mapKeyCodeToGlobalAction(event.keyCode) ?: return false
-            val snapshot = EngineV2.snapshotSource?.snapshot()
-            if (snapshot == null) {
-                logDegraded("Snapshot source unavailable for global action $kind")
-                return false
+                val globalAction = createCapturedGlobalAction(kind, snapshot, eventTime)
+                compiler?.accept(globalAction)
+                persistEventLocked(PersistedV2EventWrapper(type = "global_action", globalAction = globalAction))
+                Log.d(TAG, "Delivered GlobalAction: kind=$kind at=$eventTime")
             }
-
-            val globalAction = createCapturedGlobalAction(kind, snapshot, event.eventTime)
-            compiler?.accept(globalAction)
-            persistEventLocked(PersistedV2EventWrapper(type = "global_action", globalAction = globalAction))
-            Log.d(TAG, "Delivered GlobalAction: kind=$kind at=${event.eventTime}")
-            return false
         }
+        return false
     }
 
     private fun persistEventLocked(wrapper: PersistedV2EventWrapper) {
@@ -477,11 +552,14 @@ object V2CaptureBridge {
         session.events.forEach { event ->
             event.appSwitch?.let { appSwitch ->
                 lastForegroundPackage = appSwitch.toPackageName
-                appSwitch.observedActivityClass?.takeIf(::looksLikeActivityClass)?.let {
+                appSwitch.observedActivityClass?.takeIf { isConfirmedActivity(appSwitch.toPackageName, it) }?.let {
                     lastActivitiesByPackage[appSwitch.toPackageName] = it
                 }
             }
-            event.interaction?.let { imeInference.onOverlayInteraction(it.downUptimeMs) }
+            event.interaction?.let {
+                val pt = it.points.firstOrNull()?.displayPx
+                imeInference.onOverlayInteraction(pt?.x, pt?.y, it.downUptimeMs)
+            }
             event.textCommit?.let { commit ->
                 imeInference.onTextCommit(commit, lastActivitiesByPackage[commit.windowSnapshot.packageName])
             }

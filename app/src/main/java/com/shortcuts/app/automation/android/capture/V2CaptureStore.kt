@@ -7,9 +7,12 @@ import com.shortcuts.app.automation.capture.CapturedGlobalAction
 import com.shortcuts.app.automation.capture.CapturedImeAction
 import com.shortcuts.app.automation.capture.CapturedInteraction
 import com.shortcuts.app.automation.capture.CapturedTextCommit
+import com.shortcuts.app.automation.core.fingerprint.DefaultScreenFingerprinter
 import com.shortcuts.app.automation.core.tree.WindowSetSnapshot
 import com.shortcuts.app.automation.core.tree.WindowSnapshot
 import com.shortcuts.app.automation.core.tree.NodeSnapshot
+import com.shortcuts.app.automation.model.ScreenFingerprint
+import com.shortcuts.app.automation.model.WindowType
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.charset.StandardCharsets
@@ -30,7 +33,9 @@ data class PersistedV2EventWrapper(
     /** Non-null only when the bridge had to infer an IME submit from tightly scoped evidence. */
     val inferredImeReason: String? = null,
     /** Snapshot missed the post-lift budget; compiler must prefer the DOWN hit provenance. */
-    val lateSnapshot: Boolean = false
+    val lateSnapshot: Boolean = false,
+    /** Preserved fingerprint of the pre-compaction window so restored sessions match live replay. */
+    val precomputedFingerprint: ScreenFingerprint? = null
 )
 
 /**
@@ -110,6 +115,8 @@ class FileV2CaptureStore(private val directory: File) : V2CaptureStore {
     private val eventFile get() = File(directory, EVENT_LOG_FILE_NAME)
     private val workflowFile get() = File(directory, LAST_WORKFLOW_FILE_NAME)
     private var loadFailure: String? = null
+    private var eventCount: Int = 0
+    private var eventBytes: Long = 0L
 
     init {
         if (!directory.exists()) {
@@ -122,24 +129,26 @@ class FileV2CaptureStore(private val directory: File) : V2CaptureStore {
             // The manifest is deliberately small; the actual event history is append-only.
             writeAtomically(sessionFile, gson.toJson(session.copy(events = emptyList())))
             if (eventFile.exists()) eventFile.delete()
+            eventCount = 0
+            eventBytes = 0L
         }.onFailure { Log.w("V2Capture", "Failed to persist active session", it) }
     }
 
     override fun appendActiveEvent(session: PersistedV2Session, event: PersistedV2EventWrapper): Boolean = runCatching {
         val line = gson.toJson(compact(event)) + '\n'
-        val previousCount = if (eventFile.exists()) eventFile.useLines { it.count() } else 0
-        val previousBytes = eventFile.length()
-        if (previousCount >= MAX_EVENTS || previousBytes + line.toByteArray(StandardCharsets.UTF_8).size > MAX_EVENT_LOG_BYTES) {
+        val lineBytes = line.toByteArray(StandardCharsets.UTF_8)
+        if (eventCount >= MAX_EVENTS || eventBytes + lineBytes.size > MAX_EVENT_LOG_BYTES) {
             Log.w("V2Capture", "Active capture recovery cache reached its bounded limit")
             false
         } else {
             // fsync every record: a process death may lose only an incomplete final line, which the
-            // loader intentionally discards. The manifest update is atomic for crash consistency.
+            // loader intentionally discards. The manifest is written once at session start.
             FileOutputStream(eventFile, true).use { output ->
-                output.write(line.toByteArray(StandardCharsets.UTF_8))
+                output.write(lineBytes)
                 output.fd.sync()
             }
-            writeAtomically(sessionFile, gson.toJson(session.copy(events = emptyList())))
+            eventCount++
+            eventBytes += lineBytes.size
             true
         }
     }.getOrElse {
@@ -157,9 +166,14 @@ class FileV2CaptureStore(private val directory: File) : V2CaptureStore {
             Log.w("V2Capture", loadFailure!!, it)
             return null
         }
-        if (!eventFile.exists()) return manifest
+        if (!eventFile.exists()) {
+            eventCount = 0
+            eventBytes = 0L
+            return manifest
+        }
         val events = mutableListOf<PersistedV2EventWrapper>()
         val lines = eventFile.readLines(Charsets.UTF_8)
+        eventBytes = eventFile.length()
         lines.forEachIndexed { index, line ->
             if (line.isBlank()) return@forEachIndexed
             val event = runCatching { gson.fromJson(line, PersistedV2EventWrapper::class.java) }.getOrNull()
@@ -175,6 +189,7 @@ class FileV2CaptureStore(private val directory: File) : V2CaptureStore {
             }
             events += event
         }
+        eventCount = events.size
         return manifest.copy(events = events)
     }
 
@@ -184,6 +199,8 @@ class FileV2CaptureStore(private val directory: File) : V2CaptureStore {
         runCatching {
             if (sessionFile.exists()) sessionFile.delete()
             if (eventFile.exists()) eventFile.delete()
+            eventCount = 0
+            eventBytes = 0L
         }
     }
 
@@ -229,29 +246,86 @@ class FileV2CaptureStore(private val directory: File) : V2CaptureStore {
         }
     }
 
+    private val fingerprinter = DefaultScreenFingerprinter()
+
+    private fun findPrimaryApplicationWindow(snapshot: WindowSetSnapshot): WindowSnapshot? {
+        val appWindows = snapshot.windows.filter { it.type == WindowType.APPLICATION }
+        return appWindows.firstOrNull { it.isFocused }
+            ?: appWindows.firstOrNull { it.isActive }
+            ?: appWindows.maxByOrNull { it.layer }
+            ?: snapshot.windows.maxByOrNull { it.layer }
+    }
+
+    private fun computePreFingerprint(event: PersistedV2EventWrapper): ScreenFingerprint? {
+        event.interaction?.let { interaction ->
+            val win = interaction.hitWindowId?.let { interaction.beforeSnapshot.window(it) }
+                ?: findPrimaryApplicationWindow(interaction.beforeSnapshot)
+            return win?.let { fingerprinter.fingerprint(it, null) }
+        }
+        event.textCommit?.let { commit ->
+            return fingerprinter.fingerprint(commit.windowSnapshot, null)
+        }
+        event.imeAction?.let { action ->
+            return fingerprinter.fingerprint(action.windowSnapshot, null)
+        }
+        event.appSwitch?.let { appSwitch ->
+            val win = findPrimaryApplicationWindow(appSwitch.snapshot)
+            return win?.let { fingerprinter.fingerprint(it, appSwitch.observedActivityClass) }
+        }
+        event.globalAction?.let { action ->
+            val win = findPrimaryApplicationWindow(action.snapshot)
+            return win?.let { fingerprinter.fingerprint(it, null) }
+        }
+        return null
+    }
+
     /**
      * Recovery needs selector context, not a complete copy of every screen. Keep the hit/field,
      * its ancestor chain, direct row siblings and its subtree; strip every unrelated node.
      */
-    private fun compact(event: PersistedV2EventWrapper): PersistedV2EventWrapper = event.copy(
-        interaction = event.interaction?.let { interaction ->
-            interaction.copy(beforeSnapshot = compact(interaction.beforeSnapshot, interaction.hitWindowId, interaction.hitNodeId))
-        },
-        textCommit = event.textCommit?.let { commit ->
-            commit.copy(windowSnapshot = compact(commit.windowSnapshot, commit.fieldNode.nodeId))
-        },
-        imeAction = event.imeAction?.let { action ->
-            action.copy(windowSnapshot = compact(action.windowSnapshot, action.fieldNode.nodeId))
-        },
-        appSwitch = event.appSwitch?.let { appSwitch ->
-            val primary = appSwitch.snapshot.windows.maxByOrNull { it.layer }
-            appSwitch.copy(snapshot = compact(appSwitch.snapshot, primary?.windowId, primary?.rootId))
-        },
-        globalAction = event.globalAction?.let { action ->
-            val primary = action.snapshot.windows.maxByOrNull { it.layer }
-            action.copy(snapshot = compact(action.snapshot, primary?.windowId, primary?.rootId))
-        }
-    )
+    private fun compact(event: PersistedV2EventWrapper): PersistedV2EventWrapper {
+        val fp = event.precomputedFingerprint ?: computePreFingerprint(event)
+        return event.copy(
+            interaction = event.interaction?.let { interaction ->
+                val interactionFp = interaction.precomputedFingerprint ?: fp
+                interaction.copy(
+                    beforeSnapshot = compact(interaction.beforeSnapshot, interaction.hitWindowId, interaction.hitNodeId),
+                    precomputedFingerprint = interactionFp
+                )
+            },
+            textCommit = event.textCommit?.let { commit ->
+                val commitFp = commit.precomputedFingerprint ?: fp
+                commit.copy(
+                    windowSnapshot = compact(commit.windowSnapshot, commit.fieldNode.nodeId),
+                    precomputedFingerprint = commitFp
+                )
+            },
+            imeAction = event.imeAction?.let { action ->
+                val imeFp = action.precomputedFingerprint ?: fp
+                action.copy(
+                    windowSnapshot = compact(action.windowSnapshot, action.fieldNode.nodeId),
+                    precomputedFingerprint = imeFp
+                )
+            },
+            appSwitch = event.appSwitch?.let { appSwitch ->
+                val appSwitchFp = appSwitch.precomputedFingerprint ?: fp
+                val primary = findPrimaryApplicationWindow(appSwitch.snapshot)
+                appSwitch.copy(
+                    snapshot = compact(appSwitch.snapshot, primary?.windowId, primary?.rootId),
+                    precomputedFingerprint = appSwitchFp
+                )
+            },
+            globalAction = event.globalAction?.let { action ->
+                val globalFp = action.precomputedFingerprint ?: fp
+                val primary = findPrimaryApplicationWindow(action.snapshot)
+                action.copy(
+                    snapshot = compact(action.snapshot, primary?.windowId, primary?.rootId),
+                    precomputedFingerprint = globalFp
+                )
+            },
+            precomputedFingerprint = fp
+        )
+    }
 
     private fun compact(snapshot: WindowSetSnapshot, windowId: Int?, nodeId: Int?): WindowSetSnapshot = snapshot.copy(
         windows = snapshot.windows.map { window ->
@@ -268,10 +342,18 @@ class FileV2CaptureStore(private val directory: File) : V2CaptureStore {
         }
         includeTree(target)
         var parent = window.parent(target)
+        var depthFromTarget = 1
         while (parent != null && keep.size < MAX_COMPACT_NODES) {
             keep += parent.nodeId
-            // Row/same-class sibling context is enough for selector extraction.
-            window.children(parent).filter { it.className == target.className }.forEach(::includeTree)
+            // Retain all siblings inside the target's row/container ancestor (depth <= 2),
+            // not only same-class siblings, so row context survives restore.
+            val siblings = window.children(parent)
+            if (depthFromTarget <= 2) {
+                siblings.forEach(::includeTree)
+            } else {
+                siblings.filter { it.className == target.className }.forEach(::includeTree)
+            }
+            depthFromTarget++
             parent = window.parent(parent)
         }
         return window.copy(nodes = window.nodes.filterKeys { it in keep })

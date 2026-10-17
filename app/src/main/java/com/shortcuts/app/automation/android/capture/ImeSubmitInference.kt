@@ -107,7 +107,9 @@ class ImeSubmitInference(
         val timestampMs: Long,
         val hasCommitted: Boolean,
         /** A changed non-empty value means the user is editing/deleting, not submitting. */
-        val sawIntermediateTextChange: Boolean = false
+        val sawIntermediateTextChange: Boolean = false,
+        /** Set when a tap is captured inside the field bounds (e.g. tapping the clear "X" button). */
+        val hasTapInsideField: Boolean = false
     )
 
     var candidate: Candidate? = null
@@ -197,15 +199,22 @@ class ImeSubmitInference(
     fun onFieldCleared(
         fieldNodeId: Int? = null,
         resourceId: String? = null,
-        uptimeMs: Long
+        uptimeMs: Long,
+        fieldBounds: com.shortcuts.app.automation.core.tree.IntRect? = null
     ): InferredImeSubmit? {
         val current = candidate ?: return null
         if (uptimeMs - current.timestampMs > maxDelayMs) {
             candidate = null
             return null
         }
-        val matchesField = fieldNodeId != null && fieldNodeId == current.fieldNode.nodeId
+        val matchesField = (!resourceId.isNullOrBlank() && resourceId == current.fieldNode.resourceId) ||
+            (fieldBounds != null && fieldBounds == current.fieldNode.boundsInScreen) ||
+            (fieldNodeId != null && fieldNodeId == current.fieldNode.nodeId)
         if (matchesField) {
+            if (current.text.length < 2 || current.hasTapInsideField) {
+                candidate = null
+                return null
+            }
             return emitInference(
                 current = current,
                 reason = "field_cleared",
@@ -222,14 +231,15 @@ class ImeSubmitInference(
     fun onFieldTextChanged(
         fieldNode: NodeSnapshot,
         newText: String,
-        uptimeMs: Long
+        uptimeMs: Long,
+        windowSnapshot: WindowSnapshot? = null
     ): InferredImeSubmit? {
         val current = candidate ?: return null
         if (uptimeMs - current.timestampMs > maxDelayMs) {
             candidate = null
             return null
         }
-        val matchesField = fieldNode.nodeId == current.fieldNode.nodeId
+        val matchesField = matchesField(current, fieldNode, windowSnapshot)
         if (!matchesField) return null
 
         if (!fieldNode.focused) {
@@ -241,6 +251,10 @@ class ImeSubmitInference(
             return null
         }
         if (newText.isEmpty() && current.text.isNotEmpty() && !current.sawIntermediateTextChange) {
+            if (current.text.length < 2 || current.hasTapInsideField) {
+                candidate = null
+                return null
+            }
             return emitInference(
                 current = current,
                 reason = "field_cleared",
@@ -251,12 +265,34 @@ class ImeSubmitInference(
         return null
     }
 
+    private fun matchesField(
+        current: Candidate,
+        fieldNode: NodeSnapshot,
+        windowSnapshot: WindowSnapshot?
+    ): Boolean {
+        if (windowSnapshot != null && windowSnapshot.packageName != current.windowSnapshot.packageName) {
+            return false
+        }
+        if (!fieldNode.editable) return false
+        val curRes = current.fieldNode.resourceId
+        val newRes = fieldNode.resourceId
+        if (!curRes.isNullOrBlank() && !newRes.isNullOrBlank()) {
+            return curRes == newRes
+        }
+        return current.fieldNode.boundsInScreen == fieldNode.boundsInScreen
+    }
+
     /**
-     * Intervening user interaction (e.g. tap) cancels any pending inference.
+     * Intervening user interaction (e.g. tap) cancels pending inference unless it lands
+     * inside the field's bounds (e.g. tapping a clear "X" icon).
      */
-    @Suppress("UNUSED_PARAMETER")
-    fun onOverlayInteraction(uptimeMs: Long? = null) {
-        candidate = null
+    fun onOverlayInteraction(x: Int? = null, y: Int? = null, uptimeMs: Long? = null) {
+        val current = candidate ?: return
+        if (x != null && y != null && current.fieldNode.boundsInScreen.contains(x, y)) {
+            candidate = current.copy(hasTapInsideField = true)
+        } else {
+            candidate = null
+        }
     }
 
     /**
@@ -317,7 +353,8 @@ class ImeSubmitInference(
             fieldNode = current.fieldNode,
             kind = kind,
             windowSnapshot = current.windowSnapshot,
-            actionAtUptimeMs = actionTime
+            actionAtUptimeMs = actionTime,
+            inferred = true
         )
         return InferredImeSubmit(
             action = action,

@@ -153,6 +153,16 @@ object AutomationRecorder {
         resetSilentTapSuggestionTracking(isRecording)
     }
 
+    internal fun setDisconnectMonitorForTest(monitor: AccessibilityServiceDisconnectMonitor?) {
+        disconnectMonitor = monitor
+    }
+
+    internal fun setPendingScrollFinalizerForTest(finalizer: Runnable?) {
+        pendingScrollFinalizer = finalizer
+    }
+
+    internal fun hasPendingScrollFinalizerForTest(): Boolean = pendingScrollFinalizer != null
+
     fun startRecording(context: Context) {
         configureStore(context)
         disconnectMonitor?.cancelPendingDisconnect()
@@ -184,7 +194,7 @@ object AutomationRecorder {
         TouchCaptureOverlay.hide()
         Log.d(TAG, "Stopping recording")
         sessionOwner.stop()
-        com.shortcuts.app.automation.android.capture.V2CaptureBridge.stop()
+        com.shortcuts.app.automation.android.capture.V2CaptureBridge.stop(compileWorkflow = reason != RecorderSessionStopReason.DISCARDED)
         RecordingHudOverlay.hide()
         silentTapSuggestionTracker.onRecordingStopped()
         RecorderSessionService.stop(context, reason)
@@ -212,8 +222,10 @@ object AutomationRecorder {
                     Log.w(TAG, "Accessibility service remained disabled; stopping recording")
                     TapMarkOverlay.disarm()
                     TouchCaptureOverlay.hide()
+                    cancelPendingScrollFinalizer()
                     cancelPendingTextFinalizer()
                     sessionOwner.stop()
+                    com.shortcuts.app.automation.android.capture.V2CaptureBridge.stop(compileWorkflow = false)
                     RecordingHudOverlay.hide()
                     silentTapSuggestionTracker.onRecordingStopped()
                     RecorderSessionNotifier.showAccessibilityDisconnected(appContext)
@@ -635,25 +647,25 @@ object AutomationRecorder {
      * a launcher the user never uses, so opening an app from the real home screen was never
      * recorded as an app-launch step. Requires the HOME `<queries>` entry in the manifest.
      */
-    private fun resolveLauncherPackageViaResolveActivity(context: Context): String? {
+    private fun resolveLauncherPackageViaResolveActivity(context: Context): String? = runCatching {
         val homeIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
-        val packageManager = context.applicationContext.packageManager
+        val packageManager = context.applicationContext?.packageManager ?: context.packageManager ?: return@runCatching null
         val default = runCatching {
             packageManager.resolveActivity(homeIntent, PackageManager.MATCH_DEFAULT_ONLY)
                 ?.activityInfo
                 ?.packageName
         }.getOrNull()
-        if (default != null && default != "android" && default != context.packageName) return default
+        if (default != null && default != "android" && default != context.packageName) return@runCatching default
 
         val candidates = try {
             packageManager.queryIntentActivities(homeIntent, PackageManager.MATCH_DEFAULT_ONLY)
         } catch (_: Exception) {
             emptyList()
         }
-        return candidates
+        candidates
             .mapNotNull { it.activityInfo?.packageName }
             .firstOrNull { it != "android" && it != context.packageName && it != "com.android.settings" }
-    }
+    }.getOrNull()
 
     /** The active IME is resolved dynamically because keyboard package names vary by device. */
     private fun resolveTransientPackages(context: Context): Set<String> {
@@ -697,8 +709,10 @@ object AutomationRecorder {
 
     @Synchronized
     private fun cancelPendingScrollFinalizer() {
-        val handler = scrollFinalizerHandler ?: return
-        pendingScrollFinalizer?.let(handler::removeCallbacks)
+        val handler = scrollFinalizerHandler
+        if (handler != null) {
+            pendingScrollFinalizer?.let(handler::removeCallbacks)
+        }
         pendingScrollFinalizer = null
     }
 
@@ -718,8 +732,10 @@ object AutomationRecorder {
 
     @Synchronized
     private fun cancelPendingTextFinalizer() {
-        val handler = textFinalizerHandler ?: return
-        pendingTextFinalizer?.let(handler::removeCallbacks)
+        val handler = textFinalizerHandler
+        if (handler != null) {
+            pendingTextFinalizer?.let(handler::removeCallbacks)
+        }
         pendingTextFinalizer = null
     }
 
