@@ -78,4 +78,15 @@ class WidgetLockedTapRouterTest {
         val json = gson.toJson(postAction)
         assertTrue(WidgetTapRouter.isIrreversible(json))
     }
+
+    @Test
+    fun `steps that need the screen require an unlocked phone, toggles and waits do not`() {
+        val appLaunch = """[{"actionType":"APP_INTENT","packageName":"com.android.settings"}]"""
+        val uiTap = """[{"actionType":"UI_AUTOMATION","uiActionType":"TAP","targetText":"Wi-Fi"}]"""
+        val toggleAndWait = """[{"actionType":"SYSTEM_TOGGLE","target":"FLASHLIGHT","state":"ON"},{"actionType":"WAIT","delayMillis":1000}]"""
+        assertTrue(WidgetTapRouter.requiresUnlockedScreen(appLaunch))
+        assertTrue(WidgetTapRouter.requiresUnlockedScreen(uiTap))
+        assertFalse(WidgetTapRouter.requiresUnlockedScreen(toggleAndWait))
+        assertTrue("an unreadable shortcut must never run behind the lock screen", WidgetTapRouter.requiresUnlockedScreen("{not json"))
+    }
 }

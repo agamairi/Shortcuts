@@ -35,6 +35,22 @@ object WidgetTapRouter {
     fun isIrreversible(actionsJson: String): Boolean {
         return ShortcutRunSafety.confirmationEffects(actionsJson).isNotEmpty()
     }
+
+    /**
+     * Steps that open an app or act on another app's screen cannot work behind the lock screen
+     * (the app would open under the keyguard and accessibility cannot reach it), so they need
+     * the phone unlocked first. Toggles, web requests and waits can run while locked.
+     */
+    fun requiresUnlockedScreen(actionsJson: String): Boolean {
+        val document = com.shortcuts.app.data.ShortcutSteps.decode(actionsJson)
+        if (document is com.shortcuts.app.data.ShortcutDocument.Unreadable) return true
+        return document.actions.any { action ->
+            action.actionType == com.shortcuts.app.data.ActionType.UI_AUTOMATION ||
+                action.actionType == com.shortcuts.app.data.ActionType.APP_INTENT ||
+                action.actionType == com.shortcuts.app.data.ActionType.SEND_MESSAGE ||
+                action.actionType == com.shortcuts.app.data.ActionType.DIAL_NUMBER
+        }
+    }
 }
 
 class RunAutomationCallback : ActionCallback {
@@ -85,8 +101,9 @@ class RunAutomationCallback : ActionCallback {
 
                 val keyguardManager = context.getSystemService(Context.KEYGUARD_SERVICE) as? KeyguardManager
                 val isLocked = keyguardManager?.isKeyguardLocked == true
-                val isIrreversible = WidgetTapRouter.isIrreversible(automation.actionsJson)
-                val route = WidgetTapRouter.decideRoute(isLocked = isLocked, isIrreversible = isIrreversible)
+                val needsUnlock = WidgetTapRouter.isIrreversible(automation.actionsJson) ||
+                    WidgetTapRouter.requiresUnlockedScreen(automation.actionsJson)
+                val route = WidgetTapRouter.decideRoute(isLocked = isLocked, isIrreversible = needsUnlock)
 
                 if (route == WidgetTapRoute.UNLOCK_TRAMPOLINE) {
                     val trampolineIntent = Intent(context, WidgetUnlockTrampolineActivity::class.java).apply {

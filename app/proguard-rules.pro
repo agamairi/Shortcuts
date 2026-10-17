@@ -17,6 +17,9 @@
 -keep class com.shortcuts.app.automation.core.tree.** { *; }
 -keep class com.shortcuts.app.automation.capture.** { *; }
 -keep class com.shortcuts.app.automation.android.capture.** { *; }
+-keep class com.shortcuts.app.automation.diagnostics.** { *; }
+-keep class com.shortcuts.app.automation.replay.ReplayFailure { *; }
+-keep class com.shortcuts.app.service.PersistedRecorderSession { *; }
 -keepclassmembers enum com.shortcuts.app.** { *; }
 
 # MediaPipe's task runtime loads native-backed classes by name.

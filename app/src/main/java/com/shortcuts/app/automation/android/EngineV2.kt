@@ -1,6 +1,5 @@
 package com.shortcuts.app.automation.android
 
-import com.shortcuts.app.BuildConfig
 import com.shortcuts.app.automation.core.tree.WindowSetSnapshot
 
 /** Produces an immutable snapshot of every interactive window, or null when unavailable. */
@@ -17,6 +16,7 @@ object EngineV2 {
     @Volatile
     var snapshotSource: WindowSnapshotSource? = null
 
+    /** Engine v2 is the product: new recordings are saved as v2 in every build type. */
     @Volatile
-    var enabled: Boolean = BuildConfig.DEBUG
+    var enabled: Boolean = true
 }
