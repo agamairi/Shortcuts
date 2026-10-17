@@ -433,12 +433,13 @@ class V2CaptureBridgeTest {
 
     @Test
     fun testChromeStyleLiveTextSurvivesReplacementAndInfersSubmitByEffect() {
-        val typedWindow = window("com.example.app") {
+        val chromePackage = "com.android.chrome"
+        val typedWindow = window(chromePackage) {
             node("android.widget.FrameLayout", id = 1) {
                 node(
                     className = "android.widget.EditText",
                     id = 10,
-                    resourceId = "com.example.app:id/url_bar",
+                    resourceId = "com.android.chrome:id/url_bar",
                     text = "repeatkit android",
                     hintText = "Search or type URL",
                     bounds = r(20, 40, 1000, 160),
@@ -459,12 +460,12 @@ class V2CaptureBridgeTest {
             nodes = emptyMap()
         )
         val typed = snapshot(typedWindow, 1_000L).copy(windows = listOf(keyboard, typedWindow))
-        val resultsWindow = window("com.example.app") {
+        val resultsWindow = window(chromePackage) {
             node("android.widget.FrameLayout", id = 1) {
                 node(
                     className = "android.widget.EditText",
                     id = 20,
-                    resourceId = "com.example.app:id/url_bar",
+                    resourceId = "com.android.chrome:id/url_bar",
                     text = "https://www.google.com/search?q=repeatkit",
                     hintText = "Search or type URL",
                     bounds = r(20, 40, 1000, 160),
@@ -475,7 +476,7 @@ class V2CaptureBridgeTest {
                 node(
                     className = "android.webkit.WebView",
                     id = 21,
-                    resourceId = "com.example.app:id/results",
+                    resourceId = "com.android.chrome:id/results",
                     bounds = r(0, 180, 1080, 2400)
                 )
             }
@@ -497,10 +498,10 @@ class V2CaptureBridgeTest {
 
         val textEvent = RecorderEvent(
             eventType = RecorderEventType.TEXT_CHANGE,
-            packageName = "com.example.app",
+            packageName = chromePackage,
             sourceText = "repeatkit android",
             sourceContentDescription = null,
-            sourceViewId = "com.example.app:id/url_bar",
+            sourceViewId = "com.android.chrome:id/url_bar",
             enteredText = "repeatkit android",
             sourceClassName = "android.widget.EditText",
             sourceIsEditable = true,
@@ -522,7 +523,7 @@ class V2CaptureBridgeTest {
         V2CaptureBridge.awaitCaptureIdleForTest()
 
         assertEquals("repeatkit android", commits.single().finalText)
-        assertEquals("com.example.app", commits.single().windowSnapshot.packageName)
+        assertEquals(chromePackage, commits.single().windowSnapshot.packageName)
         assertEquals(1, imeActions.size)
         assertTrue(imeActions.single().inferred)
         assertEquals(ImeActionKind.SEARCH, imeActions.single().kind)

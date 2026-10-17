@@ -281,11 +281,12 @@ object AutomationRecorder {
         // Chrome's omnibox) do not, but do send focus/scroll/content callbacks while their live
         // input node changes. Only query the active tree when an editable field is already
         // tracked; the common system-wide no-focus path does no extra node-tree work.
-        if (eventType != RecorderEventType.TEXT_CHANGE &&
+        val focusedTextRefresh = if (eventType != RecorderEventType.TEXT_CHANGE) {
             refreshTrackedFocusedText(context, event.eventTime)
-        ) {
-            scheduleTextFinalizer()
+        } else {
+            FocusedTextSnapshotResult.NOT_TRACKED
         }
+        handleFocusedTextRefresh(focusedTextRefresh, event.eventTime, checkScreenEffect = true)
 
         if (eventType == RecorderEventType.SELECTION_CHANGE) {
             // Cursor movement and focus initialization are not edits. In particular, Gboard can
@@ -540,11 +541,18 @@ object AutomationRecorder {
         ) {
             return false
         }
-        com.shortcuts.app.automation.android.capture.V2CaptureBridge.onKeyEvent(event)
         if (!isEnterKey(event.keyCode)) {
+            // `adb shell input text` and physical keyboards can update Chrome's focused omnibox
+            // through key events without TYPE_VIEW_TEXT_CHANGED. The tracked-field gate keeps
+            // ordinary global key traffic from causing any accessibility-tree work.
+            val refresh = refreshTrackedFocusedText(context, event.eventTime)
+            handleFocusedTextRefresh(refresh, event.eventTime, checkScreenEffect = false)
+            com.shortcuts.app.automation.android.capture.V2CaptureBridge.onKeyEvent(event)
             return false
         }
         cancelPendingTextFinalizer()
+        sessionOwner.onTrackedEditableFocusLost()
+        com.shortcuts.app.automation.android.capture.V2CaptureBridge.onKeyEvent(event)
         sessionOwner.processEvent(
             emptyRecorderEvent(
                 RecorderEventType.PRESS_ENTER,
@@ -563,6 +571,29 @@ object AutomationRecorder {
         return false
     }
 
+    private fun handleFocusedTextRefresh(
+        result: FocusedTextSnapshotResult,
+        occurredAtMillis: Long,
+        checkScreenEffect: Boolean
+    ) {
+        when (result) {
+            FocusedTextSnapshotResult.UPDATED -> scheduleTextFinalizer()
+            FocusedTextSnapshotResult.FOCUS_LOST -> {
+                // Queue the commit before the screen-effect check. This lets Engine v2 create its
+                // IME candidate from the typed value before Chrome replaces it with the result URL.
+                cancelPendingTextFinalizer()
+                if (checkScreenEffect) {
+                    com.shortcuts.app.automation.android.capture.V2CaptureBridge.onScreenChanged(
+                        occurredAtMillis
+                    )
+                }
+                updateRecordingHud()
+            }
+            FocusedTextSnapshotResult.NOT_TRACKED,
+            FocusedTextSnapshotResult.UNCHANGED -> Unit
+        }
+    }
+
     fun processEvent(
         event: RecorderEvent,
         myPackageName: String,
@@ -575,7 +606,12 @@ object AutomationRecorder {
     /** The overlay uses this rather than appending an Action so owner-level app/text rules remain intact. */
     fun recordCapturedGesture(event: RecorderEvent) {
         val service = AutomationAccessibilityService.instance ?: return
-        sessionOwner.processEvent(event, service.packageName, resolveLauncherPackage(service), resolveTransientPackages(service))
+        sessionOwner.processCapturedGesture(
+            event,
+            service.packageName,
+            resolveLauncherPackage(service),
+            resolveTransientPackages(service)
+        )
         updateRecordingHud()
         when (event.eventType) {
             RecorderEventType.CLICK, RecorderEventType.LONG_PRESS -> {
@@ -809,14 +845,22 @@ object AutomationRecorder {
      * Reads the current input focus using the same root.findFocus(FOCUS_INPUT) pattern used by
      * replay. The lookup is reached only after [trackedFocusedEditableField] returned non-null.
      */
-    private fun refreshTrackedFocusedText(context: Context, occurredAtMillis: Long): Boolean {
-        val tracked = sessionOwner.trackedFocusedEditableField() ?: return false
+    internal fun refreshTrackedFocusedText(
+        context: Context,
+        occurredAtMillis: Long
+    ): FocusedTextSnapshotResult {
+        val tracked = sessionOwner.trackedFocusedEditableField()
+            ?: return FocusedTextSnapshotResult.NOT_TRACKED
         val service = context as? AutomationAccessibilityService
             ?: AutomationAccessibilityService.instance
-            ?: return false
+            ?: return FocusedTextSnapshotResult.UNCHANGED
+        val windows = runCatching { service.windows.orEmpty() }.getOrDefault(emptyList())
+        val keyboardVisible = windows.any {
+            it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_INPUT_METHOD
+        }
         val roots = runCatching {
             buildList {
-                service.windows.orEmpty()
+                windows
                     .filter { it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION }
                     .sortedByDescending { it.id == tracked.windowId }
                     .forEach { window ->
@@ -829,13 +873,24 @@ object AutomationRecorder {
                     }
             }
         }.getOrDefault(emptyList()).ifEmpty {
-            listOfNotNull(service.getRootNode())
+            listOfNotNull(service.getRootNode()).filter { root ->
+                val matchesTrackedPackage = runCatching {
+                    root.packageName?.toString() == tracked.packageName
+                }.getOrDefault(false)
+                if (!matchesTrackedPackage) root.recycle()
+                matchesTrackedPackage
+            }
         }
+        var inspectedApplicationRoot = false
         for ((index, root) in roots.withIndex()) {
             var focusedNode: AccessibilityNodeInfo? = null
             try {
-                focusedNode = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: continue
-                if (!isEditableNode(focusedNode) || isSensitiveTextNode(focusedNode)) continue
+                val inputFocus = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)
+                inspectedApplicationRoot = true
+                focusedNode = inputFocus ?: continue
+                if (!focusedNode.isFocused || !isEditableNode(focusedNode) || isSensitiveTextNode(focusedNode)) {
+                    continue
+                }
 
                 val liveText = readableEditableText(focusedNode)
                 val liveEvent = RecorderEvent(
@@ -851,11 +906,12 @@ object AutomationRecorder {
                     occurredAtMillis = occurredAtMillis,
                     windowId = focusedNode.windowId.takeIf { it >= 0 } ?: tracked.windowId
                 )
-                if (sessionOwner.processLiveFocusedTextSnapshot(liveEvent)) {
+                val result = sessionOwner.processLiveFocusedTextSnapshot(liveEvent, keyboardVisible)
+                if (result == FocusedTextSnapshotResult.UPDATED) {
                     com.shortcuts.app.automation.android.capture.V2CaptureBridge.onTextChanged(liveEvent)
-                    roots.drop(index + 1).forEach { it.recycle() }
-                    return true
                 }
+                roots.drop(index + 1).forEach { it.recycle() }
+                return result
             } catch (_: Exception) {
                 // A stale app window must not prevent trying the next application window.
             } finally {
@@ -863,7 +919,11 @@ object AutomationRecorder {
                 root.recycle()
             }
         }
-        return false
+        return if (inspectedApplicationRoot) {
+            sessionOwner.onTrackedEditableFocusLost()
+        } else {
+            FocusedTextSnapshotResult.UNCHANGED
+        }
     }
 
     private fun isEditableNode(node: AccessibilityNodeInfo): Boolean {
