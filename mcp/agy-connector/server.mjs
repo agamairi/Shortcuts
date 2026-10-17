@@ -27,25 +27,21 @@ mkdirSync(JOBS_DIR, { recursive: true });
 const jobs = new Map(); // job_id -> { kind, model, cwd, status, code, outPath, child, created }
 
 // Exact model ids accepted by `agy --model` — must match `agy models` output
-// verbatim on this install (agy 1.1.10). The CLI takes the id as-is, not a
+// verbatim on this install (re-verified 2026-10-16). The CLI takes the id as-is, not a
 // display label like older agy versions used.
 const MODELS = [
+  "gemini-4-argon-high",
+  "gemini-4-argon-medium",
+  "gemini-4-argon-low",
   "gemini-3.8-flash-high",
   "gemini-3.8-flash-medium",
   "gemini-3.8-flash-low",
-  "gemini-3.7-flash-high",
-  "gemini-3.7-flash-medium",
-  "gemini-3.7-flash-low",
-  "gemini-3.6-flash-high",
-  "gemini-3.6-flash-medium",
-  "gemini-3.6-flash-low",
-  "gemini-3.5-flash-high",
-  "gemini-3.5-flash-medium",
-  "gemini-3.5-flash-low",
-  "gemini-3.1-pro-high",
-  "gemini-3.1-pro-low",
-  "claude-sonnet-4-6",
-  "claude-opus-4-6-thinking",
+  "claude-opus-5-5-high",
+  "claude-opus-5-5-medium",
+  "claude-opus-5-5-low",
+  "claude-sonnet-5-5-high",
+  "claude-sonnet-5-5-medium",
+  "claude-sonnet-5-5-low",
   "gpt-oss-120b-medium"
 ];
 // Bounded-wait cap. MUST stay under the client's MCP request timeout (often ~60s)
@@ -73,7 +69,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           model: {
             type: "string",
             enum: MODELS,
-            description: "Exact model id from `agy models`. Default routing: prefer Gemini — `gemini-3.1-pro-high` for reasoning/refactors/architecture, `gemini-3.8-flash-high`/`-medium` for fast, well-specified mechanical edits. `claude-opus-4-6-thinking` and `claude-sonnet-4-6` are available too; use them while their quota lasts, then fall back to `gemini-3.1-pro-high`. `gpt-oss-120b-medium` is a general-purpose alternative."
+            description: "Exact model id from `agy models`. Default routing: `gemini-4-argon-high` for research, root-causing and architecture; `gemini-3.8-flash-high`/`-medium` as the worker for well-specified code writing. `claude-opus-5-5-*` and `claude-sonnet-5-5-*` are available too, at the orchestrator's discretion. `gpt-oss-120b-medium` is a general-purpose alternative."
           },
           success_criteria: { type: "string", description: "Explicit conditions agy must verify before finishing (e.g. './gradlew testDebugUnitTest passes')." },
           context_files: { type: "array", items: { type: "string" }, description: "Absolute file paths to point agy at the relevant code." },
@@ -90,7 +86,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         type: "object",
         properties: {
           question: { type: "string", description: "The research question or bug description." },
-          model: { type: "string", enum: MODELS, description: "Exact model id from `agy models`. A flash tier is usually sufficient for research; reach for a pro/thinking tier on deep or ambiguous investigations." },
+          model: { type: "string", enum: MODELS, description: "Exact model id from `agy models`. Use `gemini-4-argon-high` for deep or ambiguous investigations; a flash tier for quick lookups." },
           cwd: { type: "string", description: "Absolute working directory to run agy in. Defaults to the server's current directory." }
         },
         required: ["question", "model"]
