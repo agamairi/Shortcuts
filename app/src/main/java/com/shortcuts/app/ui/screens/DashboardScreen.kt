@@ -63,7 +63,7 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import com.shortcuts.app.data.ActionConverter
+import com.shortcuts.app.data.ShortcutSteps
 import com.shortcuts.app.data.AppDatabase
 import com.shortcuts.app.data.Automation
 import com.shortcuts.app.service.ShortcutRunRequest
@@ -90,8 +90,7 @@ import kotlinx.coroutines.withContext
 
 /** Extract actions from a saved shortcut's JSON and check for irreversible/outward-facing effects. */
 internal fun confirmationEffectsForAutomation(automation: Automation): List<String> {
-    val actions = runCatching { ActionConverter().toActionList(automation.actionsJson) }.getOrDefault(emptyList())
-    return ShortcutRunSafety.confirmationEffects(actions)
+    return ShortcutRunSafety.confirmationEffects(automation.actionsJson)
 }
 
 private enum class DashboardFilter(val label: String) {
@@ -675,7 +674,7 @@ private fun DashboardBottomBar(onDescribe: () -> Unit, onCreate: () -> Unit, onR
 }
 
 private fun pluralSteps(shortcut: Automation): String {
-    val count = runCatching { ActionConverter().toActionList(shortcut.actionsJson).size }.getOrDefault(0)
+    val count = ShortcutSteps.stepCount(shortcut.actionsJson)
     return if (count == 1) "1 step" else "$count steps"
 }
 

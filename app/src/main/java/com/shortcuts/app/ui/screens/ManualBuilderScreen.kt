@@ -53,6 +53,8 @@ import com.shortcuts.app.data.Action
 import com.shortcuts.app.data.ActionConverter
 import com.shortcuts.app.data.ActionType
 import com.shortcuts.app.data.Automation
+import com.shortcuts.app.data.ShortcutDocument
+import com.shortcuts.app.data.ShortcutSteps
 import com.shortcuts.app.util.AccessibilityStatusChecker
 import com.shortcuts.app.util.ActionDescriber
 import com.shortcuts.app.viewmodel.AutomationViewModel
@@ -95,7 +97,8 @@ data class InstalledAppInfo(
 internal data class PendingEditorRun(
     val shortcutName: String,
     val actions: List<Action>,
-    val effects: List<String>
+    val effects: List<String>,
+    val actionsJson: String? = null
 )
 
 /** The persisted builder state used to decide whether leaving would lose edits. */
@@ -118,13 +121,15 @@ internal suspend fun runEditorDraftThroughGateway(
     context: Context,
     shortcutName: String,
     actions: List<Action>,
-    externalEffectsConfirmed: Boolean = false
+    externalEffectsConfirmed: Boolean = false,
+    actionsJson: String? = null
 ) = withContext(Dispatchers.IO) {
     ShortcutRunner(context.applicationContext).runEditor(
         EditorShortcutRunRequest(
             shortcutName = shortcutName,
             actions = actions,
-            externalEffectsConfirmed = externalEffectsConfirmed
+            externalEffectsConfirmed = externalEffectsConfirmed,
+            actionsJson = actionsJson ?: ""
         )
     )
 }
@@ -240,10 +245,21 @@ object ManualBuilderUtils {
     }
 
     /** Pure persistence shape used by the manual sentence builder and its JVM tests. */
-    fun buildManualAutomation(name: String, actions: List<Action>, colorKey: String, iconKey: String = "BOLT"): Automation {
+    fun buildManualAutomation(
+        name: String,
+        actions: List<Action>,
+        colorKey: String,
+        iconKey: String = "BOLT",
+        document: ShortcutDocument? = null
+    ): Automation {
+        val json = if (document != null) {
+            ShortcutSteps.encode(document, actions)
+        } else {
+            ActionConverter().fromActionList(actions)
+        }
         return Automation(
             name = name.trim(),
-            actionsJson = ActionConverter().fromActionList(actions),
+            actionsJson = json,
             triggerType = "MANUAL",
             colorKey = colorKey,
             iconKey = iconKey
@@ -342,6 +358,7 @@ fun ManualBuilderScreen(
     var selectedIcon by remember { mutableStateOf(WidgetIconKey.BOLT) }
     var preflightReport by remember { mutableStateOf<ShortcutPreflightReport?>(null) }
     var pendingEditorRun by remember { mutableStateOf<PendingEditorRun?>(null) }
+    var loadedDocument by remember { mutableStateOf<ShortcutDocument?>(null) }
     var initialDraftSnapshot by remember {
         mutableStateOf(
             ManualBuilderDraftSnapshot(
@@ -368,7 +385,10 @@ fun ManualBuilderScreen(
     // Edit mode: replace the draft with the saved shortcut's own. Keyed on the id so
     // re-entering the builder for a different shortcut reloads rather than showing the last one.
     LaunchedEffect(editingAutomationId) {
-        if (editingAutomationId == NEW_SHORTCUT_ID || viewModel == null) return@LaunchedEffect
+        if (editingAutomationId == NEW_SHORTCUT_ID || viewModel == null) {
+            loadedDocument = ShortcutDocument.Legacy(emptyList())
+            return@LaunchedEffect
+        }
         val existing = viewModel.getAutomationById(editingAutomationId) ?: return@LaunchedEffect
         shortcutName = existing.name
         existing.colorKey
@@ -377,10 +397,17 @@ fun ManualBuilderScreen(
         existing.iconKey
             ?.let { key -> WidgetIconKey.entries.firstOrNull { it.name == key } }
             ?.let { selectedIcon = it }
-        val saved = runCatching { ActionConverter().toActionList(existing.actionsJson) }
-            .getOrDefault(emptyList())
-        actions.clear()
-        actions.addAll(saved)
+        val doc = ShortcutSteps.decode(existing.actionsJson)
+        loadedDocument = doc
+        if (doc is ShortcutDocument.Unreadable) {
+            actions.clear()
+            coroutineScope.launch {
+                snackbarHostState.showSnackbar("This shortcut could not be read: ${doc.reason}")
+            }
+        } else {
+            actions.clear()
+            actions.addAll(doc.actions)
+        }
         initialDraftSnapshot = ManualBuilderDraftSnapshot(
             name = shortcutName,
             color = selectedColor,
@@ -461,7 +488,7 @@ fun ManualBuilderScreen(
                     }
                 }
                 Box(Modifier.size(44.dp).clip(androidx.compose.foundation.shape.CircleShape).background(palette.tileContent).clickable {
-                    saveManualAutomation(context, shortcutName, actions.toList(), selectedColor, selectedIcon.name, viewModel, onSaveAutomation, onNavigateBack, snackbarHostState, coroutineScope, editingAutomationId) { isSaving = it }
+                    saveManualAutomation(context, shortcutName, actions.toList(), selectedColor, selectedIcon.name, viewModel, onSaveAutomation, onNavigateBack, snackbarHostState, coroutineScope, editingAutomationId, loadedDocument) { isSaving = it }
                 }, contentAlignment = Alignment.Center) {
                     if (isSaving) CircularProgressIndicator(Modifier.size(20.dp), color = selectedColor) else Icon(Icons.Filled.Check, "Save shortcut", tint = selectedColor, modifier = Modifier.size(20.dp))
                 }
@@ -583,9 +610,15 @@ fun ManualBuilderScreen(
                         .border(1.5.dp, palette.tileContent.copy(alpha = .6f), androidx.compose.foundation.shape.RoundedCornerShape(26.dp))
                         .clickable {
                             val snapshot = actions.toList()
+                            val doc = loadedDocument
                             coroutineScope.launch {
                                 preflightReport = withContext(Dispatchers.IO) {
-                                    ShortcutRunner(context.applicationContext).preflight(snapshot)
+                                    if (doc is ShortcutDocument.V2) {
+                                        val v2Json = ShortcutSteps.encode(doc, snapshot)
+                                        ShortcutRunner(context.applicationContext).preflight(v2Json)
+                                    } else {
+                                        ShortcutRunner(context.applicationContext).preflight(snapshot)
+                                    }
                                 }
                             }
                         },
@@ -601,21 +634,33 @@ fun ManualBuilderScreen(
                         .clickable {
                             val snapshot = actions.toList()
                             val name = shortcutName
+                            val doc = loadedDocument
                             coroutineScope.launch {
+                                val v2Json = if (doc is ShortcutDocument.V2) {
+                                    ShortcutSteps.encode(doc, snapshot)
+                                } else null
                                 val report = withContext(Dispatchers.IO) {
-                                    ShortcutRunner(context.applicationContext).preflight(snapshot)
+                                    if (v2Json != null) {
+                                        ShortcutRunner(context.applicationContext).preflight(v2Json)
+                                    } else {
+                                        ShortcutRunner(context.applicationContext).preflight(snapshot)
+                                    }
                                 }
                                 if (!report.canRun) {
                                     preflightReport = report
                                     return@launch
                                 }
-                                val effects = ShortcutRunSafety.confirmationEffects(snapshot)
+                                val effects = if (v2Json != null) {
+                                    ShortcutRunSafety.confirmationEffects(v2Json)
+                                } else {
+                                    ShortcutRunSafety.confirmationEffects(snapshot)
+                                }
                                 if (effects.isEmpty()) {
                                     snackbarHostState.showSnackbar(
-                                        runEditorDraftThroughGateway(context, name, snapshot).userMessage()
+                                        runEditorDraftThroughGateway(context, name, snapshot, actionsJson = v2Json).userMessage()
                                     )
                                 } else {
-                                    pendingEditorRun = PendingEditorRun(name, snapshot, effects)
+                                    pendingEditorRun = PendingEditorRun(name, snapshot, effects, actionsJson = v2Json)
                                 }
                             }
                         },
@@ -650,7 +695,8 @@ fun ManualBuilderScreen(
                             context,
                             pending.shortcutName,
                             pending.actions,
-                            externalEffectsConfirmed = true
+                            externalEffectsConfirmed = true,
+                            actionsJson = pending.actionsJson
                         ).userMessage()
                     )
                 }
@@ -996,10 +1042,15 @@ private fun saveManualAutomation(
     snackbar: SnackbarHostState,
     scope: kotlinx.coroutines.CoroutineScope,
     editingAutomationId: Int = NEW_SHORTCUT_ID,
+    loadedDocument: ShortcutDocument? = null,
     setSaving: (Boolean) -> Unit
 ) {
     if (name.isBlank() || actions.isEmpty()) {
         scope.launch { snackbar.showSnackbar(if (name.isBlank()) "Shortcut name cannot be empty" else "Please add at least one step") }
+        return
+    }
+    if (loadedDocument is ShortcutDocument.Unreadable) {
+        scope.launch { snackbar.showSnackbar("Cannot save shortcut: existing workflow data could not be read.") }
         return
     }
     setSaving(true)
@@ -1012,7 +1063,7 @@ private fun saveManualAutomation(
                 return@launch
             }
             val colorKey = com.shortcuts.app.widget.WidgetColorKey.entries.firstOrNull { it.composeColor == color }?.name ?: "TEAL"
-            val built = ManualBuilderUtils.buildManualAutomation(name, safe.filterNotNull(), colorKey, iconKey)
+            val built = ManualBuilderUtils.buildManualAutomation(name, safe.filterNotNull(), colorKey, iconKey, document = loadedDocument)
             // Carrying the id over turns the Room insert into a replace, so editing updates the existing
             // shortcut — and every widget already bound to that id — instead of creating a duplicate.
             val isEdit = editingAutomationId != NEW_SHORTCUT_ID

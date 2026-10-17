@@ -173,8 +173,11 @@ fun interface AcceptedShortcutRunStarter {
 }
 
 /** Starts an admitted, unsaved editor draft in the same foreground service as saved shortcuts. */
-fun interface AcceptedEditorRunStarter {
+interface AcceptedEditorRunStarter {
     fun start(shortcutName: String, actions: List<Action>, runId: String)
+    fun start(shortcutName: String, actions: List<Action>, actionsJson: String, runId: String) {
+        start(shortcutName, actions, runId)
+    }
 }
 
 data class EditorShortcutRunRequest(
@@ -720,13 +723,20 @@ class ShortcutRunner(
         acceptedRunStarter = AcceptedShortcutRunStarter { shortcutId, runId ->
             AutomationExecutionService.startAccepted(context.applicationContext, shortcutId, runId)
         },
-        acceptedEditorRunStarter = AcceptedEditorRunStarter { shortcutName, actions, runId ->
-            AutomationExecutionService.startAcceptedEditorDraft(
-                context = context.applicationContext,
-                shortcutName = shortcutName,
-                actions = actions,
-                runId = runId
-            )
+        acceptedEditorRunStarter = object : AcceptedEditorRunStarter {
+            override fun start(shortcutName: String, actions: List<Action>, runId: String) {
+                start(shortcutName, actions, "", runId)
+            }
+
+            override fun start(shortcutName: String, actions: List<Action>, actionsJson: String, runId: String) {
+                AutomationExecutionService.startAcceptedEditorDraft(
+                    context = context.applicationContext,
+                    shortcutName = shortcutName,
+                    actions = actions,
+                    runId = runId,
+                    actionsJson = actionsJson.takeIf { it.isNotBlank() }
+                )
+            }
         },
         preflightEnvironment = AndroidShortcutPreflightEnvironment(context.applicationContext)
     )
@@ -832,7 +842,7 @@ class ShortcutRunner(
             ?: return ShortcutRunOutcome.EditorRejectedAlreadyRunning(request)
 
         return try {
-            starter.start(request.shortcutName.trim(), request.actions, lease.runId)
+            starter.start(request.shortcutName.trim(), request.actions, request.actionsJson, lease.runId)
             ShortcutRunOutcome.EditorStarted(request, lease.runId)
         } catch (_: Exception) {
             admission.release(lease.runId)

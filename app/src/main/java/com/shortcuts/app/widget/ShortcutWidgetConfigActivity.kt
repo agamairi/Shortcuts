@@ -507,7 +507,7 @@ private const val MAX_SHORTCUTS_PER_WIDGET = 6
 private fun Automation.tileColor(): androidx.compose.ui.graphics.Color = resolveWidgetColor(colorKey)
 
 private fun Automation.stepLabel(): String {
-    val count = runCatching { com.shortcuts.app.data.ActionConverter().toActionList(actionsJson).size }.getOrDefault(0)
+    val count = com.shortcuts.app.data.ShortcutSteps.stepCount(actionsJson)
     return if (count == 1) "1 step" else "$count steps"
 }
 

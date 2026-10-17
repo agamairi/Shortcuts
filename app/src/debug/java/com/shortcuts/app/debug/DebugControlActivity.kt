@@ -10,6 +10,7 @@ import com.shortcuts.app.data.Action
 import com.shortcuts.app.data.ActionConverter
 import com.shortcuts.app.data.AppDatabase
 import com.shortcuts.app.data.Automation
+import com.shortcuts.app.data.ShortcutSteps
 import com.shortcuts.app.repository.AutomationRepository
 import com.shortcuts.app.service.AutomationAccessibilityService
 import com.shortcuts.app.service.AutomationRecorder
@@ -145,7 +146,7 @@ class DebugControlActivity : Activity() {
             AutomationListEntry(
                 id = automation.id,
                 name = automation.name,
-                stepCount = ActionConverter().toActionList(automation.actionsJson).size,
+                stepCount = ShortcutSteps.stepCount(automation.actionsJson),
                 isActive = automation.isActive
             )
         }
@@ -171,7 +172,7 @@ class DebugControlActivity : Activity() {
         val automation = AutomationRepository(database.automationDao()).allAutomations.first()
             .firstOrNull { it.name == name }
             ?: error("automation not found: $name")
-        val actions = ActionConverter().toActionList(automation.actionsJson)
+        val actions = ShortcutSteps.decode(automation.actionsJson).actions
         val startedAtUptimeMillis = SystemClock.uptimeMillis()
         AutomationAccessibilityService.AutomationTrace.clear()
 

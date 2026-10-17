@@ -17,6 +17,7 @@ import com.shortcuts.app.R
 import com.shortcuts.app.automation.android.replay.EngineV2RunRuntime
 import com.shortcuts.app.data.ActionConverter
 import com.shortcuts.app.data.AppDatabase
+import com.shortcuts.app.data.ShortcutSteps
 import com.shortcuts.app.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -72,7 +73,7 @@ class AutomationExecutionService : Service() {
                             context = this@AutomationExecutionService,
                             cancellation = lease.cancellation
                         ).executeActions(
-                            ActionConverter().toActionList(editorActionsJson),
+                            ShortcutSteps.decode(editorActionsJson).actions,
                             name
                         )
                     }
@@ -93,7 +94,7 @@ class AutomationExecutionService : Service() {
                             val result = if (v2Result != null) {
                                 v2Result
                             } else {
-                                val actions = ActionConverter().toActionList(automation.actionsJson)
+                                val actions = ShortcutSteps.decode(automation.actionsJson).actions
                                 ActionExecutorService(
                                     context = this@AutomationExecutionService,
                                     cancellation = lease.cancellation
@@ -256,7 +257,8 @@ class AutomationExecutionService : Service() {
             context: Context,
             shortcutName: String,
             actions: List<com.shortcuts.app.data.Action>,
-            runId: String
+            runId: String,
+            actionsJson: String? = null
         ) {
             val notificationManager = context.getSystemService(NotificationManager::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -267,13 +269,25 @@ class AutomationExecutionService : Service() {
                     NotificationChannel(ATTENTION_CHANNEL_ID, "Shortcuts needing attention", NotificationManager.IMPORTANCE_DEFAULT)
                 )
             }
+            val jsonToSend = if (!actionsJson.isNullOrBlank()) {
+                actionsJson
+            } else {
+                ActionConverter().fromActionList(actions)
+            }
             ContextCompat.startForegroundService(
                 context,
                 Intent(context, AutomationExecutionService::class.java)
-                    .putExtra(EXTRA_EDITOR_ACTIONS_JSON, ActionConverter().fromActionList(actions))
+                    .putExtra(EXTRA_EDITOR_ACTIONS_JSON, jsonToSend)
                     .putExtra(EXTRA_EDITOR_SHORTCUT_NAME, shortcutName)
                     .putExtra(EXTRA_RUN_ID, runId)
             )
         }
+
+        internal fun startAcceptedEditorDraft(
+            context: Context,
+            shortcutName: String,
+            actions: List<com.shortcuts.app.data.Action>,
+            runId: String
+        ) = startAcceptedEditorDraft(context, shortcutName, actions, runId, actionsJson = null)
     }
 }
