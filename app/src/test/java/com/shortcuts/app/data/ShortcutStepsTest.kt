@@ -558,4 +558,351 @@ class ShortcutStepsTest {
             assertTrue(expected.message?.contains("Cannot encode unreadable shortcut document") == true)
         }
     }
+
+    // 7. Fix #8: Mapping editable fields back to typed v2 steps and rejecting unrepresentable edits
+
+    @Test
+    fun `encode maps SET_TEXT textInput edits into UiOperation SET_TEXT`() {
+        val originalStep = UiStep(
+            id = "ui-edit-text",
+            operation = UiOperation.SET_TEXT("old text"),
+            expectedWindow = sampleWindow("com.example.app"),
+            element = sampleElement(text = "", desc = "Input", resId = "com.example.app:id/input", className = "android.widget.EditText"),
+            gesture = null,
+            verification = VerificationSpec(emptyList())
+        )
+        val workflow = WorkflowV2(
+            workflowId = "wf-edit-set-text",
+            recordedDevice = sampleDevice(),
+            steps = listOf(originalStep)
+        )
+        val doc = ShortcutSteps.decode(codec.encode(workflow)) as ShortcutDocument.V2
+        assertEquals("old text", doc.actions[0].textInput)
+
+        val editedAction = doc.actions[0].copy(textInput = "new text updated")
+        val encodedJson = ShortcutSteps.encode(doc, listOf(editedAction))
+
+        val decodedResult = codec.decode(encodedJson) as com.shortcuts.app.automation.model.DecodeResult.Success
+        val updatedStep = decodedResult.workflow.steps[0] as UiStep
+        assertEquals("ui-edit-text", updatedStep.id)
+        assertEquals(UiOperation.SET_TEXT("new text updated"), updatedStep.operation)
+    }
+
+    @Test
+    fun `encode maps LaunchAppStep packageName edits into LaunchTarget Launcher and expectedWindow`() {
+        val originalStep = LaunchAppStep(
+            id = "launch-step-1",
+            target = LaunchTarget.Launcher("com.old.app"),
+            policy = LaunchPolicy.RESET_TO_ROOT,
+            expectedWindow = sampleWindow("com.old.app")
+        )
+        val workflow = WorkflowV2(
+            workflowId = "wf-edit-launch",
+            recordedDevice = sampleDevice(),
+            steps = listOf(originalStep)
+        )
+        val doc = ShortcutSteps.decode(codec.encode(workflow)) as ShortcutDocument.V2
+        assertEquals("com.old.app", doc.actions[0].packageName)
+
+        val editedAction = doc.actions[0].copy(packageName = "com.new.app")
+        val encodedJson = ShortcutSteps.encode(doc, listOf(editedAction))
+
+        val decodedResult = codec.decode(encodedJson) as com.shortcuts.app.automation.model.DecodeResult.Success
+        val updatedStep = decodedResult.workflow.steps[0] as LaunchAppStep
+        assertEquals("launch-step-1", updatedStep.id)
+        assertEquals(LaunchTarget.Launcher("com.new.app"), updatedStep.target)
+        assertEquals("com.new.app", updatedStep.expectedWindow.packageName)
+    }
+
+    @Test
+    fun `encode maps WaitStep delayMillis edits into durationMs and timeoutMs`() {
+        val originalStep = WaitStep(id = "wait-step-1", durationMs = 1000L, timeoutMs = 1000L)
+        val workflow = WorkflowV2(
+            workflowId = "wf-edit-wait",
+            recordedDevice = sampleDevice(),
+            steps = listOf(originalStep)
+        )
+        val doc = ShortcutSteps.decode(codec.encode(workflow)) as ShortcutDocument.V2
+        assertEquals(1000L, doc.actions[0].delayMillis)
+
+        val editedAction = doc.actions[0].copy(delayMillis = 4000L)
+        val encodedJson = ShortcutSteps.encode(doc, listOf(editedAction))
+
+        val decodedResult = codec.decode(encodedJson) as com.shortcuts.app.automation.model.DecodeResult.Success
+        val updatedStep = decodedResult.workflow.steps[0] as WaitStep
+        assertEquals("wait-step-1", updatedStep.id)
+        assertEquals(4000L, updatedStep.durationMs)
+        assertEquals(4000L, updatedStep.timeoutMs)
+    }
+
+    @Test
+    fun `encode LaunchAppStep with delayMillis inserts trailing WaitStep`() {
+        val originalStep = LaunchAppStep(
+            id = "launch-with-delay",
+            target = LaunchTarget.Launcher("com.example.app"),
+            policy = LaunchPolicy.RESET_TO_ROOT,
+            expectedWindow = sampleWindow("com.example.app")
+        )
+        val workflow = WorkflowV2(
+            workflowId = "wf-launch-delay",
+            recordedDevice = sampleDevice(),
+            steps = listOf(originalStep)
+        )
+        val doc = ShortcutSteps.decode(codec.encode(workflow)) as ShortcutDocument.V2
+        val editedAction = doc.actions[0].copy(delayMillis = 650L)
+        val encodedJson = ShortcutSteps.encode(doc, listOf(editedAction))
+
+        val decodedResult = codec.decode(encodedJson) as com.shortcuts.app.automation.model.DecodeResult.Success
+        assertEquals(2, decodedResult.workflow.steps.size)
+        assertTrue(decodedResult.workflow.steps[0] is LaunchAppStep)
+        assertTrue(decodedResult.workflow.steps[1] is WaitStep)
+        assertEquals(650L, (decodedResult.workflow.steps[1] as WaitStep).durationMs)
+    }
+
+    @Test
+    fun `encode rejects continueOnError for recorded v2 steps`() {
+        val uiStep = UiStep(
+            id = "ui-s",
+            operation = UiOperation.TAP,
+            expectedWindow = sampleWindow("app"),
+            element = sampleElement(),
+            gesture = null,
+            verification = VerificationSpec(emptyList())
+        )
+        val launchStep = LaunchAppStep(
+            id = "launch-s",
+            target = LaunchTarget.Launcher("app"),
+            policy = LaunchPolicy.RESET_TO_ROOT,
+            expectedWindow = sampleWindow("app")
+        )
+        val waitStep = WaitStep(id = "wait-s", durationMs = 500L)
+
+        val workflow = WorkflowV2(workflowId = "wf-err", recordedDevice = sampleDevice(), steps = listOf(uiStep, launchStep, waitStep))
+        val doc = ShortcutSteps.decode(codec.encode(workflow)) as ShortcutDocument.V2
+
+        // Testing continueOnError on UiStep
+        try {
+            ShortcutSteps.encode(doc, listOf(doc.actions[0].copy(continueOnError = true), doc.actions[1], doc.actions[2]))
+            fail("Expected IllegalArgumentException for continueOnError on UiStep")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message?.contains("continueOnError has no Engine v2 equivalent") == true)
+        }
+
+        // Testing continueOnError on LaunchAppStep
+        try {
+            ShortcutSteps.encode(doc, listOf(doc.actions[0], doc.actions[1].copy(continueOnError = true), doc.actions[2]))
+            fail("Expected IllegalArgumentException for continueOnError on LaunchAppStep")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message?.contains("continueOnError has no Engine v2 equivalent") == true)
+        }
+
+        // Testing continueOnError on WaitStep
+        try {
+            ShortcutSteps.encode(doc, listOf(doc.actions[0], doc.actions[1], doc.actions[2].copy(continueOnError = true)))
+            fail("Expected IllegalArgumentException for continueOnError on WaitStep")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message?.contains("continueOnError has no Engine v2 equivalent") == true)
+        }
+    }
+
+    @Test
+    fun `encode rejects actionType changes on recorded v2 steps`() {
+        val uiStep = UiStep(id = "ui-s", operation = UiOperation.TAP, expectedWindow = sampleWindow("app"), element = sampleElement(), gesture = null, verification = VerificationSpec(emptyList()))
+        val launchStep = LaunchAppStep(id = "launch-s", target = LaunchTarget.Launcher("app"), policy = LaunchPolicy.RESET_TO_ROOT, expectedWindow = sampleWindow("app"))
+        val waitStep = WaitStep(id = "wait-s", durationMs = 500L)
+
+        val workflow = WorkflowV2(workflowId = "wf-types", recordedDevice = sampleDevice(), steps = listOf(uiStep, launchStep, waitStep))
+        val doc = ShortcutSteps.decode(codec.encode(workflow)) as ShortcutDocument.V2
+
+        try {
+            ShortcutSteps.encode(doc, listOf(doc.actions[0].copy(actionType = ActionType.APP_INTENT)))
+            fail("Expected IllegalArgumentException when changing UiStep actionType")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message?.contains("Cannot change actionType of recorded UiStep") == true)
+        }
+
+        try {
+            ShortcutSteps.encode(doc, listOf(doc.actions[1].copy(actionType = ActionType.UI_AUTOMATION)))
+            fail("Expected IllegalArgumentException when changing LaunchAppStep actionType")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message?.contains("Cannot change actionType of recorded LaunchAppStep") == true)
+        }
+
+        try {
+            ShortcutSteps.encode(doc, listOf(doc.actions[2].copy(actionType = ActionType.SYSTEM_TOGGLE)))
+            fail("Expected IllegalArgumentException when changing WaitStep actionType")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message?.contains("Cannot change actionType of recorded WaitStep") == true)
+        }
+    }
+
+    @Test
+    fun `encode rejects uiActionType changes on recorded UiStep`() {
+        val uiStep = UiStep(id = "ui-s", operation = UiOperation.TAP, expectedWindow = sampleWindow("app"), element = sampleElement(), gesture = null, verification = VerificationSpec(emptyList()))
+        val workflow = WorkflowV2(workflowId = "wf-ui-act", recordedDevice = sampleDevice(), steps = listOf(uiStep))
+        val doc = ShortcutSteps.decode(codec.encode(workflow)) as ShortcutDocument.V2
+
+        try {
+            ShortcutSteps.encode(doc, listOf(doc.actions[0].copy(uiActionType = "TYPE_TEXT")))
+            fail("Expected IllegalArgumentException when changing uiActionType")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message?.contains("Cannot change uiActionType of recorded UiStep") == true)
+        }
+    }
+
+    @Test
+    fun `encode rejects target element or selector modifications on recorded UiStep`() {
+        val uiStep = UiStep(
+            id = "ui-s",
+            operation = UiOperation.TAP,
+            expectedWindow = sampleWindow("app"),
+            element = sampleElement(text = "Original Text", desc = "Original Desc", resId = "app:id/btn", className = "android.widget.Button"),
+            gesture = null,
+            verification = VerificationSpec(emptyList())
+        )
+        val workflow = WorkflowV2(workflowId = "wf-selectors", recordedDevice = sampleDevice(), steps = listOf(uiStep))
+        val doc = ShortcutSteps.decode(codec.encode(workflow)) as ShortcutDocument.V2
+        val baseAction = doc.actions[0]
+
+        val variations = listOf(
+            baseAction.copy(targetText = "Modified Text"),
+            baseAction.copy(targetContentDescription = "Modified Desc"),
+            baseAction.copy(targetNodeId = "app:id/other"),
+            baseAction.copy(targetClassName = "android.widget.TextView"),
+            baseAction.copy(targetPackageName = "com.other.app"),
+            baseAction.copy(screenX = 999),
+            baseAction.copy(screenY = 999),
+            baseAction.copy(preferCoordinateReplay = true),
+            baseAction.copy(target = "Modified Target")
+        )
+
+        for (variant in variations) {
+            try {
+                ShortcutSteps.encode(doc, listOf(variant))
+                fail("Expected IllegalArgumentException for selector modification: $variant")
+            } catch (e: IllegalArgumentException) {
+                assertTrue(e.message?.contains("Target element and selectors are read-only for recorded UiStep") == true)
+            }
+        }
+    }
+
+    @Test
+    fun `encode rejects textInput modification on non-SET_TEXT UiStep`() {
+        val tapStep = UiStep(id = "ui-tap", operation = UiOperation.TAP, expectedWindow = sampleWindow("app"), element = sampleElement(), gesture = null, verification = VerificationSpec(emptyList()))
+        val workflow = WorkflowV2(workflowId = "wf-tap-text", recordedDevice = sampleDevice(), steps = listOf(tapStep))
+        val doc = ShortcutSteps.decode(codec.encode(workflow)) as ShortcutDocument.V2
+
+        try {
+            ShortcutSteps.encode(doc, listOf(doc.actions[0].copy(textInput = "invalid input for tap")))
+            fail("Expected IllegalArgumentException when setting textInput on TAP UiStep")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message?.contains("Cannot set textInput on non-SET_TEXT UiStep") == true)
+        }
+    }
+
+    @Test
+    fun `encode rejects blank packageName on LaunchAppStep`() {
+        val launchStep = LaunchAppStep(id = "launch-1", target = LaunchTarget.Launcher("app"), policy = LaunchPolicy.RESET_TO_ROOT, expectedWindow = sampleWindow("app"))
+        val workflow = WorkflowV2(workflowId = "wf-blank-pkg", recordedDevice = sampleDevice(), steps = listOf(launchStep))
+        val doc = ShortcutSteps.decode(codec.encode(workflow)) as ShortcutDocument.V2
+
+        try {
+            ShortcutSteps.encode(doc, listOf(doc.actions[0].copy(packageName = "   ")))
+            fail("Expected IllegalArgumentException for blank packageName")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message?.contains("Package name cannot be blank for LaunchAppStep") == true)
+        }
+    }
+
+    @Test
+    fun `encode rejects non-positive duration on WaitStep`() {
+        val waitStep = WaitStep(id = "wait-1", durationMs = 1000L)
+        val workflow = WorkflowV2(workflowId = "wf-non-pos-wait", recordedDevice = sampleDevice(), steps = listOf(waitStep))
+        val doc = ShortcutSteps.decode(codec.encode(workflow)) as ShortcutDocument.V2
+
+        try {
+            ShortcutSteps.encode(doc, listOf(doc.actions[0].copy(delayMillis = 0L)))
+            fail("Expected IllegalArgumentException for zero duration")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message?.contains("Wait duration must be positive for WaitStep") == true)
+        }
+
+        try {
+            ShortcutSteps.encode(doc, listOf(doc.actions[0].copy(delayMillis = -100L)))
+            fail("Expected IllegalArgumentException for negative duration")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message?.contains("Wait duration must be positive for WaitStep") == true)
+        }
+    }
+
+    @Test
+    fun `encode rejects duplicate and unknown v2StepId`() {
+        val s1 = WaitStep(id = "s1", durationMs = 500L)
+        val workflow = WorkflowV2(workflowId = "wf-dup", recordedDevice = sampleDevice(), steps = listOf(s1))
+        val doc = ShortcutSteps.decode(codec.encode(workflow)) as ShortcutDocument.V2
+
+        // Duplicate v2StepId
+        try {
+            ShortcutSteps.encode(doc, listOf(doc.actions[0], doc.actions[0]))
+            fail("Expected IllegalArgumentException for duplicate v2StepId")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message?.contains("Duplicate v2StepId in edited actions") == true)
+        }
+
+        // Unknown v2StepId
+        try {
+            val fakeAction = doc.actions[0].copy(v2StepId = "non-existent-id")
+            ShortcutSteps.encode(doc, listOf(fakeAction))
+            fail("Expected IllegalArgumentException for unknown v2StepId")
+        } catch (e: IllegalArgumentException) {
+            assertTrue(e.message?.contains("Unknown v2StepId in edited actions") == true)
+        }
+    }
+
+    @Test
+    fun `project and round-trip UiStep with INFERRED_IME_ACTION migration warning`() {
+        val inferredImeStep = UiStep(
+            id = "ime-inferred-1",
+            operation = UiOperation.IME_ACTION(ImeActionKind.DONE),
+            expectedWindow = sampleWindow("com.example.app"),
+            element = null,
+            gesture = null,
+            verification = VerificationSpec(emptyList()),
+            migrationWarnings = listOf("INFERRED_IME_ACTION")
+        )
+        val s2 = WaitStep(id = "s2", durationMs = 500L)
+        val workflow = WorkflowV2(
+            workflowId = "wf-inferred",
+            recordedDevice = sampleDevice(),
+            steps = listOf(inferredImeStep, s2)
+        )
+        val doc = ShortcutSteps.decode(codec.encode(workflow)) as ShortcutDocument.V2
+        assertEquals(2, doc.actions.size)
+
+        val imeAction = doc.actions[0]
+        assertEquals("Pressed the keyboard's Search/Send key (detected)", imeAction.target)
+        assertEquals("Pressed the keyboard's Search/Send key (detected)", imeAction.targetText)
+        assertEquals("PRESS_ENTER", imeAction.uiActionType)
+        assertEquals("ime-inferred-1", imeAction.v2StepId)
+
+        // Keep it and round-trip encode
+        val encodedKept = ShortcutSteps.encode(doc, doc.actions)
+        val decodedKept = codec.decode(encodedKept) as com.shortcuts.app.automation.model.DecodeResult.Success
+        assertEquals(2, decodedKept.workflow.steps.size)
+        assertEquals("ime-inferred-1", decodedKept.workflow.steps[0].id)
+        assertEquals(listOf("INFERRED_IME_ACTION"), decodedKept.workflow.steps[0].migrationWarnings)
+
+        // Delete it
+        val encodedDeleted = ShortcutSteps.encode(doc, listOf(doc.actions[1]))
+        val decodedDeleted = codec.decode(encodedDeleted) as com.shortcuts.app.automation.model.DecodeResult.Success
+        assertEquals(1, decodedDeleted.workflow.steps.size)
+        assertEquals("s2", decodedDeleted.workflow.steps[0].id)
+
+        // Reorder it
+        val encodedReordered = ShortcutSteps.encode(doc, listOf(doc.actions[1], doc.actions[0]))
+        val decodedReordered = codec.decode(encodedReordered) as com.shortcuts.app.automation.model.DecodeResult.Success
+        assertEquals(2, decodedReordered.workflow.steps.size)
+        assertEquals("s2", decodedReordered.workflow.steps[0].id)
+        assertEquals("ime-inferred-1", decodedReordered.workflow.steps[1].id)
+    }
 }
