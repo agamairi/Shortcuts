@@ -61,6 +61,26 @@ class RecordingCompilerTest {
     }
 
     @Test
+    fun `app still drawing at launch takes its window from the first later event`() {
+        val home = snapshot(screen(LAUNCHER, "Settings"), 1_000)
+        // The launch is captured before the app has a window: the snapshot still shows the home screen.
+        val stillHome = snapshot(screen(LAUNCHER, "Settings"), 1_300)
+        val settings = snapshot(screen(APP, "Network & internet"), 2_000)
+        val compiler = compiler()
+        compiler.start(CaptureScreenContext("workflow", home))
+        compiler.accept(interaction(home, down = 1_050))
+        compiler.accept(CapturedAppSwitch(LAUNCHER, APP, "SettingsActivity", stillHome, 1_300))
+        compiler.accept(interaction(settings, down = 2_000))
+
+        val steps = compiler.finish().steps
+
+        val launch = steps.first() as LaunchAppStep
+        assertEquals(APP, launch.expectedWindow.packageName)
+        assertEquals(APP, (launch.target as com.shortcuts.app.automation.model.LaunchTarget.Launcher).packageName)
+        assertEquals(LaunchPolicy.RESET_TO_ROOT, launch.policy)
+    }
+
+    @Test
     fun `launcher gestures are omitted and following app switch is reset launch`() {
         val home = snapshot(screen(LAUNCHER, "Settings"), 1_000)
         val settings = snapshot(screen(APP, "Network & internet"), 1_300)

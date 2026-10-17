@@ -64,6 +64,13 @@ class VerdictTests(unittest.TestCase):
         actual = [{"event": "text", "target": "name", "value": "Ad"}]
         self.assertFalse(diff_event_stream(expected, actual)["equal"])
 
+    def test_record_quality_counts_the_v2_workflow_when_present(self):
+        scenario = {"steps": [{"tap": {"text": "Profile"}}, {"key": "BACK"}]}
+        legacy = [{"actionType": "UI_AUTOMATION", "uiActionType": "TAP"}]
+        v2 = json.dumps({"steps": [{"type": "launch_app"}, {"type": "ui"}, {"type": "ui"}, {"type": "ui"}]})
+        self.assertEqual(record_quality(scenario, legacy)[0], "missing_steps")
+        self.assertEqual(record_quality(scenario, legacy, v2)[0], "ok")
+
     def test_record_quality_flags_unresolved_and_missing_steps(self):
         scenario = {"id": "x", "description": "x", "steps": [{"tap": {"text": "A"}}, {"type": "hi"}], "expect": "recorded"}
         recording = [{"actionType": "UI_AUTOMATION", "uiActionType": "TAP", "targetText": "UNRESOLVED"}]

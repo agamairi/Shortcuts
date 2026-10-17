@@ -474,12 +474,27 @@ def has_unresolved(recording):
     return False
 
 
-def record_quality(scenario, recording):
+def v2_ui_step_count(recording_v2_text):
+    """UI steps in the Engine v2 workflow, which is what replays when present."""
+    try:
+        workflow = json.loads(recording_v2_text)
+    except (TypeError, ValueError):
+        return None
+    steps = workflow.get("steps") if isinstance(workflow, dict) else None
+    if not isinstance(steps, list):
+        return None
+    return sum(1 for step in steps if isinstance(step, dict) and step.get("type") == "ui")
+
+
+def record_quality(scenario, recording, recording_v2_text=None):
     issues = []
-    if recorded_ui_step_count(recording) < scenario_human_step_count(scenario):
+    recorded = v2_ui_step_count(recording_v2_text) if recording_v2_text else None
+    if recorded is None:
+        recorded = recorded_ui_step_count(recording)
+    if recorded < scenario_human_step_count(scenario):
         issues.append(
             "recorded %d UI steps for %d human actions"
-            % (recorded_ui_step_count(recording), scenario_human_step_count(scenario))
+            % (recorded, scenario_human_step_count(scenario))
         )
     if has_unresolved(recording):
         issues.append("recording contains an UNRESOLVED step")
@@ -601,6 +616,7 @@ def run_one_scenario(adb, scenario, run_dir, settle_ms):
     record_log = ""
     replay_log = ""
     recording = []
+    recording_v2 = None
     run_result = {}
     replay_seconds = None
     error = None
@@ -671,7 +687,7 @@ def run_one_scenario(adb, scenario, run_dir, settle_ms):
 
     truth = parse_fixture_events(record_log)
     replay = parse_fixture_events(replay_log)
-    quality, quality_issues = record_quality(scenario, recording)
+    quality, quality_issues = record_quality(scenario, recording, recording_v2)
     comparison = diff_event_stream(truth, replay)
     verdict = {
         "scenario": scenario["id"],

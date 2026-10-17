@@ -112,7 +112,7 @@ class RecordingCompiler(
                     if (isIgnoredPackage(packageName)) return@forEachIndexed
                     val window = eventContext.window ?: return@forEachIndexed
                     if (!hasLaunch) {
-                        drafts += launchDraft(eventContext, LaunchPolicy.RESET_TO_ROOT, activities[packageName])
+                        drafts += launchDraft(eventContext, LaunchPolicy.RESET_TO_ROOT, activities[packageName], packageName, eventContexts.subList(index + 1, eventContexts.size))
                         hasLaunch = true
                     }
                     currentRealPackage = packageName
@@ -133,7 +133,7 @@ class RecordingCompiler(
                     val packageName = event.value.windowSnapshot.packageName
                     if (isIgnoredPackage(packageName)) return@forEachIndexed
                     if (!hasLaunch) {
-                        drafts += launchDraft(eventContext, LaunchPolicy.RESET_TO_ROOT, activities[packageName])
+                        drafts += launchDraft(eventContext, LaunchPolicy.RESET_TO_ROOT, activities[packageName], packageName, eventContexts.subList(index + 1, eventContexts.size))
                         hasLaunch = true
                     }
                     currentRealPackage = packageName
@@ -167,7 +167,7 @@ class RecordingCompiler(
                     val packageName = event.value.windowSnapshot.packageName
                     if (isIgnoredPackage(packageName)) return@forEachIndexed
                     if (!hasLaunch) {
-                        drafts += launchDraft(eventContext, LaunchPolicy.RESET_TO_ROOT, activities[packageName])
+                        drafts += launchDraft(eventContext, LaunchPolicy.RESET_TO_ROOT, activities[packageName], packageName, eventContexts.subList(index + 1, eventContexts.size))
                         hasLaunch = true
                     }
                     currentRealPackage = packageName
@@ -195,7 +195,7 @@ class RecordingCompiler(
                     } == true && !recentsPending
                     if (!hasLaunch) {
                         val policy = if (recentsPending) LaunchPolicy.RESUME_EXISTING_TASK else LaunchPolicy.RESET_TO_ROOT
-                        drafts += launchDraft(eventContext, policy, activities[toPackage])
+                        drafts += launchDraft(eventContext, policy, activities[toPackage], toPackage, eventContexts.subList(index + 1, eventContexts.size))
                         hasLaunch = true
                     } else if (!causedByInteraction &&
                         (toPackage != currentRealPackage || homeDetourPackage == toPackage)
@@ -210,7 +210,7 @@ class RecordingCompiler(
                             launchedFromLauncher -> LaunchPolicy.RESET_TO_ROOT
                             else -> LaunchPolicy.RESUME_EXISTING_TASK
                         }
-                        drafts += launchDraft(eventContext, policy, activities[toPackage])
+                        drafts += launchDraft(eventContext, policy, activities[toPackage], toPackage, eventContexts.subList(index + 1, eventContexts.size))
                     }
                     currentRealPackage = toPackage
                     homeDetourPackage = null
@@ -230,7 +230,7 @@ class RecordingCompiler(
                     if (isTrailingNavigation(index, eventContexts, finalSnapshot)) return@forEachIndexed
                     val packageName = eventContext.packageName
                     if (!isIgnoredPackage(packageName) && !hasLaunch) {
-                        drafts += launchDraft(eventContext, LaunchPolicy.RESET_TO_ROOT, activities[packageName])
+                        drafts += launchDraft(eventContext, LaunchPolicy.RESET_TO_ROOT, activities[packageName], packageName, eventContexts.subList(index + 1, eventContexts.size))
                         hasLaunch = true
                     }
                     if (!isIgnoredPackage(packageName)) {
@@ -254,7 +254,7 @@ class RecordingCompiler(
                 timestamp = finalSnapshot.capturedAtUptimeMs,
                 eventIndex = events.size
             )
-            drafts += launchDraft(fallbackContext, LaunchPolicy.RESET_TO_ROOT, activities[fallback.packageName])
+            drafts += launchDraft(fallbackContext, LaunchPolicy.RESET_TO_ROOT, activities[fallback.packageName], fallback.packageName)
         }
 
         check(drafts.firstOrNull() is LaunchDraft) { "Every compiled workflow must begin with a launch step" }
@@ -326,17 +326,29 @@ class RecordingCompiler(
         }
     }
 
+    /**
+     * The launch step must describe a window of the app it launches. An app that is still drawing when
+     * its launch is captured has no window in that snapshot, and the event's window can then be another
+     * app's (the launcher). Use the launched app's first window seen afterwards instead; only a recording
+     * in which the app never shows a window cannot be compiled.
+     */
     private fun launchDraft(
         context: EventContext,
         policy: LaunchPolicy,
-        activityClass: String?
+        activityClass: String?,
+        targetPackage: String?,
+        laterContexts: List<EventContext> = emptyList()
     ): LaunchDraft {
-        val window = requireNotNull(context.window) { "Launch target has no application window" }
+        val source = requireNotNull(
+            sequenceOf(context).plus(laterContexts)
+                .firstOrNull { it.window != null && (targetPackage == null || it.window.packageName == targetPackage) }
+        ) { "Launch target has no application window" }
+        val window = requireNotNull(source.window)
         return LaunchDraft(
             id = idGenerator(),
             eventIndex = context.eventIndex,
             timestamp = context.timestamp,
-            expectedWindow = selectorExtractor.windowSelector(window, context.snapshot, activityClass, context.precomputedFingerprint),
+            expectedWindow = selectorExtractor.windowSelector(window, source.snapshot, activityClass, source.precomputedFingerprint),
             policy = policy
         )
     }
