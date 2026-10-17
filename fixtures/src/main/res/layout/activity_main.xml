@@ -1,0 +1,129 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical">
+
+    <TextView
+        android:id="@+id/main_title"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:padding="16dp"
+        android:text="RK Fixtures"
+        android:textSize="22sp"
+        android:textStyle="bold" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:id="@+id/scenario_button_container"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <Button
+                android:id="@+id/btn_scenario_views_basic"
+                android:layout_width="match_parent"
+                android:layout_height="64dp"
+                android:layout_marginBottom="12dp"
+                android:text="Views basic"
+                android:textSize="18sp" />
+
+            <Button
+                android:id="@+id/btn_scenario_compose_basic"
+                android:layout_width="match_parent"
+                android:layout_height="64dp"
+                android:layout_marginBottom="12dp"
+                android:text="Compose basic"
+                android:textSize="18sp" />
+
+            <Button
+                android:id="@+id/btn_scenario_views_list"
+                android:layout_width="match_parent"
+                android:layout_height="64dp"
+                android:layout_marginBottom="12dp"
+                android:text="Views list"
+                android:textSize="18sp" />
+
+            <Button
+                android:id="@+id/btn_scenario_compose_list"
+                android:layout_width="match_parent"
+                android:layout_height="64dp"
+                android:layout_marginBottom="12dp"
+                android:text="Compose list"
+                android:textSize="18sp" />
+
+            <Button
+                android:id="@+id/btn_scenario_near_duplicates"
+                android:layout_width="match_parent"
+                android:layout_height="64dp"
+                android:layout_marginBottom="12dp"
+                android:text="Near duplicates"
+                android:textSize="18sp" />
+
+            <Button
+                android:id="@+id/btn_scenario_text_views"
+                android:layout_width="match_parent"
+                android:layout_height="64dp"
+                android:layout_marginBottom="12dp"
+                android:text="Text input views"
+                android:textSize="18sp" />
+
+            <Button
+                android:id="@+id/btn_scenario_text_compose"
+                android:layout_width="match_parent"
+                android:layout_height="64dp"
+                android:layout_marginBottom="12dp"
+                android:text="Text input compose"
+                android:textSize="18sp" />
+
+            <Button
+                android:id="@+id/btn_scenario_dialogs"
+                android:layout_width="match_parent"
+                android:layout_height="64dp"
+                android:layout_marginBottom="12dp"
+                android:text="Dialogs"
+                android:textSize="18sp" />
+
+            <Button
+                android:id="@+id/btn_scenario_delayed"
+                android:layout_width="match_parent"
+                android:layout_height="64dp"
+                android:layout_marginBottom="12dp"
+                android:text="Delayed content"
+                android:textSize="18sp" />
+
+            <Button
+                android:id="@+id/btn_scenario_navigation"
+                android:layout_width="match_parent"
+                android:layout_height="64dp"
+                android:layout_marginBottom="12dp"
+                android:text="Navigation"
+                android:textSize="18sp" />
+
+            <Button
+                android:id="@+id/btn_scenario_webview"
+                android:layout_width="match_parent"
+                android:layout_height="64dp"
+                android:layout_marginBottom="12dp"
+                android:text="Web view"
+                android:textSize="18sp" />
+
+            <Button
+                android:id="@+id/btn_scenario_tabs"
+                android:layout_width="match_parent"
+                android:layout_height="64dp"
+                android:layout_marginBottom="12dp"
+                android:text="Tabs"
+                android:textSize="18sp" />
+
+        </LinearLayout>
+    </ScrollView>
+
+    <include layout="@layout/view_event_log_footer" />
+
+</LinearLayout>
