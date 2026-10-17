@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-17
+
+Recording and replay rebuilt (Engine v2), and home-screen widgets fixed. On a Pixel 6a (Android 16), v0.7.4 replayed 0 of 12 test-app scenarios; this release replays all 12, 24 of 24 runs on the final build. In real apps, Settings, Calculator and YouTube Music navigation record and replay reliably; see Known issues for searches. Widgets pin, load in a few seconds, run, and follow renames and deletes.
+
 ### Fixed
 - **In-app searches record the whole search (verified in YouTube Music).** The keyboard was mistaken for a foreground app, and pressing Search/Go on a screen that shows results in place gives accessibility services no signal at all, so recordings stopped after the typed text. RepeatKit now keeps the real app as the target, and detects a submit when the field loses focus or the keyboard closes and the app's screen changes. It shows the step as a detected keyboard action. Chrome's address bar is still not captured reliably; see Known issues.
 - **Settings shortcuts are recorded in the new format.** Android lists a boot-time placeholder inside Settings ("FallbackHome") as a home-screen app. The recorder therefore treated everything in Settings as the home screen, so Settings recordings were always saved in the old format, and Back was never detected inside Settings. Placeholder home activities are now ignored.
@@ -146,7 +150,8 @@ to a Play Store release.
 - **Removed a widget-creation screen that was unreachable** through normal navigation.
 
 ### Known issues
-- **Chrome address-bar searches don't record the typed text yet.** The recording keeps "open Chrome, tap the address bar" but not the query or its submission, so the replay stops at the address bar. Searches inside apps (YouTube Music, for example) do record.
+- **Chrome address-bar searches don't record the typed text yet.** The recording keeps "open Chrome, tap the address bar" but not the query or its submission, so the replay stops at the address bar.
+- **In-app searches that show results on the same screen are not yet reliable.** In YouTube Music, a recorded search replayed correctly in 8 of 11 test runs, but only 1 of 3 on the final build. Some recordings kept a partial query or missed the Search press. Testing typed with adb, which hides the on-screen keyboard and moves focus differently from real typing, so real-world reliability is unknown.
 - **Google Messages is untested on device.** The test phone's Messages app was blocked by a mandatory Play Store update.
 - **Lock-screen widgets are untested on device.** The widget declares lock-screen support, and actions that need the phone unlocked ask for it, but the Pixel 6a's Android build has no lock-screen widget host to place one on.
 - **After choosing a shortcut for an empty widget, you land in RepeatKit** instead of back on the home screen.
