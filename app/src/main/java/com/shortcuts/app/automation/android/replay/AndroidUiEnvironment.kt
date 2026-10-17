@@ -409,9 +409,13 @@ class AndroidUiEnvironment(
             ?: TextNormalizer.normalize(expectedNode.contentDescription)
 
         if (targetText != null) {
+            // An empty field reports its hint as text, so a field recorded before typing carries the
+            // hint as TEXT_EXACT. Once typed into, the hint moves to hintText; accept it there, as
+            // the matcher does.
             val matches = liveNodeMatches(liveNode, maxDepth = 3) { node ->
                 TextNormalizer.sameText(node.text?.toString(), targetText) ||
-                    TextNormalizer.sameText(node.contentDescription?.toString(), targetText)
+                    TextNormalizer.sameText(node.contentDescription?.toString(), targetText) ||
+                    (node.isEditable && TextNormalizer.sameText(node.hintText?.toString(), targetText))
             }
             if (!matches) {
                 return DispatchResult.Rejected("Selector identity changed for snapshot target")

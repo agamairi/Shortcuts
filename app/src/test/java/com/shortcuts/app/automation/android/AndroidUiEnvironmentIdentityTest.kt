@@ -319,4 +319,68 @@ class AndroidUiEnvironmentIdentityTest {
         AndroidUiEventHub.onAccessibilityEvent(snackbarEvent)
         assertEquals("com.android.settings.Settings", AndroidUiEventHub.currentActivityClass("com.android.settings"))
     }
+
+    @Test
+    fun `typed-into field recorded by its hint is accepted for keyboard submit`() {
+        // Recorded while empty, so the field's text was its hint "Search". Replay has since typed into it.
+        val window = window("com.example.app") {
+            node(
+                "android.widget.EditText",
+                id = 1,
+                resourceId = "com.example.app:id/edit_search",
+                text = "rk test",
+                hintText = "Search",
+                editable = true,
+                bounds = r(100, 100, 500, 300)
+            )
+        }
+        val expectedNode = window.node(1)!!
+        val liveField = mockLiveNode(
+            className = "android.widget.EditText",
+            resourceId = "com.example.app:id/edit_search",
+            text = "rk test"
+        )
+        every { liveField.isEditable } returns true
+        every { liveField.hintText } returns "Search"
+
+        val selector = elementSelector(
+            strategies = listOf(
+                LocatorStrategy(0, LocatorKind.RESOURCE_ID_EXACT, "com.example.app:id/edit_search", LocatorStability.STABLE),
+                LocatorStrategy(1, LocatorKind.TEXT_EXACT, "Search", LocatorStability.STABLE)
+            )
+        )
+
+        val rejection = environment.validateLiveIdentity(
+            liveNode = liveField,
+            expectedNode = expectedNode,
+            selector = selector,
+            derivedLabel = window.labelOf(expectedNode)
+        )
+
+        assertNull("Typed-into field must still be recognised by its hint", rejection)
+    }
+
+    @Test
+    fun `non-editable node is not recognised by a hint`() {
+        val window = window("com.example.app") {
+            node("android.widget.TextView", id = 1, text = "Other", bounds = r(100, 100, 500, 300))
+        }
+        val expectedNode = window.node(1)!!
+        val liveNode = mockLiveNode(className = "android.widget.TextView", text = "Other")
+        every { liveNode.isEditable } returns false
+        every { liveNode.hintText } returns "Search"
+
+        val selector = elementSelector(
+            strategies = listOf(LocatorStrategy(0, LocatorKind.TEXT_EXACT, "Search", LocatorStability.STABLE))
+        )
+
+        val rejection = environment.validateLiveIdentity(
+            liveNode = liveNode,
+            expectedNode = expectedNode,
+            selector = selector,
+            derivedLabel = null
+        )
+
+        assertNotNull(rejection)
+    }
 }

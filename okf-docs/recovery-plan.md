@@ -63,16 +63,17 @@ Nothing ships on "it worked when I tried it". Every claim is measured on the Pix
 
 The first measurement is a **baseline of today's engine (v0.7.4)**, so every later change is compared against real numbers.
 
-### Scoreboard (fixture suite, Pixel 6a, 12 scenarios × 1 run)
+### Scoreboard (fixture suite, Pixel 6a, 12 scenarios)
 
 | Build | Pass | Recording issues | Notes |
 |---|---|---|---|
 | v0.7.4 as shipped (2026-10-17) | **0 / 12** | 7 / 12 | Every replay died at step 1: no "open app" step was ever recorded, because the recorder picked the wrong home app on a phone with four launchers. Compose taps were never recorded (Compose basic: 1 of 6 actions). |
 | + capture layer, launcher fix, overlay-app fix (still v0.7.4 replay) | **9 / 12** | 1 / 12 | Every Compose tap now recorded. The 3 failures are replay limits Engine v2 addresses: clicking a non-clickable label, Compose text fields without ids, scrolling to a far row. |
+| Engine v2 end to end, first integration (record → v2 workflow → v2 replay) | **3 / 12** | 1 / 12 | The new engine ran on the phone for the first time. Failures traced to four capture↔match contract mismatches (Compose labels live on a child node; text fields identified by the typed value; swipes saved as standalone steps; a dialog class recorded as the activity) and three over-strict replay rules (fails at once instead of waiting for delayed content; the expected-screen fingerprint used as a hard gate; scroll progress judged on structure). |
+| Engine v2 + contract and strict-rule fixes | **5 / 12 → 8 / 12 → 11 / 12** | — | Successive single-run passes as the shared label/sibling/role helpers, requested-action dispatch and live-identity checks landed. The last failure was a keyboard Search on a field identified by its placeholder. |
+| Engine v2, placeholder identity fix — **12 scenarios × 5 runs** | **59 / 60 (98.3 %)** | 5 / 60 | 11 of 12 scenarios 5/5; text_views 4/5. The failure was in the *recording*: the harness's injected Enter landed on the Message field instead of Search, with no RepeatKit action in between; replay reproduced the recording exactly. The 5 recording issues are all navigation: the final Back press was never recorded, because key presses were attributed to RepeatKit's own overlay (fix written; device check pending). |
 
-| Engine v2 end to end, first integration (record → v2 workflow → v2 replay) | **3 / 12** | 1 / 12 | The new engine ran on the phone for the first time. Failures traced to four capture↔match contract mismatches (Compose labels live on a child node; text fields identified by the typed value; swipes saved as standalone steps; a dialog class recorded as the activity) and three over-strict replay rules (fails at once instead of waiting for delayed content; the expected-screen fingerprint used as a hard gate; scroll progress judged on structure). Fixes in progress. |
-
-Caveats: single runs; the gate needs 20 runs per scenario. The WebView fixture's JavaScript bridge was broken (fixed on 2026-10-17), so earlier WebView "passes" only compared the opening tap.
+Caveats: the gate needs ≥ 600 runs (30 scenarios × 20); this is 12 × 5. The event diff ignores screen-open events, which is why the missing Back did not fail navigation. The WebView fixture's JavaScript bridge was broken (fixed on 2026-10-17), so earlier WebView "passes" only compared the opening tap.
 
 ---
 

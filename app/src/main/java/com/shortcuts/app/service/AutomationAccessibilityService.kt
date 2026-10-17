@@ -185,10 +185,27 @@ open class AutomationAccessibilityService : AccessibilityService() {
     }
 
     override fun onKeyEvent(event: KeyEvent): Boolean {
-        val root = getRootNode()
-        val activePackageName = root?.packageName?.toString()
-        root?.recycle()
-        return AutomationRecorder.onKeyEvent(event, this, activePackageName)
+        // Only a recording needs to know where a key went; reading windows while idle is not needed.
+        if (!AutomationRecorder.isRecording.value) return false
+        val target = keyEventPackage()
+        if (com.shortcuts.app.BuildConfig.DEBUG) {
+            Log.d(TAG, "Recording key: code=${event.keyCode} action=${event.action} target=$target")
+        }
+        return AutomationRecorder.onKeyEvent(event, this, target)
+    }
+
+    private fun keyEventPackage(): String? {
+        val described = runCatching { windows }.getOrNull().orEmpty().map { window ->
+            val packageName = if (window.isFocused) {
+                window.root?.let { root -> root.packageName?.toString().also { root.recycle() } }
+            } else {
+                null
+            }
+            KeyEventTarget.Window(window.type, window.isFocused, packageName)
+        }
+        return KeyEventTarget.packageFor(described) {
+            getRootNode()?.let { root -> root.packageName?.toString().also { root.recycle() } }
+        }
     }
 
     @Volatile

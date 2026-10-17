@@ -54,6 +54,16 @@ class VerdictTests(unittest.TestCase):
         self.assertEqual(result["index"], 1)
         self.assertEqual(result["expected"], ["tap", "two", None])
 
+    def test_event_diff_ignores_blur_echo_of_a_submitted_value(self):
+        expected = [{"event": "submit", "target": "search", "value": "rk"}, {"event": "text", "target": "search", "value": "rk"}]
+        actual = [{"event": "text", "target": "search", "value": "rk"}, {"event": "submit", "target": "search", "value": "rk"}]
+        self.assertTrue(diff_event_stream(expected, actual)["equal"])
+
+    def test_event_diff_keeps_typed_value_that_was_never_submitted(self):
+        expected = [{"event": "text", "target": "name", "value": "Ada"}]
+        actual = [{"event": "text", "target": "name", "value": "Ad"}]
+        self.assertFalse(diff_event_stream(expected, actual)["equal"])
+
     def test_record_quality_flags_unresolved_and_missing_steps(self):
         scenario = {"id": "x", "description": "x", "steps": [{"tap": {"text": "A"}}, {"type": "hi"}], "expect": "recorded"}
         recording = [{"actionType": "UI_AUTOMATION", "uiActionType": "TAP", "targetText": "UNRESOLVED"}]

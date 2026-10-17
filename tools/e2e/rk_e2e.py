@@ -376,9 +376,21 @@ def load_all_scenarios():
 
 
 def normalize_events(events):
+    events = list(events or [])
+    # Fixtures log a "text" event when a field loses focus. Whether that happens before or after the
+    # field's submit depends on keyboard focus timing, not on what the user did, so a blur echo of a
+    # value that the same field also submitted carries no extra meaning. Typed-but-never-submitted
+    # values have no matching submit and are still compared.
+    submitted = {
+        (event.get("target"), event.get("value"))
+        for event in events
+        if event.get("event") == "submit"
+    }
     normalized = []
-    for event in events or []:
+    for event in events:
         if event.get("event") == "open":
+            continue
+        if event.get("event") == "text" and (event.get("target"), event.get("value")) in submitted:
             continue
         normalized.append([event.get("event"), event.get("target"), event.get("value")])
     return normalized
