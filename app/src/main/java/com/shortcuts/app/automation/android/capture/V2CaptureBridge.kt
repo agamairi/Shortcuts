@@ -85,8 +85,7 @@ object V2CaptureBridge {
 
             val launcherPackages = queryHomePackages(context.packageManager)
             val recorderPackage = context.packageName ?: "com.shortcuts.app"
-            val salt = getOrCreateTokenizerSalt(context)
-            val tokenizer = Sha256TextTokenizer(salt)
+            val tokenizer = com.shortcuts.app.automation.android.InstallTokens.tokenizer(context)
             val deviceMetadata = RecordingDeviceMetadata(
                 manufacturer = Build.MANUFACTURER ?: "unknown",
                 model = Build.MODEL ?: "unknown",
@@ -191,8 +190,7 @@ object V2CaptureBridge {
             if (savedSession != null) {
                 val launcherPackages = queryHomePackages(context.packageManager)
                 val recorderPackage = context.packageName ?: "com.shortcuts.app"
-                val salt = getOrCreateTokenizerSalt(context)
-                val tokenizer = Sha256TextTokenizer(salt)
+                val tokenizer = com.shortcuts.app.automation.android.InstallTokens.tokenizer(context)
                 val deviceMetadata = RecordingDeviceMetadata(
                     manufacturer = Build.MANUFACTURER ?: "unknown",
                     model = Build.MODEL ?: "unknown",
