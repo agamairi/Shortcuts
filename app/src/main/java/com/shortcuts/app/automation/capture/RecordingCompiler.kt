@@ -11,6 +11,7 @@ import com.shortcuts.app.automation.model.GestureKind
 import com.shortcuts.app.automation.model.LaunchAppStep
 import com.shortcuts.app.automation.model.LaunchPolicy
 import com.shortcuts.app.automation.model.LaunchTarget
+import com.shortcuts.app.automation.model.ImeActionKind
 import com.shortcuts.app.automation.model.LocatorKind
 import com.shortcuts.app.automation.model.NodeBooleanState
 import com.shortcuts.app.automation.model.RecordedDevice
@@ -433,7 +434,7 @@ class RecordingCompiler(
             targetNode = action.fieldNode,
             beforeSnapshot = context.snapshot,
             beforeWindow = action.windowSnapshot,
-            safety = StepSafety.REVERSIBLE,
+            safety = safetyForIme(action.kind),
             warnings = mutableListOf()
         )
     }
@@ -854,13 +855,41 @@ class RecordingCompiler(
         packageName in launcherPackageNames || packageName == recorderPackageName ||
         packageName in systemPackageNames || packageName in imePackageNames
 
+    /**
+     * A tap is irreversible when its label or its resource id names an outward-facing or
+     * destructive verb. A tap with no label and no id cannot be judged, so it is BEST_EFFORT
+     * (never treated as safe to repeat). Replay never re-dispatches an accepted action anyway;
+     * this classification drives the run-time confirmation prompt.
+     */
     private fun safetyFor(selector: ElementSelector?): StepSafety {
-        val destructive = selector?.strategies.orEmpty().any { strategy ->
-            (strategy.kind == LocatorKind.TEXT_EXACT || strategy.kind == LocatorKind.CONTENT_DESCRIPTION_EXACT) &&
-                DESTRUCTIVE_LABEL.containsMatchIn(strategy.value)
+        val strategies = selector?.strategies.orEmpty()
+        val labels = strategies.filter {
+            it.kind == LocatorKind.TEXT_EXACT || it.kind == LocatorKind.CONTENT_DESCRIPTION_EXACT
+        }.map { it.value }
+        val idWords = strategies.filter {
+            it.kind == LocatorKind.RESOURCE_ID_EXACT || it.kind == LocatorKind.TEST_TAG_EXACT
+        }.flatMap { idWordsOf(it.value) }
+        return when {
+            labels.any { DESTRUCTIVE_LABEL.containsMatchIn(it) } -> StepSafety.IRREVERSIBLE
+            idWords.any { it in DESTRUCTIVE_ID_WORDS } -> StepSafety.IRREVERSIBLE
+            labels.isEmpty() && idWords.isEmpty() -> StepSafety.BEST_EFFORT
+            else -> StepSafety.REVERSIBLE
         }
-        return if (destructive) StepSafety.IRREVERSIBLE else StepSafety.REVERSIBLE
     }
+
+    /** Submitting a search or moving to the next field is harmless; sending or submitting is not. */
+    private fun safetyForIme(kind: ImeActionKind): StepSafety = when (kind) {
+        ImeActionKind.SEARCH, ImeActionKind.NEXT -> StepSafety.REVERSIBLE
+        ImeActionKind.SEND, ImeActionKind.GO, ImeActionKind.DONE, ImeActionKind.UNSPECIFIED -> StepSafety.IRREVERSIBLE
+    }
+
+    /** "com.app:id/btnSendMessage" → [btn, send, message]. */
+    private fun idWordsOf(resourceId: String): List<String> =
+        resourceId.substringAfterLast('/')
+            .replace(Regex("([a-z])([A-Z])"), "$1_$2")
+            .lowercase()
+            .split(Regex("[^a-z]+"))
+            .filter { it.isNotEmpty() }
 
     private fun isNodeVisible(target: NodeSnapshot, snapshot: WindowSetSnapshot): Boolean =
         snapshot.windows.asSequence()
@@ -994,8 +1023,17 @@ class RecordingCompiler(
         private const val GLOBAL_HOME = "HOME"
         private const val GLOBAL_RECENTS = "RECENTS"
         private val DESTRUCTIVE_LABEL = Regex(
-            "\\b(?:delete|remove|send|pay|buy|post|submit|confirm)\\b",
+            "\\b(?:delete|remove|erase|discard|trash|send|reply|forward|share|pay|payment|purchase|buy|" +
+                "order|checkout|check out|transfer|withdraw|donate|charge|subscribe|unsubscribe|book|reserve|" +
+                "post|publish|tweet|upload|submit|confirm|approve|accept|sign|call|dial|block|report|unfriend|" +
+                "unfollow|cancel subscription|place order|wipe|reset|factory reset|uninstall)\\b",
             RegexOption.IGNORE_CASE
+        )
+        private val DESTRUCTIVE_ID_WORDS = setOf(
+            "delete", "remove", "erase", "discard", "trash", "send", "reply", "forward", "share", "pay",
+            "payment", "purchase", "buy", "order", "checkout", "transfer", "withdraw", "donate", "charge",
+            "subscribe", "unsubscribe", "book", "reserve", "post", "publish", "upload", "submit", "confirm",
+            "approve", "accept", "sign", "call", "dial", "block", "report", "unfollow", "wipe", "uninstall"
         )
     }
 }

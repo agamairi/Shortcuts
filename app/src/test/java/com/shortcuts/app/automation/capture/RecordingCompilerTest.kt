@@ -462,6 +462,60 @@ class RecordingCompilerTest {
         assertTrue(step.verification.allowBestEffort.not())
     }
 
+    private fun safetyOfTapOn(window: com.shortcuts.app.automation.core.tree.WindowSnapshot): StepSafety {
+        val before = snapshot(window, 1_000)
+        val compiler = compiler()
+        compiler.start(CaptureScreenContext("safety", before))
+        compiler.accept(interaction(before, down = 1_100))
+        return compiler.finish().steps.filterIsInstance<UiStep>().single().safety
+    }
+
+    @Test
+    fun `icon-only send button is irreversible because of its resource id`() {
+        assertEquals(StepSafety.IRREVERSIBLE, safetyOfTapOn(screen(APP, "", resourceId = "com.app:id/btnSendMessage")))
+    }
+
+    @Test
+    fun `place order and transfer labels are irreversible`() {
+        assertEquals(StepSafety.IRREVERSIBLE, safetyOfTapOn(screen(APP, "Place order")))
+        assertEquals(StepSafety.IRREVERSIBLE, safetyOfTapOn(screen(APP, "Transfer money")))
+        assertEquals(StepSafety.IRREVERSIBLE, safetyOfTapOn(screen(APP, "Publish")))
+    }
+
+    @Test
+    fun `a tap with no label and no id is best effort, an ordinary label is reversible`() {
+        assertEquals(StepSafety.BEST_EFFORT, safetyOfTapOn(screen(APP, "")))
+        assertEquals(StepSafety.REVERSIBLE, safetyOfTapOn(screen(APP, "Open")))
+        assertEquals(StepSafety.REVERSIBLE, safetyOfTapOn(screen(APP, "Settings", resourceId = "com.app:id/settings_row")))
+    }
+
+    @Test
+    fun `keyboard send is irreversible and keyboard search is not`() {
+        val form = window(APP) {
+            node("android.widget.FrameLayout", id = 1) {
+                node(
+                    "android.widget.EditText",
+                    id = 2,
+                    text = "hi",
+                    bounds = r(100, 200, 900, 350),
+                    editable = true,
+                    focused = true,
+                    actions = setOf(NodeAction.SET_TEXT, NodeAction.IME_ENTER)
+                )
+            }
+        }
+        fun imeSafety(kind: com.shortcuts.app.automation.model.ImeActionKind): StepSafety {
+            val before = snapshot(form, 1_000)
+            val compiler = compiler()
+            compiler.start(CaptureScreenContext("ime", before))
+            compiler.accept(CapturedImeAction(form.node(2)!!, kind, form, 1_500))
+            return compiler.finish().steps.filterIsInstance<UiStep>().single().safety
+        }
+        assertEquals(StepSafety.IRREVERSIBLE, imeSafety(com.shortcuts.app.automation.model.ImeActionKind.SEND))
+        assertEquals(StepSafety.IRREVERSIBLE, imeSafety(com.shortcuts.app.automation.model.ImeActionKind.UNSPECIFIED))
+        assertEquals(StepSafety.REVERSIBLE, imeSafety(com.shortcuts.app.automation.model.ImeActionKind.SEARCH))
+    }
+
     @Test
     fun `captured delay uses previous item gap`() {
         val home = snapshot(screen(LAUNCHER, "App"), 500)
