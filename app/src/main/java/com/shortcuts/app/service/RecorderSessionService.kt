@@ -1,15 +1,19 @@
 package com.shortcuts.app.service
 
+import android.annotation.SuppressLint
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.shortcuts.app.util.NotificationThrottler
 import com.shortcuts.app.util.RecorderNotificationPresenter
@@ -38,6 +42,7 @@ class RecorderSessionService : Service() {
     private var throttler: NotificationThrottler? = null
     private val handler = Handler(Looper.getMainLooper())
 
+    @SuppressLint("ForegroundServiceType")
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         AutomationRecorder.restoreSession(this)
         if (!AutomationRecorder.isRecording.value) {
@@ -46,9 +51,16 @@ class RecorderSessionService : Service() {
         }
         
         val initialCount = AutomationRecorder.recordedActions.value.size
-        startForeground(
+        val foregroundServiceType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+        } else {
+            0
+        }
+        ServiceCompat.startForeground(
+            this,
             RecorderSessionNotifier.RECORDING_NOTIFICATION_ID, 
-            RecorderSessionNotifier.recordingNotification(this, initialCount)
+            RecorderSessionNotifier.recordingNotification(this, initialCount),
+            foregroundServiceType
         )
         
         serviceScope?.cancel()
@@ -170,14 +182,16 @@ object RecorderSessionNotifier {
                 ).build()
             )
 
-        val apiLevel = android.os.Build.VERSION.SDK_INT
-        val canPromote = if (apiLevel >= 36) manager.canPostPromotedNotifications() else false
+        val apiLevel = Build.VERSION.SDK_INT
+        val canPromote = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) manager.canPostPromotedNotifications() else false
         val presentation = RecorderNotificationPresenter.determinePresentation(apiLevel, canPromote)
 
         if (presentation == RecorderNotificationPresenter.Presentation.PROMOTED_CHIP) {
             // On Android 16+, use a clean small icon and pass the chip text.
             builder.setSmallIcon(android.R.drawable.ic_media_play)
-            builder.setShortCriticalText(RecorderNotificationPresenter.formatChipText(count))
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.BAKLAVA) {
+                builder.setShortCriticalText(RecorderNotificationPresenter.formatChipText(count))
+            }
             
             val extras = android.os.Bundle()
             extras.putBoolean("android.requestPromotedOngoing", true)
@@ -188,11 +202,6 @@ object RecorderSessionNotifier {
         }
 
         val notification = builder.build()
-        // DEBUG: Caller can verify on device if this actually qualified.
-        if (apiLevel >= 36) {
-            android.util.Log.d("PromotedChip", "hasPromotableCharacteristics: " + notification.hasPromotableCharacteristics())
-        }
-
         return notification
     }
 

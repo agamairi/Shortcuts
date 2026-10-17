@@ -1,5 +1,6 @@
 package com.shortcuts.app.service
 
+import android.annotation.SuppressLint
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -10,6 +11,7 @@ import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -86,21 +88,24 @@ class ModelDownloaderService : Service() {
         return START_NOT_STICKY
     }
 
+    @SuppressLint("ForegroundServiceType")
     fun startDownloadTask() {
         if (_downloadState.value is DownloadState.Downloading) {
             return
         }
 
         val initialNotification = buildNotification(0, "Starting download...")
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForeground(
-                NOTIFICATION_ID,
-                initialNotification,
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-            )
+        val foregroundServiceType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
         } else {
-            startForeground(NOTIFICATION_ID, initialNotification)
+            0
         }
+        ServiceCompat.startForeground(
+            this,
+            NOTIFICATION_ID,
+            initialNotification,
+            foregroundServiceType
+        )
 
         _downloadState.value = DownloadState.Downloading(0)
 
