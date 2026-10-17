@@ -666,6 +666,31 @@ class ReplayRegressionTest {
     }
 
     @Test
+    fun `BEST_EFFORT step with a movement rejection does not retry`() = runTest {
+        val screen = windowSet(window("app") {
+            node("Root", bounds = r(0, 0, 1_000, 2_000)) {
+                node("Button", id = 2, resourceId = "app:id/target", bounds = r(100, 200, 900, 400),
+                    clickable = true, actions = setOf(NodeAction.CLICK))
+            }
+        })
+
+        var attempts = 0
+        val env = FakeEnvironment(screen) {
+            attempts++
+            DispatchResult.Rejected("Gesture point no longer hits the recorded target")
+        }
+
+        val trace = RecordingSink()
+        val step = tapStep(targetSelector("app:id/target", "Button", r(100, 200, 900, 400)), safety = StepSafety.BEST_EFFORT)
+        val result = engine(env, { testScheduler.currentTime }).run(workflow(step), trace) as ReplayResult.Failed
+
+        assertEquals(ReplayFailureCode.DISPATCH_REJECTED, result.failure.code)
+        assertEquals(1, attempts)
+        val retries = trace.events.filterIsInstance<ActionRetryRecorded>()
+        assertTrue("BEST_EFFORT steps must never be retried", retries.isEmpty())
+    }
+
+    @Test
     fun `non-movement rejection does not retry`() = runTest {
         val screen = windowSet(window("app") {
             node("Root", bounds = r(0, 0, 1_000, 2_000)) {

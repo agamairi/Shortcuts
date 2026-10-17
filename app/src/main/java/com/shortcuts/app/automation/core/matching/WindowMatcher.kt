@@ -220,16 +220,11 @@ class WindowMatcher(
         min(a.right, b.right) > max(a.left, b.left) &&
             min(a.bottom, b.bottom) > max(a.top, b.top)
 
-    private fun looksLikeActivity(className: String): Boolean {
-        val simpleName = className.substringAfterLast('.').substringAfterLast('$')
-        return simpleName.endsWith("Activity")
-    }
-
     private fun isDialog(rect: NormalizedRect): Boolean =
         rect.width < 0.92f || rect.height < 0.92f ||
             rect.left > 0.04f || rect.top > 0.04f || rect.right < 0.96f || rect.bottom < 0.96f
 
-    private companion object {
+    companion object {
         const val ACTIVITY_WEIGHT = 40.0
         const val WINDOW_TYPE_WEIGHT = 20.0
         const val TITLE_WEIGHT = 20.0
@@ -238,5 +233,21 @@ class WindowMatcher(
         const val MIN_MARGIN = 0.15
         const val BOUNDS_TOLERANCE = 0.05f
         const val MIN_BOUNDS_IOU = 0.80f
+
+        val NON_ACTIVITY_TOKENS = listOf(
+            "Dialog",
+            "PopupWindow",
+            "PopupDecorView",
+            "Snackbar",
+            "Toast",
+            "BottomSheet",
+            "Menu"
+        )
+
+        fun looksLikeActivity(className: String): Boolean {
+            if (className.isBlank()) return false
+            val simpleName = className.substringAfterLast('.')
+            return NON_ACTIVITY_TOKENS.none { simpleName.contains(it) }
+        }
     }
 }

@@ -41,7 +41,7 @@ in two snapshots at least 100 ms apart, or after 300 ms with no relevant event. 
 are diagnostic only; the only explicit time delay is `WaitStep`.
 
 ### Expected-screen phase
-1. **Hard expected window**: The expected window (package name, window type, activity when observable) is a hard requirement. If the window does not appear before the step deadline, replay fails with `WINDOW_NOT_FOUND` or `WINDOW_AMBIGUOUS`.
+1. **Hard expected window**: The expected window (package name, window type, activity when observable) is a hard requirement. If the window does not appear before the step deadline, replay fails with `WINDOW_NOT_FOUND` or `WINDOW_AMBIGUOUS`. `WindowMatcher` treats recorded activity names as authoritative for activity matching unless they are obvious non-activity tokens (such as `Dialog`, `PopupWindow`, `PopupDecorView`, `Snackbar`, `Toast`, `BottomSheet`, `Menu`), natively supporting real activities that don't end in `"Activity"` (e.g. `Settings` or `SubSettings`).
 2. **Soft fingerprint hint**: `expectedBefore` screen fingerprint similarity is a soft hint. The engine waits up to 1.5 s (event-driven) for fingerprint similarity $\ge 0.80$. If satisfied, it proceeds with `fingerprintSatisfied = true`. If the 1.5 s window elapses without reaching 0.80 similarity, it records `ExpectedScreenRecorded(fingerprintSatisfied = false)` in trace diagnostics and proceeds to locating anyway.
 3. **Reveal steps skip fingerprint wait**: Steps defining a reveal policy (or scroll container) skip the fingerprint wait entirely because scrolling dynamically changes screen layout and content.
 
@@ -69,9 +69,9 @@ Target element locating is non-terminal during the step timeout (default 7 s):
    - After any scroll performed by scroll-to-find (semantic scroll or swipe), the engine waits for the scroll container to settle before locating or acting: re-snapshots on events or every 100 ms until two consecutive container content signatures are identical at least 150 ms apart, capped at 1200 ms.
 
 ### Acting & Movement retry phase
-1. **Movement rejection retry**: Only a `DISPATCH_REJECTED` movement failure that occurred before delivery may retry, and only when the step is not `IRREVERSIBLE`: wait for settle (as above), re-locate the target from a fresh snapshot, and retry the action—at most 2 retries—before failing. An `Accepted` dispatch is never replayed, even when verification fails.
+1. **Movement rejection retry**: Only a `DISPATCH_REJECTED` movement failure that occurred before delivery may retry, and ONLY when the step is strictly `StepSafety.REVERSIBLE` (never `IRREVERSIBLE` and never `BEST_EFFORT`): wait for settle (as above), re-locate the target from a fresh snapshot, and retry the action—at most 2 retries—before failing. An `Accepted` dispatch is never replayed, even when verification fails.
 2. **Trace diagnostics**: Each retry records an `ActionRetryRecorded(retryReason)` event with the exact rejection reason.
-3. **Safety rules**: Never retry `IRREVERSIBLE` steps; never retry when the rejection reason is not movement-related.
+3. **Safety rules**: Strictly allow retries only for `StepSafety.REVERSIBLE` steps; never retry when the rejection reason is not movement-related.
 
 ## Default timeouts
 

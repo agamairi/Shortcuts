@@ -251,7 +251,7 @@ class DefaultReplayEngine(
         while (movementRetries < maxMovementRetries) {
             val actionFailure = first.failure ?: break
             if (actionFailure.code != ReplayFailureCode.DISPATCH_REJECTED ||
-                step.safety == StepSafety.IRREVERSIBLE ||
+                step.safety != StepSafety.REVERSIBLE ||
                 !isMovementRejection(actionFailure.message)
             ) break
 
@@ -402,11 +402,13 @@ class DefaultReplayEngine(
             val action = scrollAction(reveal.direction, container)
             val dispatch = if (action != null) {
                 dispatch(step, UiActionRequest(step.operation, window.windowId, container.nodeId,
-                    semanticAction = action, dispatchMethod = DispatchMethod.SEMANTIC_ACTION), sink)
+                    semanticAction = action, dispatchMethod = DispatchMethod.SEMANTIC_ACTION,
+                    targetSelector = step.element.scrollContainer), sink)
             } else {
                 val points = scrollPoints(container.boundsInScreen, reveal.direction)
                 dispatch(step, UiActionRequest(step.operation, window.windowId, container.nodeId,
-                    gesture = scrollGesture(points), gesturePoints = points, dispatchMethod = DispatchMethod.GESTURE), sink)
+                    gesture = scrollGesture(points), gesturePoints = points, dispatchMethod = DispatchMethod.GESTURE,
+                    targetSelector = step.element.scrollContainer), sink)
             }
             if (dispatch is DispatchResult.Rejected) return LocatedTarget(null,
                 failure(ReplayFailureCode.DISPATCH_REJECTED, step.id, dispatch.reason))
@@ -834,9 +836,14 @@ class DefaultReplayEngine(
     }
 
     private suspend fun dispatch(step: UiStep, request: UiActionRequest, sink: TraceSink): DispatchResult {
+        val targetSelector = request.targetSelector ?: if (isScrollRequest(request)) {
+            step.element?.scrollContainer
+        } else {
+            step.element
+        }
         val result = environment.perform(request.copy(
             snapshotGeneration = environment.snapshotGeneration(),
-            targetSelector = request.targetSelector ?: step.element
+            targetSelector = targetSelector
         ))
         when (result) {
             is DispatchResult.Accepted -> sink.append(DispatchRecorded(clock(), step.id, result.method.name, true))

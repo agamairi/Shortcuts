@@ -2,12 +2,27 @@ package com.shortcuts.app.automation.replay
 
 import com.shortcuts.app.automation.core.tree.WindowSetSnapshot
 import com.shortcuts.app.automation.model.CapturedGesture
+import com.shortcuts.app.automation.model.GestureKind
 import com.shortcuts.app.automation.model.ImeActionKind
 import com.shortcuts.app.automation.model.IntPoint
 import com.shortcuts.app.automation.model.NodeAction
 import com.shortcuts.app.automation.model.UiOperation
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.emptyFlow
+
+val SCROLL_ACTIONS: Set<NodeAction> = setOf(
+    NodeAction.SCROLL_FORWARD,
+    NodeAction.SCROLL_BACKWARD,
+    NodeAction.SCROLL_UP,
+    NodeAction.SCROLL_DOWN,
+    NodeAction.SCROLL_LEFT,
+    NodeAction.SCROLL_RIGHT
+)
+
+fun isScrollRequest(request: UiActionRequest): Boolean =
+    request.semanticAction in SCROLL_ACTIONS ||
+    request.operation == UiOperation.SWIPE ||
+    request.gesture?.kind == GestureKind.SWIPE
 
 interface UiEnvironment {
     fun snapshotWindows(): WindowSetSnapshot
