@@ -465,3 +465,12 @@ object ShortcutSteps {
         }
     }
 }
+
+/**
+ * What a recorded step acted on, in words: its text, else its content description (icon buttons such
+ * as Calculator's "7"), else a readable form of its view id. Null when the element had no label at all.
+ */
+fun Action.recordedTargetLabel(): String? =
+    targetText?.takeIf { it.isNotBlank() }
+        ?: targetContentDescription?.takeIf { it.isNotBlank() }
+        ?: targetNodeId?.takeIf { it.isNotBlank() }?.substringAfter(":id/")?.replace('_', ' ')

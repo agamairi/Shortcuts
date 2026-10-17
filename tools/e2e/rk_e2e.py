@@ -905,7 +905,9 @@ def build_parser():
     run.add_argument("--repeat", type=int, default=1, help="number of runs per scenario (default: 1)")
     run.add_argument("--serial", help="adb device serial")
     run.add_argument("--keep-going", action="store_true", help="continue after a failed scenario")
-    run.add_argument("--settle-ms", type=int, default=700, help="wait after each human action (default: 700)")
+    # 1500 ms: reading the screen through RepeatKit's service takes ~0.4 s, where uiautomator took ~2 s,
+    # so 700 ms no longer let a freshly opened screen (Compose) become interactive before the next tap.
+    run.add_argument("--settle-ms", type=int, default=1500, help="wait after each human action (default: 1500)")
     run.set_defaults(handler=command_run)
 
     report = subparsers.add_parser("report", help="reprint a saved result summary")

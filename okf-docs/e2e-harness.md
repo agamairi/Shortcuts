@@ -30,6 +30,20 @@ navigation. `setup-accessibility` appends the Dev service to the existing
 colon-separated Android setting and enables accessibility; it is idempotent
 and never removes another service.
 
+**Reading the screen.** The harness finds elements through RepeatKit Dev's own accessibility
+service: `adb shell dumpsys activity service com.shortcuts.app.dev/com.shortcuts.app.service.AutomationAccessibilityService rk-ui`
+prints the on-screen tree in uiautomator's XML shape (debug builds only, `DebugUiDump.kt`;
+RepeatKit's overlays and the keyboard are left out, app windows come first). Do **not** use
+`uiautomator dump` while RepeatKit runs: it connects a UiAutomation, and Android unbinds every other
+accessibility service while one is connected, so each dump restarted RepeatKit's service in the
+middle of recordings and runs (dropped snapshots, lost app switches, "accessibility service is
+unavailable" during widget runs). `RK_ALLOW_UIAUTOMATOR=1` re-enables it as a fallback.
+
+**Settle time.** `--settle-ms` defaults to 1500 ms after each human action. The service dump takes
+~0.4 s where uiautomator took ~2 s; with the old 700 ms default the harness tapped a freshly opened
+Compose screen before it accepted input, the app dropped the tap, and the recording held a step the
+app never received.
+
 Results are written beneath
 `tools/e2e/results/<YYYYmmdd-HHMMSS>/<scenario>/run<k>/`. Each run contains
 `recording.json`, `run.json`, `truth.jsonl`, `replay.jsonl`, `verdict.json`,

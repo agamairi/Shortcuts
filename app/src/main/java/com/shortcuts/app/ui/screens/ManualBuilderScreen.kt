@@ -54,6 +54,7 @@ import com.shortcuts.app.data.ActionConverter
 import com.shortcuts.app.data.ActionType
 import com.shortcuts.app.data.Automation
 import com.shortcuts.app.data.ShortcutDocument
+import com.shortcuts.app.data.recordedTargetLabel
 import com.shortcuts.app.data.ShortcutSteps
 import com.shortcuts.app.util.AccessibilityStatusChecker
 import com.shortcuts.app.util.ActionDescriber
@@ -960,7 +961,7 @@ fun Action.hasBothSelectorsForOverride(): Boolean {
                         }
 
                         Text(
-                            action.targetText?.takeIf { it.isNotBlank() } ?: "target",
+                            action.recordedTargetLabel() ?: "target",
                             fontSize = 21.sp,
                             lineHeight = 31.5.sp,
                             letterSpacing = (-0.2).sp,
