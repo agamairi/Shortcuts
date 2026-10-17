@@ -315,4 +315,174 @@ class V2CaptureBridgeTest {
         // Dialog class must be rejected and last real activity retained
         assertEquals("com.example.app.MainActivity", capturedSwitches[1].observedActivityClass)
     }
+
+    @Test
+    fun testInferredImeActionOnResultsActivitySwitch() {
+        val searchField = NodeSnapshot(
+            nodeId = 15,
+            parentId = null,
+            childIds = emptyList(),
+            className = "android.widget.EditText",
+            resourceId = "com.example.app:id/edit_search",
+            text = "android",
+            contentDescription = null,
+            hintText = "Search",
+            stateDescription = null,
+            boundsInScreen = r(50, 50, 400, 150),
+            visibleToUser = true,
+            enabled = true,
+            clickable = true,
+            longClickable = true,
+            checkable = false,
+            checked = false,
+            editable = true,
+            focusable = true,
+            focused = true,
+            scrollable = false,
+            selected = false,
+            password = false,
+            actions = setOf(NodeAction.SET_TEXT),
+            collectionRow = null,
+            collectionColumn = null,
+            drawingOrder = 1,
+            windowId = 1,
+            packageName = "com.example.app"
+        )
+        val window = WindowSnapshot(
+            windowId = 1,
+            type = WindowType.APPLICATION,
+            layer = 1,
+            isActive = true,
+            isFocused = true,
+            title = "Search",
+            packageName = "com.example.app",
+            boundsInScreen = r(0, 0, 1080, 2400),
+            rootId = 15,
+            nodes = mapOf(15 to searchField)
+        )
+        val testSnapshot = snapshot(window, 1_000L)
+        EngineV2.snapshotSource = WindowSnapshotSource { testSnapshot }
+
+        val eventOrder = mutableListOf<String>()
+        val capturedImeActions = mutableListOf<com.shortcuts.app.automation.capture.CapturedImeAction>()
+        val mockCompiler = mockk<RecordingCompiler>(relaxed = true)
+        every { mockCompiler.accept(any<com.shortcuts.app.automation.capture.CapturedTextCommit>()) } answers {
+            eventOrder.add("text_commit")
+        }
+        every { mockCompiler.accept(any<com.shortcuts.app.automation.capture.CapturedImeAction>()) } answers {
+            eventOrder.add("ime_action")
+            capturedImeActions.add(firstArg())
+        }
+        every { mockCompiler.accept(any<com.shortcuts.app.automation.capture.CapturedAppSwitch>()) } answers {
+            eventOrder.add("app_switch")
+        }
+        V2CaptureBridge.setCompilerForTest(mockCompiler)
+
+        // 1. Initial app switch to SearchActivity
+        V2CaptureBridge.onAppSwitch("com.example.app", "com.example.app.SearchActivity", 1_000L)
+        // 2. Commit text
+        val textEvent = RecorderEvent(
+            eventType = RecorderEventType.TEXT_CHANGE,
+            packageName = "com.example.app",
+            sourceText = null,
+            sourceContentDescription = null,
+            sourceViewId = "com.example.app:id/edit_search",
+            enteredText = "android",
+            occurredAtMillis = 1_500L
+        )
+        V2CaptureBridge.onTextCommit(textEvent)
+
+        // 3. Activity switch to SearchResultsActivity within 2s
+        V2CaptureBridge.onAppSwitch("com.example.app", "com.example.app.SearchResultsActivity", 2_000L)
+
+        // Verify order: text_commit -> ime_action -> app_switch
+        assertEquals(listOf("app_switch", "text_commit", "ime_action", "app_switch"), eventOrder)
+        assertEquals(1, capturedImeActions.size)
+        assertEquals(ImeActionKind.SEARCH, capturedImeActions[0].kind)
+    }
+
+    @Test
+    fun testInferredImeActionOnFieldCleared() {
+        val messageField = NodeSnapshot(
+            nodeId = 25,
+            parentId = null,
+            childIds = emptyList(),
+            className = "android.widget.EditText",
+            resourceId = "com.example.app:id/edit_message",
+            text = "hello",
+            contentDescription = null,
+            hintText = "Message",
+            stateDescription = null,
+            boundsInScreen = r(50, 50, 400, 150),
+            visibleToUser = true,
+            enabled = true,
+            clickable = true,
+            longClickable = true,
+            checkable = false,
+            checked = false,
+            editable = true,
+            focusable = true,
+            focused = true,
+            scrollable = false,
+            selected = false,
+            password = false,
+            actions = setOf(NodeAction.SET_TEXT),
+            collectionRow = null,
+            collectionColumn = null,
+            drawingOrder = 1,
+            windowId = 1,
+            packageName = "com.example.app"
+        )
+        val window = WindowSnapshot(
+            windowId = 1,
+            type = WindowType.APPLICATION,
+            layer = 1,
+            isActive = true,
+            isFocused = true,
+            title = "Chat",
+            packageName = "com.example.app",
+            boundsInScreen = r(0, 0, 1080, 2400),
+            rootId = 25,
+            nodes = mapOf(25 to messageField)
+        )
+        val testSnapshot = snapshot(window, 1_000L)
+        EngineV2.snapshotSource = WindowSnapshotSource { testSnapshot }
+
+        val capturedImeActions = mutableListOf<com.shortcuts.app.automation.capture.CapturedImeAction>()
+        val mockCompiler = mockk<RecordingCompiler>(relaxed = true)
+        every { mockCompiler.accept(any<com.shortcuts.app.automation.capture.CapturedImeAction>()) } answers {
+            capturedImeActions.add(firstArg())
+        }
+        V2CaptureBridge.setCompilerForTest(mockCompiler)
+
+        // 1. Initial screen
+        V2CaptureBridge.onAppSwitch("com.example.app", "com.example.app.ChatActivity", 1_000L)
+
+        // 2. Commit text
+        val textEvent = RecorderEvent(
+            eventType = RecorderEventType.TEXT_CHANGE,
+            packageName = "com.example.app",
+            sourceText = null,
+            sourceContentDescription = null,
+            sourceViewId = "com.example.app:id/edit_message",
+            enteredText = "hello",
+            occurredAtMillis = 1_500L
+        )
+        V2CaptureBridge.onTextCommit(textEvent)
+
+        // 3. Field cleared (the sent pattern)
+        val clearedEvent = RecorderEvent(
+            eventType = RecorderEventType.TEXT_CHANGE,
+            packageName = "com.example.app",
+            sourceText = null,
+            sourceContentDescription = null,
+            sourceViewId = "com.example.app:id/edit_message",
+            enteredText = "",
+            occurredAtMillis = 1_800L
+        )
+        V2CaptureBridge.onTextChanged(clearedEvent)
+
+        assertEquals(1, capturedImeActions.size)
+        assertEquals(ImeActionKind.SEND, capturedImeActions[0].kind)
+    }
 }

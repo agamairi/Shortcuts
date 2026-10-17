@@ -79,9 +79,21 @@ To survive process death:
 | --- | --- | --- |
 | Gestures (tap, long press, swipe) | `TouchCaptureOverlay.kt` | At `ACTION_DOWN`, `EngineV2.snapshotSource?.snapshot()` is preserved. When classified on the main thread, `V2CaptureBridge.onGestureClassified` is called before dispatching relay events. |
 | Text field commits | `RecorderSession.kt` & `AutomationRecorder.kt` | When `RecorderSession.flushPendingTextLocked()` commits a field edit (400ms finalizer or focus shift), `onTextCommitListener` invokes `V2CaptureBridge.onTextCommit`. Sensitive/password fields are excluded. |
-| IME actions / Enter | `AutomationRecorder.kt` | In `resolveImeSubmitLabel`, `V2CaptureBridge.onImeAction` is delivered with the mapped `ImeActionKind`. |
-| Window / App switches | `AutomationRecorder.kt` | When handling `TYPE_WINDOW_STATE_CHANGED` for application windows, `V2CaptureBridge.onAppSwitch` is delivered with the target package and observed activity class (filtering out non-activity dialog classes and preserving the package's last real activity). |
-| Hardware / Nav keys | `AutomationRecorder.kt` | In `onKeyEvent(ACTION_UP)`, BACK, HOME, and APP_SWITCH (RECENTS) trigger `V2CaptureBridge.onGlobalAction`. |
+| Text changes & field clearing | `AutomationRecorder.kt` | On `TYPE_VIEW_TEXT_CHANGED`, `AutomationRecorder` forwards the event to `V2CaptureBridge.onTextChanged`, updating `ImeSubmitInference` for field clearing (the "sent" pattern) and in-progress typing. |
+| Explicit IME actions / Enter | `AutomationRecorder.kt` | In `resolveImeSubmitLabel` and `onKeyEvent`, `V2CaptureBridge.onImeAction` delivers explicit actions with mapped `ImeActionKind`. |
+| Inferred IME actions | `ImeSubmitInference.kt` & `V2CaptureBridge.kt` | Infers soft-keyboard submissions (Search, Send, Go, Done) invisible to accessibility from subsequent activity transitions, new windows/dialogs, or field clearing within 2 seconds. Delivers `CapturedImeAction` ordered directly after the text commit. |
+| Window / App switches | `AutomationRecorder.kt` | When handling `TYPE_WINDOW_STATE_CHANGED` for application windows, `V2CaptureBridge.onAppSwitch` is delivered with the target package and observed activity class (filtering out non-activity dialog classes and preserving the package's last real activity). Triggers IME inference if transitioning following a commit. |
+| Hardware / Nav keys | `AutomationRecorder.kt` | In `onKeyEvent(ACTION_UP)`, BACK, HOME, and APP_SWITCH (RECENTS) trigger `V2CaptureBridge.onGlobalAction` and cancel any pending IME inference. |
+
+### 4. Inferred IME Submissions (`ImeSubmitInference.kt`)
+Soft keyboard action keys (such as Gboard's Search, Send, Go, or Done) communicate through Android's `InputConnection` rather than accessibility input filters, meaning no key events or accessibility clicks are reported. The capture overlay shrinks above the keyboard to avoid blocking user input.
+
+`ImeSubmitInference` provides pure, testable inference that detects submissions from their effects:
+- **Triggers**: Within 2 seconds of a `CapturedTextCommit` (or active typing), an application transition to a different activity, a new window/dialog for that package, or the field's text clearing triggers an inferred `CapturedImeAction`.
+- **Action Kind Resolution**: Resolved from field IME options if exposed, field hint/label/resourceId semantics ("Search…" -> SEARCH, "Message…"/"Send" -> SEND), nearby button semantics (clickable "Send" / "Search" buttons), or the "sent" pattern on field clearing.
+- **Strict Suppression**: Inference is suppressed if an overlay-captured tap or key event occurred in between, if only the soft keyboard hides (which Back also causes), or if the screen simply updates content on the same screen (autocomplete suggestions).
+- **Ordering**: The inferred `CapturedImeAction` is delivered immediately following the text commit and preceding any subsequent activity switch or interaction.
+- **Logging**: Logged to logcat under tag `V2Capture` as `Inferred ImeAction (reason=...)`.
 
 ## Saving and Review Screen Integration
 

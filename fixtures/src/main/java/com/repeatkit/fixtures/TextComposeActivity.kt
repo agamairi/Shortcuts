@@ -1,5 +1,6 @@
 package com.repeatkit.fixtures
 
+import android.content.Intent
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -12,6 +13,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.input.key.*
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -29,6 +31,18 @@ class TextComposeActivity : ComponentActivity() {
             var messageText by remember { mutableStateOf("") }
             var searchHadFocus by remember { mutableStateOf(false) }
             var messageHadFocus by remember { mutableStateOf(false) }
+
+            fun submitSearch(query: String) {
+                FixtureLog.event("text_compose", "submit", "field_search", query)
+                val intent = Intent(this@TextComposeActivity, SearchResultsActivity::class.java).apply {
+                    putExtra(SearchResultsActivity.EXTRA_QUERY, query)
+                }
+                startActivity(intent)
+            }
+
+            fun submitMessage(msg: String) {
+                FixtureLog.event("text_compose", "submit", "field_message", msg)
+            }
 
             Scaffold(
                 contentWindowInsets = WindowInsets.systemBars,
@@ -56,12 +70,22 @@ class TextComposeActivity : ComponentActivity() {
                         keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                         keyboardActions = KeyboardActions(
                             onSearch = {
-                                FixtureLog.event("text_compose", "submit", "field_search", searchText)
+                                submitSearch(searchText)
                             }
                         ),
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("field_search")
+                            .onKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown &&
+                                    (keyEvent.key == Key.Enter || keyEvent.key == Key.NumPadEnter)
+                                ) {
+                                    submitSearch(searchText)
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
                             .onFocusChanged { focusState ->
                                 if (focusState.isFocused) {
                                     searchHadFocus = true
@@ -84,9 +108,28 @@ class TextComposeActivity : ComponentActivity() {
                         value = messageText,
                         onValueChange = { messageText = it },
                         label = { Text("Message") },
+                        singleLine = true,
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                        keyboardActions = KeyboardActions(
+                            onSend = {
+                                submitMessage(messageText)
+                                messageText = ""
+                            }
+                        ),
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("field_message")
+                            .onKeyEvent { keyEvent ->
+                                if (keyEvent.type == KeyEventType.KeyDown &&
+                                    (keyEvent.key == Key.Enter || keyEvent.key == Key.NumPadEnter)
+                                ) {
+                                    submitMessage(messageText)
+                                    messageText = ""
+                                    true
+                                } else {
+                                    false
+                                }
+                            }
                             .onFocusChanged { focusState ->
                                 if (focusState.isFocused) {
                                     messageHadFocus = true
@@ -107,7 +150,7 @@ class TextComposeActivity : ComponentActivity() {
 
                     Button(
                         onClick = {
-                            FixtureLog.event("text_compose", "submit", "field_message", messageText)
+                            submitMessage(messageText)
                             messageText = ""
                         },
                         modifier = Modifier.testTag("btn_send")
