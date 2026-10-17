@@ -2,10 +2,13 @@ package com.shortcuts.app.automation.android.capture
 
 import com.shortcuts.app.automation.capture.CapturedImeAction
 import com.shortcuts.app.automation.capture.CapturedTextCommit
+import com.shortcuts.app.automation.core.fingerprint.DefaultScreenFingerprinter
+import com.shortcuts.app.automation.core.fingerprint.ScreenFingerprinter
 import com.shortcuts.app.automation.core.tree.NodeSnapshot
 import com.shortcuts.app.automation.core.tree.WindowSetSnapshot
 import com.shortcuts.app.automation.core.tree.WindowSnapshot
 import com.shortcuts.app.automation.model.ImeActionKind
+import com.shortcuts.app.automation.model.NodeAction
 import com.shortcuts.app.automation.model.WindowType
 
 /**
@@ -89,6 +92,8 @@ fun inferImeActionKind(
  * Therefore, submission must be inferred from its observable effects:
  * 1. An application window change to a different activity for the package.
  * 2. The focused field's committed non-empty value becoming empty in one text event.
+ * 3. The field losing input focus (or the IME disappearing) while the same app changes screen
+ *    substantially, including an omnibox replacing the typed query with a result URL.
  *
  * Both must occur within [maxDelayMs] (2 seconds) after a text commit or typing, without any
  * intervening overlay tap or navigation key (BACK, HOME, RECENTS).
@@ -97,7 +102,9 @@ fun inferImeActionKind(
  * synthesize a submission.
  */
 class ImeSubmitInference(
-    private val maxDelayMs: Long = 2_000L
+    private val maxDelayMs: Long = 2_000L,
+    private val screenFingerprinter: ScreenFingerprinter = DefaultScreenFingerprinter(),
+    private val screenChangeThreshold: Double = 0.80
 ) {
     data class Candidate(
         val fieldNode: NodeSnapshot,
@@ -106,6 +113,8 @@ class ImeSubmitInference(
         val text: String,
         val timestampMs: Long,
         val hasCommitted: Boolean,
+        val initialScreenFingerprint: com.shortcuts.app.automation.model.ScreenFingerprint,
+        val keyboardWasVisible: Boolean,
         /** A changed non-empty value means the user is editing/deleting, not submitting. */
         val sawIntermediateTextChange: Boolean = false,
         /** Set when a tap is captured inside the field bounds (e.g. tapping the clear "X" button). */
@@ -118,7 +127,11 @@ class ImeSubmitInference(
     /**
      * Records a committed field edit as an active candidate for IME submission inference.
      */
-    fun onTextCommit(commit: CapturedTextCommit, activityClass: String? = null) {
+    fun onTextCommit(
+        commit: CapturedTextCommit,
+        activityClass: String? = null,
+        snapshot: WindowSetSnapshot? = null
+    ) {
         if (commit.finalText.isEmpty() || commit.fieldNode.nodeId < 0 || !commit.fieldNode.focused) {
             candidate = null
             return
@@ -129,7 +142,9 @@ class ImeSubmitInference(
             initialActivityClass = activityClass,
             text = commit.finalText,
             timestampMs = commit.committedAtUptimeMs,
-            hasCommitted = true
+            hasCommitted = true,
+            initialScreenFingerprint = screenFingerprinter.fingerprint(commit.windowSnapshot, activityClass),
+            keyboardWasVisible = snapshot?.windows?.any { it.type == WindowType.INPUT_METHOD } == true
         )
     }
 
@@ -242,10 +257,7 @@ class ImeSubmitInference(
         val matchesField = matchesField(current, fieldNode, windowSnapshot)
         if (!matchesField) return null
 
-        if (!fieldNode.focused) {
-            candidate = null
-            return null
-        }
+        if (!fieldNode.focused) return null
         if (newText.isNotEmpty() && newText != current.text) {
             candidate = current.copy(sawIntermediateTextChange = true)
             return null
@@ -263,6 +275,64 @@ class ImeSubmitInference(
             )
         }
         return null
+    }
+
+    /**
+     * Infers a same-activity keyboard submit from a conservative combination of effects.
+     * A focus/IME transition is necessary but insufficient: the application screen must also
+     * change substantially, or the submitted field must replace the committed value.
+     */
+    fun onScreenEffect(
+        snapshot: WindowSetSnapshot,
+        uptimeMs: Long,
+        activityClass: String? = null
+    ): InferredImeSubmit? {
+        val current = candidate ?: return null
+        if (uptimeMs - current.timestampMs > maxDelayMs) {
+            candidate = null
+            return null
+        }
+
+        val appWindow = snapshot.windows
+            .asSequence()
+            .filter { it.packageName == current.windowSnapshot.packageName }
+            .filterNot { it.type == WindowType.INPUT_METHOD || it.type == WindowType.ACCESSIBILITY_OVERLAY }
+            .sortedWith(
+                compareByDescending<WindowSnapshot> { it.isActive || it.isFocused }
+                    .thenByDescending { it.layer }
+            )
+            .firstOrNull() ?: return null
+        val currentField = appWindow.nodes.values.firstOrNull {
+            matchesField(current, it, appWindow)
+        }
+        val focusLost = currentField == null || !currentField.focused
+        val keyboardVisible = snapshot.windows.any { it.type == WindowType.INPUT_METHOD }
+        val keyboardWentAway = current.keyboardWasVisible && !keyboardVisible
+        if (!focusLost && !keyboardWentAway) return null
+
+        val replacementText = currentField?.text
+            ?.takeUnless { it.isBlank() || it == current.text || it == currentField.hintText }
+        val textWasReplaced = replacementText != null
+        val currentFingerprint = screenFingerprinter.fingerprint(appWindow, activityClass)
+        val screenChanged = screenFingerprinter.similarity(
+            current.initialScreenFingerprint,
+            currentFingerprint
+        ) < screenChangeThreshold
+        if (!screenChanged && !textWasReplaced) return null
+
+        // Effect-only inference is deliberately limited to fields with IME-action evidence.
+        // Android exposes IME_ENTER directly on many fields; semantic search/send/go identifiers
+        // are the fallback for WebView/Compose fields that omit that action.
+        val hasImeActionEvidence = NodeAction.IME_ENTER in current.fieldNode.actions ||
+            inferImeActionKind(current.fieldNode, current.windowSnapshot) != ImeActionKind.UNSPECIFIED
+        if (!hasImeActionEvidence) return null
+
+        return emitInference(
+            current = current,
+            reason = "focus_loss_with_screen_change",
+            targetActivityClass = activityClass,
+            uptimeMs = uptimeMs
+        )
     }
 
     private fun matchesField(

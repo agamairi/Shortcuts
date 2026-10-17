@@ -54,6 +54,23 @@ object V2CaptureBridge {
     /** Most recent capture snapshot for each confirmed screen, retained for inferred Back's before state. */
     private val lastSnapshotsByScreen = mutableMapOf<Pair<String, String>, WindowSetSnapshot>()
     private var launcherPackages = emptySet<String>()
+    private var imePackageNames = emptySet<String>()
+    private data class PendingAppSwitch(
+        val toPackage: String,
+        val className: String?,
+        val uptimeMs: Long
+    )
+    private val pendingAppSwitches = ArrayDeque<PendingAppSwitch>()
+    private data class PendingTextContext(
+        val packageName: String,
+        val resourceId: String?,
+        val className: String?,
+        val enteredText: String,
+        val fieldNode: com.shortcuts.app.automation.core.tree.NodeSnapshot,
+        val window: WindowSnapshot,
+        val snapshot: WindowSetSnapshot
+    )
+    private var pendingTextContext: PendingTextContext? = null
     private val activityCache = java.util.concurrent.ConcurrentHashMap<Pair<String, String>, Boolean>()
     private val imeInference = ImeSubmitInference()
     private var backInference = BackNavigationInference()
@@ -115,10 +132,13 @@ object V2CaptureBridge {
                 lastSnapshotsByScreen.clear()
                 activityCache.clear()
                 imeInference.reset()
+                pendingAppSwitches.clear()
+                pendingTextContext = null
+                imePackageNames = emptySet()
                 degradedLogged = false
                 currentStore.clearAll()
 
-                val snapshot = EngineV2.snapshotSource?.snapshot()
+                val snapshot = snapshotWithRetry()
                 if (snapshot == null) {
                     logDegraded("Snapshot source unavailable at start")
                     return@synchronized
@@ -135,6 +155,7 @@ object V2CaptureBridge {
                     sdkInt = Build.VERSION.SDK_INT
                 )
                 val imePackages = resolveImePackages(context)
+                imePackageNames = imePackages
                 val workflowId = UUID.randomUUID().toString()
 
                 val newCompiler = RecordingCompiler(
@@ -176,6 +197,9 @@ object V2CaptureBridge {
                     lastSnapshotsByScreen.clear()
                     activityCache.clear()
                     imeInference.reset()
+                    pendingAppSwitches.clear()
+                    pendingTextContext = null
+                    imePackageNames = emptySet()
                     backInference.reset()
                     degradedLogged = false
                     store?.clearAll()
@@ -191,8 +215,14 @@ object V2CaptureBridge {
                     return@synchronized
                 }
 
-                val finalSnapshot = EngineV2.snapshotSource?.snapshot()
+                val finalSnapshot = snapshotWithRetry()
                 if (finalSnapshot != null) {
+                    flushPendingAppSwitchesLocked(finalSnapshot)
+                    imeInference.onScreenEffect(
+                        finalSnapshot,
+                        finalSnapshot.capturedAtUptimeMs,
+                        lastForegroundPackage?.let(lastActivitiesByPackage::get)
+                    )?.let(::deliverInferredImeSubmitLocked)
                     runCatching { activeCompiler.updateScreen(finalSnapshot) }
                 }
 
@@ -233,6 +263,9 @@ object V2CaptureBridge {
                 lastSnapshotsByScreen.clear()
                 activityCache.clear()
                 imeInference.reset()
+                pendingAppSwitches.clear()
+                pendingTextContext = null
+                imePackageNames = emptySet()
                 backInference.reset()
                 degradedLogged = false
                 store?.clearAll()
@@ -272,6 +305,7 @@ object V2CaptureBridge {
                     sdkInt = Build.VERSION.SDK_INT
                 )
                 val imePackages = resolveImePackages(context)
+                imePackageNames = imePackages
 
                 val restoredCompiler = RecordingCompiler(
                     launcherPackageNames = launcherPackages,
@@ -325,6 +359,7 @@ object V2CaptureBridge {
                 logDegraded("Snapshot source unavailable for gesture; recorded as coordinate-only by legacy capture")
                 return@synchronized
             }
+            flushPendingAppSwitchesLocked(beforeSnapshot)
 
             val interaction = createCapturedInteraction(kind, samples, beforeSnapshot, ownPackage)
             val firstSample = samples.firstOrNull()
@@ -354,30 +389,39 @@ object V2CaptureBridge {
                 val activeCompiler = compiler ?: return@synchronized
                 if (event.enteredText.isEmpty()) return@synchronized
 
-                val snapshot = EngineV2.snapshotSource?.snapshot()
+                val liveSnapshot = EngineV2.snapshotSource?.snapshot()
+                val capturedContext = pendingTextContext?.takeIf {
+                    it.packageName == event.packageName &&
+                        (event.sourceViewId == null || it.resourceId == event.sourceViewId) &&
+                        (event.sourceClassName == null || it.className == event.sourceClassName)
+                }
+                val snapshot = capturedContext?.snapshot ?: liveSnapshot
                 if (snapshot == null) {
                     logDegraded("Snapshot source unavailable for text commit")
                     return@synchronized
                 }
+                liveSnapshot?.let(::flushPendingAppSwitchesLocked)
 
-                val window = (event.windowId?.let { snapshot.window(it) })
+                val window = capturedContext?.window ?: (event.windowId?.let { snapshot.window(it) })
                     ?: snapshot.windows.firstOrNull { it.packageName == event.packageName && it.type != WindowType.ACCESSIBILITY_OVERLAY && it.type != WindowType.INPUT_METHOD }
                     ?: snapshot.windows.maxByOrNull { it.layer }
                     ?: return@synchronized
 
                 val focusedEditable = window.nodes.values.firstOrNull { it.focused && it.editable }
-                val fieldNode = focusedEditable ?: window.nodes.values.firstOrNull { candidate ->
+                val fieldNode = capturedContext?.fieldNode ?: focusedEditable ?: window.nodes.values.firstOrNull { candidate ->
                     (event.sourceViewId != null && candidate.resourceId == event.sourceViewId) ||
                         (candidate.className == event.sourceClassName && candidate.editable)
                 } ?: return@synchronized
 
-                val commit = createCapturedTextCommit(fieldNode, event.enteredText, window, event.occurredAtMillis)
+                val committedText = capturedContext?.enteredText ?: event.enteredText
+                val commit = createCapturedTextCommit(fieldNode, committedText, window, event.occurredAtMillis)
                     ?: return@synchronized
                 backInference.onInteraction(commit.committedAtUptimeMs)
                 activeCompiler.accept(commit)
                 persistEventLocked(PersistedV2EventWrapper(type = "text_commit", textCommit = commit))
                 val currentActivity = lastActivitiesByPackage[window.packageName]
-                imeInference.onTextCommit(commit, currentActivity)
+                imeInference.onTextCommit(commit, currentActivity, snapshot)
+                pendingTextContext = null
                 rememberSnapshotLocked(window.packageName, snapshot)
 
                 Log.d(
@@ -404,6 +448,7 @@ object V2CaptureBridge {
                     logDegraded("Snapshot source unavailable for IME action")
                     return@synchronized
                 }
+                flushPendingAppSwitchesLocked(snapshot)
 
                 val window = snapshot.windows
                     .filterNot { it.type == WindowType.ACCESSIBILITY_OVERLAY || it.type == WindowType.INPUT_METHOD }
@@ -443,52 +488,102 @@ object V2CaptureBridge {
                 if (!EngineV2.enabled) return@synchronized
                 val activeCompiler = compiler ?: return@synchronized
 
-                val snapshot = EngineV2.snapshotSource?.snapshot()
+                val snapshot = snapshotWithRetry()
+                val isImeWindowState = toPackage in imePackageNames ||
+                    snapshot?.windows?.any {
+                        it.type == WindowType.INPUT_METHOD && it.packageName == toPackage
+                    } == true
+                if (isImeWindowState) {
+                    if (snapshot != null) {
+                        flushPendingAppSwitchesLocked(snapshot)
+                        imeInference.onScreenEffect(
+                            snapshot,
+                            uptimeMs,
+                            lastForegroundPackage?.let(lastActivitiesByPackage::get)
+                        )?.let(::deliverInferredImeSubmitLocked)
+                    }
+                    Log.d(TAG, "Ignored IME window state: pkg=$toPackage at=$uptimeMs")
+                    return@synchronized
+                }
                 if (snapshot == null) {
+                    pendingAppSwitches.addLast(PendingAppSwitch(toPackage, classNameStr, uptimeMs))
                     logDegraded("Snapshot source unavailable for app switch")
                     return@synchronized
                 }
-
-                val confirmedActivityClass = classNameStr?.takeIf { isConfirmedActivity(toPackage, it) }
-                val activityClass = confirmedActivityClass ?: lastActivitiesByPackage[toPackage]
-
-                val inferred = imeInference.onActivityChanged(toPackage, activityClass, uptimeMs)
-                if (inferred != null) {
-                    deliverInferredImeSubmitLocked(inferred)
-                }
-
-                val fromPackage = lastForegroundPackage
-                if (fromPackage != null && fromPackage in launcherPackages) {
-                    backInference.onInteraction(uptimeMs)
-                }
-                val inferredBack = backInference.onActivityChanged(toPackage, confirmedActivityClass, uptimeMs)
-                if (confirmedActivityClass != null) lastActivitiesByPackage[toPackage] = confirmedActivityClass
-                if (inferredBack != null) {
-                    val previousSnapshot = lastSnapshotsByScreen[
-                        inferredBack.packageName to inferredBack.fromActivityClass
-                    ]
-                    if (previousSnapshot != null) {
-                        deliverInferredBackLocked(inferredBack, previousSnapshot, uptimeMs)
-                    }
-                }
-
-                val appSwitch = createCapturedAppSwitch(
-                    fromPackage = lastForegroundPackage,
-                    toPackage = toPackage,
-                    activityClass = activityClass,
-                    snapshot = snapshot,
-                    switchedAtUptimeMs = uptimeMs
-                )
-                activeCompiler.accept(appSwitch)
-                persistEventLocked(PersistedV2EventWrapper(type = "app_switch", appSwitch = appSwitch))
-                lastForegroundPackage = toPackage
-                confirmedActivityClass?.let { rememberSnapshotLocked(toPackage, snapshot, it) }
-
-                Log.d(
-                    TAG,
-                    "Delivered AppSwitch: from=${appSwitch.fromPackageName} to=$toPackage activityClass=$activityClass at=$uptimeMs"
-                )
+                flushPendingAppSwitchesLocked(snapshot)
+                deliverAppSwitchLocked(activeCompiler, toPackage, classNameStr, uptimeMs, snapshot)
             }
+        }
+    }
+
+    private fun deliverAppSwitchLocked(
+        activeCompiler: RecordingCompiler,
+        toPackage: String,
+        className: String?,
+        uptimeMs: Long,
+        snapshot: WindowSetSnapshot
+    ) {
+        val confirmedActivityClass = className?.takeIf { isConfirmedActivity(toPackage, it) }
+        val activityClass = confirmedActivityClass ?: lastActivitiesByPackage[toPackage]
+
+        val inferred = imeInference.onActivityChanged(toPackage, activityClass, uptimeMs)
+        if (inferred != null) {
+            deliverInferredImeSubmitLocked(inferred)
+        } else {
+            imeInference.onScreenEffect(snapshot, uptimeMs, activityClass)
+                ?.let(::deliverInferredImeSubmitLocked)
+        }
+
+        val fromPackage = lastForegroundPackage
+        if (fromPackage != null && fromPackage in launcherPackages) {
+            backInference.onInteraction(uptimeMs)
+        }
+        val inferredBack = backInference.onActivityChanged(toPackage, confirmedActivityClass, uptimeMs)
+        if (confirmedActivityClass != null) lastActivitiesByPackage[toPackage] = confirmedActivityClass
+        if (inferredBack != null) {
+            val previousSnapshot = lastSnapshotsByScreen[
+                inferredBack.packageName to inferredBack.fromActivityClass
+            ]
+            if (previousSnapshot != null) {
+                deliverInferredBackLocked(inferredBack, previousSnapshot, uptimeMs)
+            }
+        }
+
+        val appSwitch = createCapturedAppSwitch(
+            fromPackage = lastForegroundPackage,
+            toPackage = toPackage,
+            activityClass = activityClass,
+            snapshot = snapshot,
+            switchedAtUptimeMs = uptimeMs
+        )
+        activeCompiler.accept(appSwitch)
+        persistEventLocked(PersistedV2EventWrapper(type = "app_switch", appSwitch = appSwitch))
+        lastForegroundPackage = toPackage
+        confirmedActivityClass?.let { rememberSnapshotLocked(toPackage, snapshot, it) }
+
+        Log.d(
+            TAG,
+            "Delivered AppSwitch: from=${appSwitch.fromPackageName} to=$toPackage activityClass=$activityClass at=$uptimeMs"
+        )
+    }
+
+    private fun flushPendingAppSwitchesLocked(snapshot: WindowSetSnapshot) {
+        val activeCompiler = compiler ?: return
+        while (pendingAppSwitches.isNotEmpty()) {
+            val pending = pendingAppSwitches.removeFirst()
+            if (pending.toPackage in imePackageNames || snapshot.windows.any {
+                    it.type == WindowType.INPUT_METHOD && it.packageName == pending.toPackage
+                }
+            ) {
+                continue
+            }
+            deliverAppSwitchLocked(
+                activeCompiler = activeCompiler,
+                toPackage = pending.toPackage,
+                className = pending.className,
+                uptimeMs = pending.uptimeMs,
+                snapshot = snapshot
+            )
         }
     }
 
@@ -500,16 +595,60 @@ object V2CaptureBridge {
             synchronized(lock) {
                 if (!EngineV2.enabled || compiler == null) return@synchronized
                 val snapshot = EngineV2.snapshotSource?.snapshot() ?: return@synchronized
+                flushPendingAppSwitchesLocked(snapshot)
                 val window = (event.windowId?.let { snapshot.window(it) })
                     ?: snapshot.windows.firstOrNull { it.packageName == event.packageName && it.type != WindowType.ACCESSIBILITY_OVERLAY && it.type != WindowType.INPUT_METHOD }
                     ?: return@synchronized
                 val field = window.nodes.values.firstOrNull { candidate ->
-                    candidate.editable && candidate.focused &&
+                    candidate.editable &&
                         (event.sourceViewId == null || candidate.resourceId == event.sourceViewId) &&
                         (event.sourceClassName == null || candidate.className == event.sourceClassName)
                 } ?: window.nodes.values.firstOrNull { it.editable && it.focused } ?: return@synchronized
+                val previousTextContext = pendingTextContext?.takeIf {
+                    it.packageName == window.packageName &&
+                        (field.resourceId == null || it.resourceId == field.resourceId) &&
+                        it.className == field.className
+                }
+                val keyboardWentAway = previousTextContext?.snapshot?.windows?.any {
+                    it.type == WindowType.INPUT_METHOD
+                } == true && snapshot.windows.none { it.type == WindowType.INPUT_METHOD }
+                val isPostSubmitReplacement = previousTextContext != null &&
+                    previousTextContext.enteredText != event.enteredText &&
+                    (!field.focused || keyboardWentAway)
+                if (!isPostSubmitReplacement) {
+                    pendingTextContext = PendingTextContext(
+                        packageName = window.packageName,
+                        resourceId = field.resourceId,
+                        className = field.className,
+                        enteredText = event.enteredText,
+                        fieldNode = field,
+                        window = window,
+                        snapshot = snapshot
+                    )
+                }
                 imeInference.onFieldTextChanged(field, event.enteredText, event.occurredAtMillis, window)
                     ?.let(::deliverInferredImeSubmitLocked)
+                    ?: imeInference.onScreenEffect(
+                        snapshot,
+                        event.occurredAtMillis,
+                        lastActivitiesByPackage[window.packageName]
+                    )?.let(::deliverInferredImeSubmitLocked)
+            }
+        }
+    }
+
+    /** Inspects a focus/content/IME-window change without treating it as an application switch. */
+    fun onScreenChanged(uptimeMs: Long) {
+        captureExecutor.execute {
+            synchronized(lock) {
+                if (!EngineV2.enabled || compiler == null) return@synchronized
+                val snapshot = EngineV2.snapshotSource?.snapshot() ?: return@synchronized
+                flushPendingAppSwitchesLocked(snapshot)
+                imeInference.onScreenEffect(
+                    snapshot,
+                    uptimeMs,
+                    lastForegroundPackage?.let(lastActivitiesByPackage::get)
+                )?.let(::deliverInferredImeSubmitLocked)
             }
         }
     }
@@ -604,6 +743,8 @@ object V2CaptureBridge {
         lastActivitiesByPackage.clear()
         lastSnapshotsByScreen.clear()
         imeInference.reset()
+        pendingAppSwitches.clear()
+        pendingTextContext = null
         backInference.reset()
         session.events.forEach { event ->
             event.appSwitch?.let { appSwitch ->
@@ -670,6 +811,17 @@ object V2CaptureBridge {
         }
     }
 
+    private fun snapshotWithRetry(): WindowSetSnapshot? {
+        val source = EngineV2.snapshotSource ?: return null
+        repeat(SNAPSHOT_ATTEMPTS) { attempt ->
+            source.snapshot()?.let { return it }
+            if (attempt + 1 < SNAPSHOT_ATTEMPTS) {
+                runCatching { Thread.sleep(SNAPSHOT_RETRY_DELAY_MS) }
+            }
+        }
+        return null
+    }
+
     private fun getOrCreateTokenizerSalt(context: Context): String = runCatching {
         val appContext = context.applicationContext ?: context
         val prefs = appContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -705,6 +857,12 @@ object V2CaptureBridge {
         }
     }
 
+    internal fun setImePackageNamesForTest(packages: Set<String>) {
+        synchronized(lock) {
+            imePackageNames = packages
+        }
+    }
+
     internal fun resetForTest() {
         synchronized(lock) {
             compiler = null
@@ -717,6 +875,8 @@ object V2CaptureBridge {
             imeInference.reset()
             backInference = BackNavigationInference()
             launcherPackages = emptySet()
+            imePackageNames = emptySet()
+            pendingTextContext = null
             degradedLogged = false
             store = null
         }
@@ -727,4 +887,7 @@ object V2CaptureBridge {
     internal fun awaitCaptureIdleForTest() {
         runCatching { captureExecutor.submit {}.get(2, TimeUnit.SECONDS) }
     }
+
+    private const val SNAPSHOT_ATTEMPTS = 3
+    private const val SNAPSHOT_RETRY_DELAY_MS = 25L
 }

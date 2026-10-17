@@ -2,6 +2,7 @@ package com.shortcuts.app.automation.capture
 
 import com.shortcuts.app.automation.core.fingerprint.ScreenFingerprinter
 import com.shortcuts.app.automation.core.text.TextNormalizer
+import com.shortcuts.app.automation.core.tree.IntRect
 import com.shortcuts.app.automation.core.tree.NodeSnapshot
 import com.shortcuts.app.automation.core.tree.WindowSetSnapshot
 import com.shortcuts.app.automation.core.tree.WindowSnapshot
@@ -339,11 +340,14 @@ class RecordingCompiler(
         targetPackage: String?,
         laterContexts: List<EventContext> = emptyList()
     ): LaunchDraft {
-        val source = requireNotNull(
-            sequenceOf(context).plus(laterContexts)
-                .firstOrNull { it.window != null && (targetPackage == null || it.window.packageName == targetPackage) }
-        ) { "Launch target has no application window" }
-        val window = requireNotNull(source.window)
+        val source = sequenceOf(context).plus(laterContexts)
+            .firstOrNull { it.window != null && (targetPackage == null || it.window.packageName == targetPackage) }
+            ?: context
+        val window = source.window?.takeIf { targetPackage == null || it.packageName == targetPackage }
+            ?: syntheticApplicationWindow(
+                packageName = requireNotNull(targetPackage) { "Launch target has no application package" },
+                snapshot = source.snapshot
+            )
         return LaunchDraft(
             id = idGenerator(),
             eventIndex = context.eventIndex,
@@ -352,6 +356,22 @@ class RecordingCompiler(
             policy = policy
         )
     }
+
+    private fun syntheticApplicationWindow(
+        packageName: String,
+        snapshot: WindowSetSnapshot
+    ): WindowSnapshot = WindowSnapshot(
+        windowId = Int.MIN_VALUE,
+        type = WindowType.APPLICATION,
+        layer = 0,
+        isActive = true,
+        isFocused = true,
+        title = null,
+        packageName = packageName,
+        boundsInScreen = IntRect(0, 0, snapshot.displayWidth, snapshot.displayHeight),
+        rootId = Int.MIN_VALUE,
+        nodes = emptyMap()
+    )
 
     private fun interactionDraft(
         context: EventContext,
@@ -862,13 +882,12 @@ class RecordingCompiler(
         preferredWindowId?.let(snapshot::window)?.let { return it }
         val eligible = snapshot.windows.asSequence()
             .filterNot { it.type == WindowType.ACCESSIBILITY_OVERLAY || it.type == WindowType.INPUT_METHOD }
-        return eligible
-            .filter { preferredPackage == null || it.packageName == preferredPackage }
+        val sortedEligible = eligible
             .sortedWith(compareByDescending<WindowSnapshot> { it.isActive || it.isFocused }.thenByDescending { it.layer })
-            .firstOrNull()
-            ?: snapshot.windows.asSequence()
-                .filterNot { it.type == WindowType.ACCESSIBILITY_OVERLAY || it.type == WindowType.INPUT_METHOD }
-                .maxByOrNull(WindowSnapshot::layer)
+        if (preferredPackage != null) {
+            return sortedEligible.firstOrNull { it.packageName == preferredPackage }
+        }
+        return sortedEligible.firstOrNull()
     }
 
     private fun isIgnoredPackage(packageName: String?): Boolean = packageName == null ||
