@@ -10,6 +10,15 @@
 -keep class com.shortcuts.app.data.ActionType { *; }
 -keepattributes Signature,*Annotation*
 
+# Engine v2 workflows (Automation.actionsJson) and the in-progress capture cache are serialized
+# with Gson by field and enum-constant name. Renaming them would make release builds write
+# unreadable JSON and fail to decode shortcuts saved by any other build.
+-keep class com.shortcuts.app.automation.model.** { *; }
+-keep class com.shortcuts.app.automation.core.tree.** { *; }
+-keep class com.shortcuts.app.automation.capture.** { *; }
+-keep class com.shortcuts.app.automation.android.capture.** { *; }
+-keepclassmembers enum com.shortcuts.app.** { *; }
+
 # MediaPipe's task runtime loads native-backed classes by name.
 -keep class com.google.mediapipe.** { *; }
 -dontwarn com.google.mediapipe.**
