@@ -8,6 +8,7 @@ import com.shortcuts.app.automation.core.tree.WindowSetSnapshot
 import com.shortcuts.app.automation.core.tree.r
 import com.shortcuts.app.automation.core.tree.window
 import com.shortcuts.app.automation.core.tree.windowSet
+import com.shortcuts.app.automation.diagnostics.ActionRetryRecorded
 import com.shortcuts.app.automation.diagnostics.ExpectedScreenRecorded
 import com.shortcuts.app.automation.diagnostics.TraceEvent
 import com.shortcuts.app.automation.diagnostics.TraceSink
@@ -506,6 +507,188 @@ class ReplayRegressionTest {
 
         val result = engine(env, { testScheduler.currentTime }).run(workflow(step), RecordingSink())
         assertEquals(ReplayResult.Success(1), result)
+    }
+
+    // --- Fix 6: Settle after scroll & Movement rejection retry ---
+
+    @Test
+    fun `list still moving for 400 ms after the scroll engine waits and taps the right row once`() = runTest {
+        var scrollStartTime = -1L
+        var tapCount = 0
+        var tapped = false
+
+        fun movingListScreen(startRow: Int, offsetPx: Int): WindowSetSnapshot = windowSet(window("app") {
+            node("Root") {
+                node("RecyclerView", id = 2, resourceId = "app:id/list", bounds = r(0, 100, 1_000, 1_900),
+                    scrollable = true, actions = setOf(NodeAction.SCROLL_FORWARD)) {
+                    (startRow until (startRow + 10).coerceAtMost(60)).forEach { row ->
+                        node("TextView", resourceId = "app:id/row-$row",
+                            bounds = r(0, 100 + (row - startRow) * 100 + offsetPx, 1_000, 190 + (row - startRow) * 100 + offsetPx),
+                            collectionRow = row, clickable = true, actions = setOf(NodeAction.CLICK))
+                    }
+                }
+            }
+        })
+
+        lateinit var env: FakeEnvironment
+        env = FakeEnvironment(uniformListScreen(0)) { request ->
+            if (request.semanticAction == NodeAction.SCROLL_FORWARD) {
+                scrollStartTime = testScheduler.currentTime
+                DispatchResult.Accepted(DispatchMethod.SEMANTIC_ACTION)
+            } else if (request.semanticAction == NodeAction.CLICK) {
+                tapCount++
+                tapped = true
+                snapshot = windowSet(window("app") { node("Root") })
+                DispatchResult.Accepted(DispatchMethod.SEMANTIC_ACTION)
+            } else {
+                DispatchResult.Accepted(request.dispatchMethod)
+            }
+        }
+
+        env.onSnapshot = {
+            if (scrollStartTime >= 0 && !tapped) {
+                val elapsed = testScheduler.currentTime - scrollStartTime
+                if (elapsed < 400) {
+                    env.snapshot = movingListScreen(40, (400 - elapsed).toInt())
+                } else {
+                    env.snapshot = movingListScreen(40, 0)
+                }
+            }
+        }
+
+        val target = ElementSelector(
+            strategies = listOf(LocatorStrategy(0, LocatorKind.RESOURCE_ID_EXACT, "app:id/row-45", LocatorStability.STABLE)),
+            expectedClass = "TextView", expectedRole = null, ancestorChain = emptyList(), siblingIndex = null, rowContext = null,
+            boundsInWindow = NormalizedRect(0f, 0f, 1f, 1f), rawPoint = null, requiredActions = setOf(NodeAction.CLICK),
+            scrollContainer = listContainerSelector()
+        )
+        val step = tapStep(target).copy(reveal = RevealPolicy(RevealDirection.FORWARD, 8, 2))
+
+        val result = engine(env, { testScheduler.currentTime }).run(workflow(step), RecordingSink())
+
+        assertEquals(ReplayResult.Success(1), result)
+        assertEquals(1, tapCount)
+        assertEquals(1, env.requests.count { it.semanticAction == NodeAction.SCROLL_FORWARD })
+        assertTrue("Tap must happen after list settles", testScheduler.currentTime >= 400)
+    }
+
+    @Test
+    fun `target moves between locate and act results in one re-locate and successful retry`() = runTest {
+        val initialScreen = windowSet(window("app") {
+            node("Root", bounds = r(0, 0, 1_000, 2_000)) {
+                node("Button", id = 2, resourceId = "app:id/target", bounds = r(100, 200, 900, 400),
+                    clickable = true, actions = setOf(NodeAction.CLICK))
+            }
+        })
+        val movedScreen = windowSet(window("app") {
+            node("Root", bounds = r(0, 0, 1_000, 2_000)) {
+                node("Button", id = 2, resourceId = "app:id/target", bounds = r(100, 600, 900, 800),
+                    clickable = true, actions = setOf(NodeAction.CLICK))
+            }
+        })
+
+        var attempts = 0
+        lateinit var env: FakeEnvironment
+        env = FakeEnvironment(initialScreen) { request ->
+            attempts++
+            if (attempts == 1) {
+                // First act attempt fails with movement rejection; screen is now settled at moved location
+                env.snapshot = movedScreen
+                DispatchResult.Rejected("Bounds mismatch for node 2: live bounds do not overlap expected")
+            } else {
+                // Retry succeeds
+                env.snapshot = windowSet(window("app") { node("Root") })
+                DispatchResult.Accepted(DispatchMethod.SEMANTIC_ACTION)
+            }
+        }
+
+        val trace = RecordingSink()
+        val step = tapStep(targetSelector("app:id/target", "Button", r(100, 200, 900, 400)))
+        val result = engine(env, { testScheduler.currentTime }).run(workflow(step), trace)
+
+        assertEquals(ReplayResult.Success(1), result)
+        assertEquals(2, attempts)
+        val retryEvent = trace.events.filterIsInstance<ActionRetryRecorded>().single()
+        assertEquals("Bounds mismatch for node 2: live bounds do not overlap expected", retryEvent.retryReason)
+        assertEquals(1, retryEvent.attempt)
+    }
+
+    @Test
+    fun `three consecutive movement rejections fails after 2 retries with DISPATCH_REJECTED`() = runTest {
+        val screen = windowSet(window("app") {
+            node("Root", bounds = r(0, 0, 1_000, 2_000)) {
+                node("Button", id = 2, resourceId = "app:id/target", bounds = r(100, 200, 900, 400),
+                    clickable = true, actions = setOf(NodeAction.CLICK))
+            }
+        })
+
+        var attempts = 0
+        val env = FakeEnvironment(screen) {
+            attempts++
+            DispatchResult.Rejected("Bounds mismatch for node 2: live bounds do not overlap expected")
+        }
+
+        val trace = RecordingSink()
+        val step = tapStep(targetSelector("app:id/target", "Button", r(100, 200, 900, 400)))
+        val result = engine(env, { testScheduler.currentTime }).run(workflow(step), trace) as ReplayResult.Failed
+
+        assertEquals(ReplayFailureCode.DISPATCH_REJECTED, result.failure.code)
+        assertEquals(3, attempts) // 1 initial + 2 retries
+        val retries = trace.events.filterIsInstance<ActionRetryRecorded>()
+        assertEquals(2, retries.size)
+        assertEquals(1, retries[0].attempt)
+        assertEquals(2, retries[1].attempt)
+    }
+
+    @Test
+    fun `IRREVERSIBLE step with a movement rejection does not retry`() = runTest {
+        val screen = windowSet(window("app") {
+            node("Root", bounds = r(0, 0, 1_000, 2_000)) {
+                node("Button", id = 2, resourceId = "app:id/target", bounds = r(100, 200, 900, 400),
+                    clickable = true, actions = setOf(NodeAction.CLICK))
+            }
+        })
+
+        var attempts = 0
+        val env = FakeEnvironment(screen) {
+            attempts++
+            DispatchResult.Rejected("Gesture point no longer hits the recorded target")
+        }
+
+        val trace = RecordingSink()
+        val step = tapStep(targetSelector("app:id/target", "Button", r(100, 200, 900, 400)), safety = StepSafety.IRREVERSIBLE)
+        val result = engine(env, { testScheduler.currentTime }).run(workflow(step), trace) as ReplayResult.Failed
+
+        assertEquals(ReplayFailureCode.DISPATCH_REJECTED, result.failure.code)
+        assertEquals(1, attempts)
+        val retries = trace.events.filterIsInstance<ActionRetryRecorded>()
+        assertTrue("Irreversible steps must never be retried", retries.isEmpty())
+    }
+
+    @Test
+    fun `non-movement rejection does not retry`() = runTest {
+        val screen = windowSet(window("app") {
+            node("Root", bounds = r(0, 0, 1_000, 2_000)) {
+                node("Button", id = 2, resourceId = "app:id/target", bounds = r(100, 200, 900, 400),
+                    clickable = false)
+            }
+        })
+
+        var attempts = 0
+        val env = FakeEnvironment(screen) {
+            attempts++
+            DispatchResult.Rejected("Permission denied")
+        }
+
+        val trace = RecordingSink()
+        val target = targetSelector("app:id/target", "Button", r(100, 200, 900, 400)).copy(requiredActions = emptySet())
+        val step = tapStep(target)
+        val result = engine(env, { testScheduler.currentTime }).run(workflow(step), trace) as ReplayResult.Failed
+
+        assertEquals(ReplayFailureCode.DISPATCH_REJECTED, result.failure.code)
+        assertEquals(1, attempts)
+        val retries = trace.events.filterIsInstance<ActionRetryRecorded>()
+        assertTrue("Non-movement rejections must not be retried", retries.isEmpty())
     }
 
     // --- Helpers ---

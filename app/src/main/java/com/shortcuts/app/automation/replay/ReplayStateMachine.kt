@@ -10,6 +10,7 @@ import com.shortcuts.app.automation.core.tree.IntRect
 import com.shortcuts.app.automation.core.tree.NodeSnapshot
 import com.shortcuts.app.automation.core.tree.WindowSetSnapshot
 import com.shortcuts.app.automation.core.tree.WindowSnapshot
+import com.shortcuts.app.automation.diagnostics.ActionRetryRecorded
 import com.shortcuts.app.automation.diagnostics.ExpectedScreenRecorded
 import com.shortcuts.app.automation.diagnostics.DispatchRecorded
 import com.shortcuts.app.automation.diagnostics.MatchDecisionRecorded
@@ -58,7 +59,10 @@ data class ReplayTimeouts(
     val settleMs: Long = 300,
     val safetyPollMs: Long = 250,
     val stableSnapshotGapMs: Long = 100,
-    val expectedScreenFingerprintMs: Long = 1_500
+    val expectedScreenFingerprintMs: Long = 1_500,
+    val scrollSettleCapMs: Long = 1_200,
+    val scrollSettleStableGapMs: Long = 150,
+    val scrollSettlePollMs: Long = 100
 )
 
 enum class ReplayState {
@@ -235,21 +239,58 @@ class DefaultReplayEngine(
         val target = locateTarget(step, window, stepDeadline, sink)
         target.failure?.let { return it }
         val node = target.node ?: return failure(ReplayFailureCode.TARGET_LOW_CONFIDENCE, step.id, "No accepted target")
-        val beforeWindow = freshSelectedWindow(step.expectedWindow) ?: window
-        val beforeFingerprint = fingerprint(beforeWindow)
-        val beforeNode = beforeWindow.node(node.nodeId) ?: node
+        var currentWindow = freshSelectedWindow(step.expectedWindow) ?: window
+        var beforeFingerprint = fingerprint(currentWindow)
+        var beforeNode = currentWindow.node(node.nodeId) ?: node
 
-        val first = act(step, beforeWindow, beforeNode, sink, forceGesture = false)
+        var first = act(step, currentWindow, beforeNode, sink, forceGesture = false)
+
+        val maxMovementRetries = 2
+        var movementRetries = 0
+        while (movementRetries < maxMovementRetries) {
+            val actionFailure = first.failure ?: break
+            if (actionFailure.code != ReplayFailureCode.DISPATCH_REJECTED ||
+                step.safety == StepSafety.IRREVERSIBLE ||
+                !isMovementRejection(actionFailure.message)
+            ) break
+
+            movementRetries++
+            val retryReason = actionFailure.message
+            sink.append(ActionRetryRecorded(clock(), step.id, retryReason = retryReason, attempt = movementRetries))
+
+            val settle = waitForContainerSettle(
+                step = step,
+                initialWindow = currentWindow,
+                containerNodeId = findScrollContainer(step, currentWindow, sink)?.nodeId,
+                deadline = stepDeadline,
+                sink = sink
+            )
+            if (settle.failure != null) return settle.failure
+            currentWindow = settle.window ?: freshSelectedWindow(step.expectedWindow) ?: currentWindow
+
+            val relocated = if (step.element != null) {
+                locate(step, currentWindow, sink)
+            } else {
+                LocatedTarget(currentWindow.node(currentWindow.rootId), null)
+            }
+            if (relocated.failure != null || relocated.node == null) {
+                return relocated.failure ?: failure(ReplayFailureCode.TARGET_LOW_CONFIDENCE, step.id, "No accepted target on retry")
+            }
+            beforeNode = relocated.node
+            beforeFingerprint = fingerprint(currentWindow)
+            first = act(step, currentWindow, beforeNode, sink, forceGesture = false)
+        }
+
         first.failure?.let { return it }
         transition(sink, step.id, ReplayState.VERIFYING)
         var verification = verify(step, beforeNode, beforeFingerprint, sink)
         if (verification == null) return null
 
         if (step.operation == UiOperation.TAP && step.safety == StepSafety.REVERSIBLE && first.usedSemantic &&
-            retryIsSafe(step, beforeNode, beforeFingerprint, window)
+            retryIsSafe(step, beforeNode, beforeFingerprint, currentWindow)
         ) {
             transition(sink, step.id, ReplayState.ACTING)
-            val retryWindow = freshSelectedWindow(step.expectedWindow) ?: window
+            val retryWindow = freshSelectedWindow(step.expectedWindow) ?: currentWindow
             val retryNode = retryWindow.node(beforeNode.nodeId) ?: return verification
             val retry = act(step, retryWindow, retryNode, sink, forceGesture = true)
             retry.failure?.let { return it }
@@ -379,12 +420,9 @@ class DefaultReplayEngine(
             if (dispatch is DispatchResult.Rejected) return LocatedTarget(null,
                 failure(ReplayFailureCode.DISPATCH_REJECTED, step.id, dispatch.reason))
 
-            when (awaitSignal(minOf(timeouts.safetyPollMs, (deadline - clock()).coerceAtLeast(0)))) {
-                is AwaitSignal.Cancelled -> return LocatedTarget(null, cancelledFailure(step.id))
-                is AwaitSignal.Disconnected -> return LocatedTarget(null, accessibilityFailure(step.id))
-                else -> Unit
-            }
-            window = freshSelectedWindow(step.expectedWindow) ?: window
+            val settle = waitForContainerSettle(step, window, container.nodeId, deadline, sink)
+            if (settle.failure != null) return LocatedTarget(null, settle.failure)
+            window = settle.window ?: freshSelectedWindow(step.expectedWindow) ?: window
 
             val currentContainer = findScrollContainer(step, window, sink) ?: container
             val currentSignature = containerContentSignature(window, currentContainer)
@@ -521,6 +559,73 @@ class DefaultReplayEngine(
         return ContainerSignature(nodeSignatures)
     }
 
+    private data class SettleResult(val window: WindowSnapshot?, val failure: ReplayFailure?)
+
+    private suspend fun waitForContainerSettle(
+        step: UiStep,
+        initialWindow: WindowSnapshot,
+        containerNodeId: Int?,
+        deadline: Long,
+        sink: TraceSink
+    ): SettleResult {
+        val settleDeadline = minOf(deadline, clock() + timeouts.scrollSettleCapMs)
+        var currentWindow = freshSelectedWindow(step.expectedWindow) ?: initialWindow
+        var resolvedContainerId = containerNodeId
+        var container = resolvedContainerId?.let { currentWindow.node(it) }
+            ?: findScrollContainer(step, currentWindow, sink)?.also { resolvedContainerId = it.nodeId }
+            ?: currentWindow.node(currentWindow.rootId)
+
+        var stableSignature = container?.let { containerContentSignature(currentWindow, it) }
+        var stableAt = clock()
+
+        while (clock() < settleDeadline) {
+            if (cancelled()) return SettleResult(null, cancelledFailure(step.id))
+            if (!environment.isAccessibilityAvailable()) return SettleResult(null, accessibilityFailure(step.id))
+
+            val remaining = (settleDeadline - clock()).coerceAtLeast(0)
+            if (remaining <= 0) break
+
+            when (awaitSignal(minOf(timeouts.scrollSettlePollMs, remaining))) {
+                is AwaitSignal.Cancelled -> return SettleResult(null, cancelledFailure(step.id))
+                is AwaitSignal.Disconnected -> return SettleResult(null, accessibilityFailure(step.id))
+                else -> Unit
+            }
+
+            val nextWindow = freshSelectedWindow(step.expectedWindow)
+            if (nextWindow != null) {
+                currentWindow = nextWindow
+                val nextContainer = resolvedContainerId?.let { currentWindow.node(it) }
+                    ?: findScrollContainer(step, currentWindow, sink)?.also { resolvedContainerId = it.nodeId }
+                    ?: currentWindow.node(currentWindow.rootId)
+                val observed = nextContainer?.let { containerContentSignature(currentWindow, it) }
+                if (observed != null) {
+                    if (observed == stableSignature) {
+                        if (clock() - stableAt >= timeouts.scrollSettleStableGapMs) {
+                            return SettleResult(currentWindow, null)
+                        }
+                    } else {
+                        stableSignature = observed
+                        stableAt = clock()
+                    }
+                }
+            }
+        }
+        return SettleResult(currentWindow, null)
+    }
+
+    private fun isMovementRejection(reason: String): Boolean {
+        val r = reason.lowercase()
+        return r.contains("overlap") ||
+            r.contains("bounds mismatch") ||
+            r.contains("hits the recorded target") ||
+            r.contains("no longer hits") ||
+            r.contains("hit-test") ||
+            r.contains("hit test") ||
+            r.contains("no longer present") ||
+            r.contains("disappeared") ||
+            r.contains("moved")
+    }
+
     private suspend fun act(
         step: UiStep,
         window: WindowSnapshot,
@@ -550,6 +655,9 @@ class DefaultReplayEngine(
             val result = dispatch(step, UiActionRequest(step.operation, window.windowId, node.nodeId,
                 semanticAction = action, dispatchMethod = DispatchMethod.SEMANTIC_ACTION), sink)
             if (result is DispatchResult.Accepted) return ActionAttempt(true, null)
+            if (result is DispatchResult.Rejected && isMovementRejection(result.reason)) {
+                return ActionAttempt(true, result.toFailure(step.id))
+            }
         }
         return gestureAttempt(step, window, node, step.gesture, sink)
     }
