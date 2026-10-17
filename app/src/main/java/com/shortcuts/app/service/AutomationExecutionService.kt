@@ -20,7 +20,9 @@ import com.shortcuts.app.data.AppDatabase
 import com.shortcuts.app.data.ShortcutSteps
 import com.shortcuts.app.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
@@ -57,7 +59,7 @@ class AutomationExecutionService : Service() {
 
         currentRunId = runId
         startForeground(FOREGROUND_NOTIFICATION_ID, foregroundNotification(runId))
-        serviceScope.launch {
+        val runJob = serviceScope.launch {
             try {
                 if (!editorActionsJson.isNullOrBlank()) {
                     val name = editorShortcutName?.trim().takeUnless { it.isNullOrBlank() } ?: "Shortcut"
@@ -104,6 +106,8 @@ class AutomationExecutionService : Service() {
                         }
                     }
                 }
+            } catch (_: CancellationException) {
+                // Stop cancels this run's own coroutine. Do not convert it into a generic error.
             } catch (_: Exception) {
                 publishFailure("Shortcut", "This shortcut couldn't complete. Please try again.")
             } finally {
@@ -113,8 +117,12 @@ class AutomationExecutionService : Service() {
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf(latestStartId)
                 ShortcutRunCoordinator.release(runId)
+                lease.cancellation.clearRunJob(coroutineContext[Job]!!)
             }
         }
+        // Bind after launch so cancellation in the tiny setup window still cancels an existing
+        // child that will execute its finally block and release the admission lease.
+        lease.cancellation.bindRunJob(runJob)
         return START_NOT_STICKY
     }
 

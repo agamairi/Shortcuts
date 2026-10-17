@@ -11,6 +11,11 @@ import kotlinx.coroutines.flow.emptyFlow
 
 interface UiEnvironment {
     fun snapshotWindows(): WindowSetSnapshot
+    /**
+     * Generation of the most recent snapshot returned by [snapshotWindows]. Node IDs are scoped
+     * to that snapshot only. Implementations that do not expose live node handles may return 0.
+     */
+    fun snapshotGeneration(): Long = 0L
     fun events(): Flow<UiEnvironmentEvent>
     /** False when the accessibility service has already disconnected before a wait begins. */
     fun isAccessibilityAvailable(): Boolean = true
@@ -40,7 +45,11 @@ data class UiActionRequest(
     val text: String? = null,
     val imeAction: ImeActionKind? = null,
     val globalAction: String? = null,
-    val dispatchMethod: DispatchMethod = DispatchMethod.SEMANTIC_ACTION
+    val dispatchMethod: DispatchMethod = DispatchMethod.SEMANTIC_ACTION,
+    /** Generation of the snapshot whose [nodeId] and target identity this request uses. */
+    val snapshotGeneration: Long = 0L,
+    /** Selector used to accept the target in that snapshot, when this is a target action. */
+    val targetSelector: com.shortcuts.app.automation.model.ElementSelector? = null
 )
 
 sealed interface DispatchResult {

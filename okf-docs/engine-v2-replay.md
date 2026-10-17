@@ -23,7 +23,6 @@ stateDiagram-v2
     LOCATING --> ACTING: accepted target
     ACTING --> LOCATING: movement rejection retry
     ACTING --> VERIFYING: dispatch accepted
-    VERIFYING --> ACTING: safe gesture retry
     VERIFYING --> FINISHED: postconditions pass
     WAITING_FOR_EXPECTED_SCREEN --> FAILED: timeout
     LOCATING --> FAILED: strict match failure
@@ -70,7 +69,7 @@ Target element locating is non-terminal during the step timeout (default 7 s):
    - After any scroll performed by scroll-to-find (semantic scroll or swipe), the engine waits for the scroll container to settle before locating or acting: re-snapshots on events or every 100 ms until two consecutive container content signatures are identical at least 150 ms apart, capped at 1200 ms.
 
 ### Acting & Movement retry phase
-1. **Movement rejection retry**: If acting fails with `DISPATCH_REJECTED` for a movement reason (live-node bounds no longer overlap, hit-test mismatch, node no longer present), and the step is not `IRREVERSIBLE`: wait for settle (as above), re-locate the target from a fresh snapshot, and retry the action—at most 2 retries—before failing.
+1. **Movement rejection retry**: Only a `DISPATCH_REJECTED` movement failure that occurred before delivery may retry, and only when the step is not `IRREVERSIBLE`: wait for settle (as above), re-locate the target from a fresh snapshot, and retry the action—at most 2 retries—before failing. An `Accepted` dispatch is never replayed, even when verification fails.
 2. **Trace diagnostics**: Each retry records an `ActionRetryRecorded(retryReason)` event with the exact rejection reason.
 3. **Safety rules**: Never retry `IRREVERSIBLE` steps; never retry when the rejection reason is not movement-related.
 
@@ -120,5 +119,6 @@ so a wait interrupts without waiting for the safety poll.
 | `currentActivityClass(windowId)` | Return the observed activity when accessibility provides it; return `null` rather than guessing. |
 
 `Accepted` means the request was delivered, not that the workflow step succeeded. The engine always
-re-snapshots and evaluates postconditions. Trace events deliberately carry IDs, score summaries,
+re-snapshots and evaluates postconditions, rematching selector-based targets rather than reusing a
+snapshot-local node ID. Trace events deliberately carry IDs, score summaries,
 and action outcomes only—never node text, content descriptions, titles, or entered text.

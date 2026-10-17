@@ -15,7 +15,6 @@ import com.shortcuts.app.automation.core.tree.WindowSetSnapshot
 import com.shortcuts.app.automation.core.tree.WindowSnapshot
 import com.shortcuts.app.automation.model.NodeAction
 import com.shortcuts.app.automation.model.WindowType
-import java.util.concurrent.ConcurrentHashMap
 
 data class NodeLocator(
     val windowId: Int,
@@ -26,11 +25,28 @@ class AccessibilitySnapshotAdapter(
     val service: AccessibilityService
 ) : WindowSnapshotSource {
 
-    private val nodePathMap = ConcurrentHashMap<Int, NodeLocator>()
+    /**
+     * This adapter may be called from a worker thread. Snapshot creation and publication are
+     * serialized here; consumers receive immutable snapshots and never retain platform nodes.
+     * It deliberately does not use main-thread-only APIs.
+     */
+    private val snapshotLock = Any()
+    private data class SnapshotState(
+        val generation: Long,
+        val snapshot: WindowSetSnapshot,
+        val nodePaths: Map<Int, NodeLocator>
+    )
+
+    @Volatile private var latestState: SnapshotState? = null
     @Volatile private var _lastSnapshot: WindowSetSnapshot? = null
     val lastSnapshot: WindowSetSnapshot? get() = _lastSnapshot
+    val latestGeneration: Long get() = latestState?.generation ?: 0L
 
-    override fun snapshot(): WindowSetSnapshot? {
+    fun snapshotForGeneration(generation: Long): WindowSetSnapshot? = synchronized(snapshotLock) {
+        latestState?.takeIf { it.generation == generation }?.snapshot
+    }
+
+    override fun snapshot(): WindowSetSnapshot? = synchronized(snapshotLock) {
         val windows = runCatching { service.windows }.getOrNull() ?: return null
         val uptimeMs = SystemClock.uptimeMillis()
 
@@ -44,7 +60,7 @@ class AccessibilitySnapshotAdapter(
         }
 
         val sortedWindows = windows.sortedByDescending { it.layer }
-        val snapshotNodePaths = ConcurrentHashMap<Int, NodeLocator>()
+        val snapshotNodePaths = mutableMapOf<Int, NodeLocator>()
         var nextNodeId = 1
         var totalNodes = 0
         val windowSnapshots = mutableListOf<WindowSnapshot>()
@@ -91,9 +107,6 @@ class AccessibilitySnapshotAdapter(
             }
         }
 
-        nodePathMap.clear()
-        nodePathMap.putAll(snapshotNodePaths)
-
         val windowSet = WindowSetSnapshot(
             capturedAtUptimeMs = uptimeMs,
             displayWidth = displayMetrics.widthPixels,
@@ -102,8 +115,10 @@ class AccessibilitySnapshotAdapter(
             density = displayMetrics.density,
             windows = windowSnapshots
         )
+        val generation = (latestState?.generation ?: 0L) + 1L
+        latestState = SnapshotState(generation, windowSet, snapshotNodePaths.toMap())
         _lastSnapshot = windowSet
-        return windowSet
+        windowSet
     }
 
     private fun walkNode(
@@ -114,7 +129,7 @@ class AccessibilitySnapshotAdapter(
         windowId: Int,
         windowPackageName: String,
         nodes: MutableMap<Int, NodeSnapshot>,
-        nodePathMap: ConcurrentHashMap<Int, NodeLocator>,
+        nodePathMap: MutableMap<Int, NodeLocator>,
         idGenerator: () -> Int,
         totalNodeCounter: () -> Unit,
         canAddMore: () -> Boolean
@@ -192,8 +207,12 @@ class AccessibilitySnapshotAdapter(
         return nodeId
     }
 
-    fun findLiveNode(nodeId: Int): AccessibilityNodeInfo? {
-        val locator = nodePathMap[nodeId] ?: return null
+    /** Returns a node only when [generation] is still the newest published snapshot. */
+    fun findLiveNode(generation: Long, nodeId: Int): AccessibilityNodeInfo? {
+        val state = synchronized(snapshotLock) {
+            latestState?.takeIf { it.generation == generation }
+        } ?: return null
+        val locator = state.nodePaths[nodeId] ?: return null
         return findLiveNode(locator.windowId, locator.childPath)
     }
 

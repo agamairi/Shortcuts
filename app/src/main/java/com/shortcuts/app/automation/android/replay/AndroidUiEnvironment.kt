@@ -15,6 +15,7 @@ import com.shortcuts.app.automation.core.tree.WindowSetSnapshot
 import com.shortcuts.app.automation.model.CapturedGesture
 import com.shortcuts.app.automation.model.GestureKind
 import com.shortcuts.app.automation.model.IntPoint
+import com.shortcuts.app.automation.model.LocatorKind
 import com.shortcuts.app.automation.model.NodeAction
 import com.shortcuts.app.automation.model.UiOperation
 import com.shortcuts.app.automation.replay.DispatchMethod
@@ -117,6 +118,16 @@ fun buildGesturePlan(
     return GesturePlan(durationMs = duration, points = points, isHold = false)
 }
 
+/** Pure guard kept separate so stale-dispatch handling is JVM-testable without an Android service. */
+internal fun staleSnapshotGenerationRejection(
+    requestGeneration: Long,
+    latestGeneration: Long
+): DispatchResult.Rejected? = if (requestGeneration == latestGeneration) {
+    null
+} else {
+    DispatchResult.Rejected("Stale snapshot generation: request=$requestGeneration, latest=$latestGeneration")
+}
+
 class AndroidUiEnvironment(
     private val adapter: AccessibilitySnapshotAdapter,
     private val service: AccessibilityService
@@ -124,6 +135,8 @@ class AndroidUiEnvironment(
 
     @Volatile
     private var lastSnapshot: WindowSetSnapshot? = null
+    @Volatile
+    private var lastSnapshotGeneration: Long = 0L
 
     override fun snapshotWindows(): WindowSetSnapshot {
         val snapshot = adapter.snapshot() ?: WindowSetSnapshot(
@@ -135,8 +148,11 @@ class AndroidUiEnvironment(
             windows = emptyList()
         )
         lastSnapshot = snapshot
+        lastSnapshotGeneration = adapter.latestGeneration
         return snapshot
     }
+
+    override fun snapshotGeneration(): Long = lastSnapshotGeneration
 
     override fun events(): Flow<UiEnvironmentEvent> = AndroidUiEventHub.events
 
@@ -157,32 +173,13 @@ class AndroidUiEnvironment(
     private fun performSemanticAction(request: UiActionRequest): DispatchResult {
         val nodeId = request.nodeId
             ?: return DispatchResult.Rejected("Missing nodeId in SEMANTIC_ACTION request")
-        val expectedNode = lastSnapshot?.node(nodeId)
-            ?: return DispatchResult.Rejected("Node $nodeId not found in last snapshot")
-        val liveNode = adapter.findLiveNode(nodeId)
+        val expectedNode = expectedNodeFor(request)
+            ?: return DispatchResult.Rejected("Stale or missing snapshot target for node $nodeId")
+        val liveNode = adapter.findLiveNode(request.snapshotGeneration, nodeId)
             ?: return DispatchResult.Rejected("Target node $nodeId is no longer present on screen")
 
         try {
-            val liveClass = liveNode.className?.toString().orEmpty()
-            if (liveClass != expectedNode.className) {
-                return DispatchResult.Rejected(
-                    "Class mismatch for node $nodeId: expected '${expectedNode.className}', found '$liveClass'"
-                )
-            }
-
-            val liveBounds = Rect()
-            liveNode.getBoundsInScreen(liveBounds)
-            val expectedRect = Rect(
-                expectedNode.boundsInScreen.left,
-                expectedNode.boundsInScreen.top,
-                expectedNode.boundsInScreen.right,
-                expectedNode.boundsInScreen.bottom
-            )
-            if (!Rect.intersects(liveBounds, expectedRect)) {
-                return DispatchResult.Rejected(
-                    "Bounds mismatch for node $nodeId: live $liveBounds does not overlap expected $expectedRect"
-                )
-            }
+            validateLiveIdentity(liveNode, expectedNode, request.targetSelector)?.let { return it }
 
             val actionToPerform = request.semanticAction
             val operation = request.operation
@@ -239,6 +236,7 @@ class AndroidUiEnvironment(
         }
 
     private suspend fun performGesture(request: UiActionRequest): DispatchResult {
+        validateGestureTarget(request)?.let { return it }
         val plan = buildGesturePlan(request.gesturePoints, request.operation, request.gesture)
         if (plan.points.isEmpty()) {
             return DispatchResult.Rejected("No gesture points provided")
@@ -299,5 +297,61 @@ class AndroidUiEnvironment(
         } else {
             DispatchResult.Rejected("Global action '$actionName' returned false")
         }
+    }
+
+    private fun expectedNodeFor(request: UiActionRequest) = request.nodeId?.let { nodeId ->
+        if (staleSnapshotGenerationRejection(request.snapshotGeneration, adapter.latestGeneration) != null) null
+        else adapter.snapshotForGeneration(request.snapshotGeneration)?.node(nodeId)
+    }
+
+    /** Validate a gesture's target too: a coordinate must not bypass snapshot-scoped identity. */
+    private fun validateGestureTarget(request: UiActionRequest): DispatchResult.Rejected? {
+        val nodeId = request.nodeId ?: return null
+        val expectedNode = expectedNodeFor(request)
+            ?: return DispatchResult.Rejected("Stale or missing snapshot target for node $nodeId")
+        val liveNode = adapter.findLiveNode(request.snapshotGeneration, nodeId)
+            ?: return DispatchResult.Rejected("Target node $nodeId is no longer present on screen")
+        return try {
+            validateLiveIdentity(liveNode, expectedNode, request.targetSelector)
+        } finally {
+            liveNode.safeRecycle()
+        }
+    }
+
+    private fun validateLiveIdentity(
+        liveNode: AccessibilityNodeInfo,
+        expectedNode: com.shortcuts.app.automation.core.tree.NodeSnapshot,
+        selector: com.shortcuts.app.automation.model.ElementSelector?
+    ): DispatchResult.Rejected? {
+        if (liveNode.className?.toString().orEmpty() != expectedNode.className) {
+            return DispatchResult.Rejected("Class mismatch for snapshot target")
+        }
+        if (liveNode.viewIdResourceName != expectedNode.resourceId) {
+            return DispatchResult.Rejected("Resource-id mismatch for snapshot target")
+        }
+        if (liveNode.packageName?.toString().orEmpty() != expectedNode.packageName) {
+            return DispatchResult.Rejected("Package mismatch for snapshot target")
+        }
+        val liveBounds = Rect().also(liveNode::getBoundsInScreen)
+        val expectedBounds = Rect(
+            expectedNode.boundsInScreen.left,
+            expectedNode.boundsInScreen.top,
+            expectedNode.boundsInScreen.right,
+            expectedNode.boundsInScreen.bottom
+        )
+        if (!Rect.intersects(liveBounds, expectedBounds)) {
+            return DispatchResult.Rejected("Bounds mismatch for snapshot target")
+        }
+        selector?.strategies?.forEach { strategy ->
+            val liveValue = when (strategy.kind) {
+                LocatorKind.TEXT_EXACT -> liveNode.text?.toString()
+                LocatorKind.CONTENT_DESCRIPTION_EXACT -> liveNode.contentDescription?.toString()
+                LocatorKind.RESOURCE_ID_EXACT, LocatorKind.TEST_TAG_EXACT, LocatorKind.WEB_DOM_ID_EXACT -> liveNode.viewIdResourceName
+            }
+            if (liveValue != strategy.value) {
+                return DispatchResult.Rejected("Selector identity changed for snapshot target")
+            }
+        }
+        return null
     }
 }
