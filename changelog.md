@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Recorder documentation update.** Updated `okf-docs/recorder.md` to detail `TapMarkOverlay` and `MarkTapReceiver` and document the Mark-a-tap overlay fallback mechanism alongside the passive accessibility event capture path.
 
 ### Fixed
+- **Soft keyboard submissions now captured in Engine v2 workflows.** Keyboard actions (Gboard Search, Send, Go, Done) were previously lost during recording because IME action keys bypass key-event listeners and emit no accessibility click events; the capture bridge now reliably infers submissions when an activity/window opens or a field clears right after typing, while ignoring keyboard dismissals and suggestion updates.
 - **Accessibility detection now follows the installed package.** The dev build no longer checks
   the release package name when deciding whether its own accessibility service is enabled.
 - **Capture-and-relay recording now stays out of RepeatKit and system screens, while preserving fast follow-up taps and keyboard actions.** The recorder uses the installed app's actual package (including the Dev build), only filters semantic callbacks around its own relays, and keeps normal long presses from timing out early.

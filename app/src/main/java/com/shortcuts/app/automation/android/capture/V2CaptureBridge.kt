@@ -44,6 +44,7 @@ object V2CaptureBridge {
     private var activeSession: PersistedV2Session? = null
     private var lastForegroundPackage: String? = null
     private val lastActivitiesByPackage = mutableMapOf<String, String>()
+    private val imeInference = ImeSubmitInference()
     private var degradedLogged = false
 
     @Volatile
@@ -67,6 +68,7 @@ object V2CaptureBridge {
             lastWorkflowJson = null
             lastForegroundPackage = null
             lastActivitiesByPackage.clear()
+            imeInference.reset()
             degradedLogged = false
             currentStore.clearAll()
 
@@ -156,6 +158,7 @@ object V2CaptureBridge {
             lastWorkflowJson = null
             lastForegroundPackage = null
             lastActivitiesByPackage.clear()
+            imeInference.reset()
             degradedLogged = false
             store?.clearAll()
             Log.d(TAG, "Recording cleared")
@@ -232,6 +235,7 @@ object V2CaptureBridge {
             }
 
             val interaction = createCapturedInteraction(kind, samples, beforeSnapshot, ownPackage)
+            imeInference.onOverlayInteraction(samples.firstOrNull()?.uptimeMs)
             activeCompiler.accept(interaction)
             persistEventLocked(PersistedV2EventWrapper(type = "interaction", interaction = interaction))
 
@@ -274,6 +278,8 @@ object V2CaptureBridge {
                 ?: return@synchronized
             activeCompiler.accept(commit)
             persistEventLocked(PersistedV2EventWrapper(type = "text_commit", textCommit = commit))
+            val currentActivity = lastActivitiesByPackage[window.packageName]
+            imeInference.onTextCommit(commit, currentActivity)
 
             Log.d(
                 TAG,
@@ -289,6 +295,7 @@ object V2CaptureBridge {
         synchronized(lock) {
             if (!EngineV2.enabled) return@synchronized
             val activeCompiler = compiler ?: return@synchronized
+            imeInference.reset()
             val kind = mapImeLabelToActionKind(label)
 
             val snapshot = EngineV2.snapshotSource?.snapshot()
@@ -342,6 +349,19 @@ object V2CaptureBridge {
             } else {
                 lastActivitiesByPackage[toPackage]
             }
+
+            val inferred = imeInference.onActivityChanged(toPackage, activityClass, uptimeMs)
+                ?: imeInference.onWindowChanged(
+                    toPackage = toPackage,
+                    windowId = snapshot.windows.firstOrNull { it.packageName == toPackage }?.windowId ?: -1,
+                    windowType = snapshot.windows.firstOrNull { it.packageName == toPackage }?.type,
+                    className = className?.toString(),
+                    uptimeMs = uptimeMs
+                )
+            if (inferred != null) {
+                deliverInferredImeSubmitLocked(inferred)
+            }
+
             val appSwitch = createCapturedAppSwitch(
                 fromPackage = lastForegroundPackage,
                 toPackage = toPackage,
@@ -361,6 +381,55 @@ object V2CaptureBridge {
     }
 
     /**
+     * Inspects a text change event for field clearing (the "sent" pattern) or in-progress typing.
+     */
+    fun onTextChanged(event: RecorderEvent) {
+        synchronized(lock) {
+            if (!EngineV2.enabled || compiler == null) return@synchronized
+            if (event.enteredText.isEmpty()) {
+                val inferred = imeInference.onFieldCleared(
+                    fieldNodeId = null,
+                    resourceId = event.sourceViewId,
+                    uptimeMs = event.occurredAtMillis
+                )
+                if (inferred != null) {
+                    deliverInferredImeSubmitLocked(inferred)
+                }
+            } else {
+                val snapshot = EngineV2.snapshotSource?.snapshot() ?: return@synchronized
+                val window = (event.windowId?.let { snapshot.window(it) })
+                    ?: snapshot.windows.firstOrNull { it.packageName == event.packageName && it.type != WindowType.ACCESSIBILITY_OVERLAY && it.type != WindowType.INPUT_METHOD }
+                    ?: snapshot.windows.maxByOrNull { it.layer }
+                    ?: return@synchronized
+
+                val focusedEditable = window.nodes.values.firstOrNull { it.focused && it.editable }
+                    ?: window.nodes.values.firstOrNull { candidate ->
+                        (event.sourceViewId != null && candidate.resourceId == event.sourceViewId) ||
+                            (candidate.className == event.sourceClassName && candidate.editable)
+                    } ?: return@synchronized
+
+                val currentActivity = lastActivitiesByPackage[window.packageName]
+                imeInference.onTextTyped(focusedEditable, event.enteredText, window, currentActivity, event.occurredAtMillis)
+            }
+        }
+    }
+
+    private fun deliverInferredImeSubmitLocked(inferred: InferredImeSubmit) {
+        val activeCompiler = compiler ?: return
+        inferred.pendingCommit?.let { commit ->
+            activeCompiler.accept(commit)
+            persistEventLocked(PersistedV2EventWrapper(type = "text_commit", textCommit = commit))
+            Log.d(
+                TAG,
+                "Delivered pending TextCommit before inferred IME: pkg=${commit.windowSnapshot.packageName} nodeClass=${commit.fieldNode.className} at=${commit.committedAtUptimeMs}"
+            )
+        }
+        activeCompiler.accept(inferred.action)
+        persistEventLocked(PersistedV2EventWrapper(type = "ime_action", imeAction = inferred.action))
+        Log.d(TAG, "Inferred ImeAction (reason=${inferred.reason})")
+    }
+
+    /**
      * Inspects a key event for global navigation actions (BACK, HOME, RECENTS).
      */
     fun onKeyEvent(event: KeyEvent): Boolean {
@@ -368,6 +437,7 @@ object V2CaptureBridge {
             if (!EngineV2.enabled || compiler == null) return false
             if (event.action != KeyEvent.ACTION_UP) return false
 
+            imeInference.onKeyEvent(event.keyCode, event.eventTime)
             val kind = mapKeyCodeToGlobalAction(event.keyCode) ?: return false
             val snapshot = EngineV2.snapshotSource?.snapshot()
             if (snapshot == null) {
@@ -450,8 +520,11 @@ object V2CaptureBridge {
             lastWorkflowJson = null
             lastForegroundPackage = null
             lastActivitiesByPackage.clear()
+            imeInference.reset()
             degradedLogged = false
             store = null
         }
     }
+
+    internal fun getImeInferenceForTest(): ImeSubmitInference = imeInference
 }

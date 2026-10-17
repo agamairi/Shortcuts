@@ -449,6 +449,7 @@ object AutomationRecorder {
         }
         if (eventType == RecorderEventType.TEXT_CHANGE) {
             scheduleTextFinalizer()
+            com.shortcuts.app.automation.android.capture.V2CaptureBridge.onTextChanged(recorderEvent)
         } else if (eventType == RecorderEventType.CLICK || eventType == RecorderEventType.LONG_PRESS) {
             cancelPendingTextFinalizer()
         }

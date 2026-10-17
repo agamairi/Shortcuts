@@ -54,6 +54,11 @@
             android:label="Text input compose" />
 
         <activity
+            android:name=".SearchResultsActivity"
+            android:exported="true"
+            android:label="Search results" />
+
+        <activity
             android:name=".DialogsActivity"
             android:exported="true"
             android:label="Dialogs" />

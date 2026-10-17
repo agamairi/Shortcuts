@@ -86,14 +86,14 @@ Three vertically stacked Views buttons with similar labels to test selector disa
 
 ### 6. `text_views` ("Text input views")
 Classic Android EditText views:
-- `edit_search`: Single-line EditText with hint "Search" and IME action search (`submit` on IME action with search text, `text` on focus loss).
-- `edit_message`: EditText with hint "Message" (`text` on focus loss).
+- `edit_search`: Single-line EditText with hint "Search" and IME action search (`submit` on IME search or Enter with search text, opens "Search results" screen `search_results`; `text` on focus loss).
+- `edit_message`: EditText with hint "Message" and IME action send (`submit` on IME send or Enter with message text, clears field like Send button; `text` on focus loss).
 - `btn_send`: Button "Send" (`submit` target `edit_message` with value, clears field).
 
 ### 7. `text_compose` ("Text input compose")
 Compose text fields:
-- `field_search`: OutlinedTextField with label "Search" and `ImeAction.Search` (`submit` on search action, `text` on focus loss).
-- `field_message`: TextField with label "Message" (`text` on focus loss).
+- `field_search`: OutlinedTextField with label "Search" and `ImeAction.Search` (`submit` on search action or Enter, opens "Search results" screen `search_results`; `text` on focus loss).
+- `field_message`: TextField with label "Message" and `ImeAction.Send` (`submit` on IME send or Enter with message text, clears field like Send button; `text` on focus loss).
 - `btn_send`: Button "Send" (`submit` target `field_message` with value, clears field).
 
 ### 8. `dialogs` ("Dialogs")
@@ -135,6 +135,11 @@ Material BottomNavigationView with three tabs:
 - `tab_search`: Bottom navigation item "Search" (`select`).
 - `tab_profile`: Bottom navigation item "Profile" (`select`).
 - Button "Like" updates target based on active tab: `btn_like_feed`, `btn_like_search`, `btn_like_profile` (`tap`).
+ 
+### 13. `search_results` ("Search results")
+Search results screen opened by submitting search queries from `text_views` or `text_compose`:
+- Logs `open` target `search_results` on appearance with the query text value.
+- Displays `Results for "<query>"`.
 
 ## Launching the App
 
@@ -149,4 +154,4 @@ Launch a specific scenario directly via the `scenario` string extra:
 ```bash
 adb shell am start -n com.repeatkit.fixtures/.MainActivity --es scenario compose_basic
 ```
-Valid scenario arguments: `views_basic`, `compose_basic`, `views_list`, `compose_list`, `near_duplicates`, `text_views`, `text_compose`, `dialogs`, `delayed`, `navigation`, `webview`, `tabs`.
+Valid scenario arguments: `views_basic`, `compose_basic`, `views_list`, `compose_list`, `near_duplicates`, `text_views`, `text_compose`, `dialogs`, `delayed`, `navigation`, `webview`, `tabs`, `search_results`.
