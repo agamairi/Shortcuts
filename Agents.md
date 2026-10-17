@@ -45,18 +45,19 @@ Use it to offload heavy work — large refactors, deep codebase research, or rep
 
 ### Model selection
 
-**Routing policy (default — follow this unless the user says otherwise):**
-1. **Prefer Gemini.** Send Antigravity work to `gemini-3.1-pro-high` (reasoning, refactors, architecture) or `gemini-3.8-flash-high` / `-medium` (fast, mechanical, well-specified edits).
-2. **Claude tiers are available on Antigravity too** (`claude-opus-4-6-thinking`, `claude-sonnet-4-6`) — use them while their quota is available, then fall back to Gemini. If an Antigravity job fails with a quota/capacity error on a Claude model, retry the same brief on `gemini-3.1-pro-high` rather than giving up.
+**Routing policy (default — follow this unless the user says otherwise; restated by the owner 2026-10-17):**
+1. **Workers — the ones who write the code:** Antigravity `gemini-3.8-flash-high` / `-medium`, and Codex `gpt-5.6-luna`.
+2. **Complex work and research:** Antigravity `gemini-4-argon-high`, and Codex `gpt-5.6-sol` / `gpt-5.6-terra`.
+3. **Antigravity Claude tiers** (`claude-opus-5-5-*`, `claude-sonnet-5-5-*`) at the orchestrator's discretion (reviews, tricky refactors).
 
-Verified via `agy models` on this install (2026-09-06, `agy` 1.1.16):
+Verified via `agy models` on this install (2026-10-16):
+- `gemini-4-argon-high` / `gemini-4-argon-medium` / `gemini-4-argon-low`
 - `gemini-3.8-flash-high` / `gemini-3.8-flash-medium` / `gemini-3.8-flash-low`
-- `gemini-3.7-flash-high` / `gemini-3.7-flash-medium` / `gemini-3.7-flash-low`
-- `gemini-3.6-flash-high` / `gemini-3.6-flash-medium` / `gemini-3.6-flash-low`
-- `gemini-3.1-pro-high` / `gemini-3.1-pro-low`
-- `claude-sonnet-4-6`
-- `claude-opus-4-6-thinking`
+- `claude-opus-5-5-high` / `-medium` / `-low`
+- `claude-sonnet-5-5-high` / `-medium` / `-low`
 - `gpt-oss-120b-medium`
+
+The agy-connector MCP server bakes its model list in at start-up; after `agy` gains new models, update `MODELS` in `mcp/agy-connector/server.mjs` and restart the server. For read-only research without the connector, `agy --print "<brief>" --mode plan --model gemini-4-argon-high` works from the shell.
 
 Pass the id exactly as printed by `agy models` — it's forwarded verbatim as `agy --model "<id>"`. Re-run `agy models` if this list drifts after an `agy` upgrade.
 
@@ -77,16 +78,18 @@ Two tiers, and the split is by **reasoning depth, not by size of the diff**:
 
 | Model id | Use it for |
 | --- | --- |
-| `gpt-5.6-sol` | **High-reasoning work.** Root-cause diagnosis, architecture decisions, redesigning a broken subsystem, concurrency/state-machine correctness, anything where getting the *approach* wrong costs more than the code. |
-| `gpt-5.6-terra` | **Worker / low-reasoning work.** Straightforward code implementation against a spec you already wrote, mechanical refactors, adding tests, wiring UI, applying a decided design. This is the configured default in `~/.codex/config.toml`. |
+| `gpt-5.6-sol` | **Highest-reasoning work.** Root-cause diagnosis, architecture and specs, foundations everything else depends on, integration. |
+| `gpt-5.6-terra` | **Complex implementation.** Platform-risky Android work, concurrency/state machines, subsystems where the approach matters. Configured default in `~/.codex/config.toml`. |
+| `gpt-5.6-luna` | **Worker.** Implementation against a settled spec, mechanical refactors, tests, tooling, wiring UI. |
 
 Pass the id with `-m`, e.g. `codex exec -m gpt-5.6-sol --sandbox danger-full-access "<brief>"`. Both tiers can run **in parallel** with each other and with Antigravity — subject to the file-partition rule below.
 
 ### Overall executor routing (default policy)
 
-- **Highest-reasoning task in a batch → `gpt-5.6-sol`.** There is usually exactly one of these per batch: the thing everything else depends on.
-- **Implementation against a settled design → `gpt-5.6-terra`.**
-- **Everything else → Antigravity Gemini** (`gemini-3.1-pro-high` for reasoning, `gemini-3.8-flash-high`/`-medium` for mechanical edits), with `claude-opus-4-6-thinking` / `claude-sonnet-4-6` on Antigravity used while their quota lasts and Gemini as the fallback.
+- **Highest-reasoning task in a batch → `gpt-5.6-sol`** (or Antigravity `gemini-4-argon-high` for research). There is usually exactly one of these per batch: the thing everything else depends on.
+- **Complex implementation → `gpt-5.6-terra`.**
+- **Implementation against a settled design → `gpt-5.6-luna` or Antigravity `gemini-3.8-flash-high`.** Prefer Flash when the task needs Gradle to verify itself — Codex's sandbox may not be able to run Gradle.
+- Always run `codex exec ... < /dev/null`; without it Codex blocks forever waiting on stdin.
 - **Claude Code (the orchestrator) does not write feature code.** It reads, diagnoses, writes the briefs, creates the branches/worktrees, verifies the result, and integrates. Small doc edits and merges are fine.
 - Run up to three executors concurrently when the work genuinely partitions by file. Never more than one on the connected phone.
 

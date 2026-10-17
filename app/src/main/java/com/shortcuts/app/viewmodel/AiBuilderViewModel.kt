@@ -8,6 +8,7 @@ import com.shortcuts.app.data.Action
 import com.shortcuts.app.data.ActionConverter
 import com.shortcuts.app.data.ActionType
 import com.shortcuts.app.data.Automation
+import com.shortcuts.app.data.ShortcutSteps
 import com.shortcuts.app.planner.DraftShortcut
 import com.shortcuts.app.planner.DraftStep
 import com.shortcuts.app.planner.ClauseAligner
@@ -181,7 +182,7 @@ class AiBuilderViewModel(
                     _uiState.value = UiState.Error("Failed to parse automation JSON from AI output")
                     return
                 }
-                val action = ActionConverter().toActionList(automation.actionsJson).firstOrNull()
+                val action = ShortcutSteps.decode(automation.actionsJson).actions.firstOrNull()
                 if (action == null) {
                     _uiState.value = UiState.Error("The AI produced no action for this step.")
                     return
@@ -208,7 +209,7 @@ class AiBuilderViewModel(
 
             val tierOneActions = tierOneResponse
                 ?.let { parseAutomationJson(it, promptText) }
-                ?.let { ActionConverter().toActionList(it.actionsJson) }
+                ?.let { ShortcutSteps.decode(it.actionsJson).actions }
                 .orEmpty()
 
             val alignedTierOneActions = ClauseAligner { packageName ->
@@ -285,7 +286,7 @@ class AiBuilderViewModel(
         val stepAutomation = parseAutomationJson(jsonResponse, step)
             ?: return DraftStep.Unresolved(step, "The AI output for this step could not be understood.")
 
-        val actions = ActionConverter().toActionList(stepAutomation.actionsJson)
+        val actions = ShortcutSteps.decode(stepAutomation.actionsJson).actions
         val action = actions.firstOrNull()
             ?: return DraftStep.Unresolved(step, "The AI produced no action for this step.")
 
@@ -335,7 +336,7 @@ class AiBuilderViewModel(
                     return null
                 }
 
-                val parsedActions = ActionConverter().toActionList(actionsJsonStr)
+                val parsedActions = ShortcutSteps.decode(actionsJsonStr).actions
                 if (parsedActions.isNullOrEmpty() || parsedActions.any { (it.actionType as ActionType?) == null }) {
                     return null
                 }
@@ -356,7 +357,7 @@ class AiBuilderViewModel(
                 if (normalizedActions.size != rawList.size) return null
 
                 val actionsJsonStr = gson.toJson(normalizedActions)
-                val parsedActions = ActionConverter().toActionList(actionsJsonStr)
+                val parsedActions = ShortcutSteps.decode(actionsJsonStr).actions
                 if (parsedActions.isNullOrEmpty() || parsedActions.any { (it.actionType as ActionType?) == null }) {
                     return null
                 }

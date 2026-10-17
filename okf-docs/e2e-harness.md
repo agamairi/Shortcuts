@@ -1,0 +1,146 @@
+---
+title: "On-device E2E Harness"
+type: architecture
+author: codex_gpt_5_6_luna
+tags: [testing, e2e, adb, reliability]
+---
+
+# On-device E2E Harness
+
+`tools/e2e/rk_e2e.py` is a Python 3.9+ standard-library harness that runs on
+the Mac and drives the fixture app on one Android device over `adb`. It records
+each scenario with the Dev build, replays the saved automation, and compares
+the fixture's event stream from both phases.
+
+## Running it
+
+From the repository root:
+
+```text
+python3 tools/e2e/rk_e2e.py doctor [--serial SERIAL]
+python3 tools/e2e/rk_e2e.py setup-accessibility [--serial SERIAL]
+python3 tools/e2e/rk_e2e.py run --all [--repeat 2] [--keep-going]
+python3 tools/e2e/rk_e2e.py run --scenario views_basic text_views --serial SERIAL
+python3 tools/e2e/rk_e2e.py report tools/e2e/results/20261016-120000
+```
+
+`doctor` checks the connected device, Android version, both package installs,
+the Dev accessibility service, screen state, unlock state, and gesture
+navigation. `setup-accessibility` appends the Dev service to the existing
+colon-separated Android setting and enables accessibility; it is idempotent
+and never removes another service.
+
+**Reading the screen.** The harness finds elements through RepeatKit Dev's own accessibility
+service: `adb shell dumpsys activity service com.shortcuts.app.dev/com.shortcuts.app.service.AutomationAccessibilityService rk-ui`
+prints the on-screen tree in uiautomator's XML shape (debug builds only, `DebugUiDump.kt`;
+RepeatKit's overlays and the keyboard are left out, app windows come first). Do **not** use
+`uiautomator dump` while RepeatKit runs: it connects a UiAutomation, and Android unbinds every other
+accessibility service while one is connected, so each dump restarted RepeatKit's service in the
+middle of recordings and runs (dropped snapshots, lost app switches, "accessibility service is
+unavailable" during widget runs). `RK_ALLOW_UIAUTOMATOR=1` re-enables it as a fallback.
+
+**Settle time.** `--settle-ms` defaults to 1500 ms after each human action. The service dump takes
+~0.4 s where uiautomator took ~2 s; with the old 700 ms default the harness tapped a freshly opened
+Compose screen before it accepted input, the app dropped the tap, and the recording held a step the
+app never received.
+
+Results are written beneath
+`tools/e2e/results/<YYYYmmdd-HHMMSS>/<scenario>/run<k>/`. Each run contains
+`recording.json`, `run.json`, `truth.jsonl`, `replay.jsonl`, `verdict.json`,
+`logcat.txt`, and record/replay screenshots. The timestamp directory also
+contains `summary.json` and `summary.md`.
+
+## Scenario format
+
+Each `tools/e2e/scenarios/<id>.json` has an id, description, ordered human
+steps, and `expect: "recorded"`:
+
+```json
+{
+  "id": "example",
+  "description": "A human interaction",
+  "steps": [
+    {"tap": {"text": "Save"}},
+    {"tap": {"desc": "Settings gear"}},
+    {"tap": {"id": "com.repeatkit.fixtures:id/icon_unlabeled"}},
+    {"tap": {"text": "Open", "row_of": "Item 45"}},
+    {"type": "hello world"},
+    {"key": "ENTER"},
+    {"gtype": "hello world"},
+    {"ime": "action"},
+    {"swipe": {"from": [540, 1800], "to": [540, 700], "ms": 350}},
+    {"scroll_until": {"text": "Item 45"}},
+    {"wait_ms": 800}
+  ],
+  "expect": "recorded"
+}
+```
+
+Element targets are resolved from a fresh hierarchy read through RepeatKit Dev's
+own service (`rk-ui`). Dumps retry five times with a 400 ms backoff, and `row_of`
+selects the repeated target whose vertical center is closest to the anchor row.
+Every step receives a 700 ms settle delay by default; `run --settle-ms` changes it.
+
+Two ways to type:
+
+- `type` / `key` use `adb shell input text` and an injected key event (adb's `%s`
+  space encoding). Fast, but not how people type: injected keys hide Gboard and
+  move focus in ways real typing never does, so search capture looked better with
+  them than it was.
+- `gtype` / `ime` type like a person: `gtype` taps each key of the on-screen
+  keyboard (Gboard commits through the field's input connection) and `ime` taps the
+  keyboard's own action key (Search/Go/Send). The keys are read from
+  `dumpsys activity service <RepeatKit Dev service> rk-ime`, which prints only the
+  keyboard window (`rk-ui` leaves it out). Letters, space and `.`/`/` are supported.
+
+## Real apps
+
+`tools/e2e/rk_realapps.py` records and replays harmless flows in the phone's real
+apps (Settings, Calculator, Chrome, YouTube Music): navigation, search and typing
+only, nothing sent or played, and no app force-stopped. Each run puts the app in a
+start state, records like a person (RepeatKit -> Home -> launcher icon), saves,
+returns to the start state, replays from Home through the widget run path, and
+checks the end screen. A recording that fell back to the legacy format fails.
+
+```sh
+REPEAT=10 ADB=~/Library/Android/sdk/platform-tools/adb \
+  python3 tools/e2e/rk_realapps.py chrome_search_gboard music_search_gboard
+```
+
+Flows ending in `_gboard` use `gtype`/`ime`; the plain ones use adb text. Evidence
+(recording, logcat, trace, screenshots, verdict with the compact recorded steps)
+goes to `tools/e2e/results/realapps/<timestamp>/<flow>/run<n>/`.
+
+## Verdict rules
+
+The record phase is the ground truth. The replay phase is compared as ordered
+`(event, target, value)` triples. Sequence numbers are ignored and `open`
+events are ignored. PASS requires the two normalized streams to be identical.
+On a mismatch, `verdict.json` reports the first divergence and the first
+failing step found in `last_run.json`.
+
+Recording quality is reported separately from replay correctness. The harness
+marks `record_quality: "missing_steps"` when the recording has fewer UI steps
+than the scenario's human taps/types/gestures or contains an `UNRESOLVED`
+step. This distinguishes a recorder omission from a replay mismatch.
+
+## Safety boundary
+
+The Dev package is centralized as `com.shortcuts.app.dev` and asserted to end
+in `.dev`. Debug commands and private-file reads use that package only. The
+harness never installs, uninstalls, or clears a package; fixture reset uses
+`am force-stop` only. Accessibility setup appends to the existing setting
+instead of replacing it, which is important on devices owned by other
+accessibility services.
+
+## Reliability metric
+
+The primary reliability metric is **scenario pass rate**:
+
+```text
+passed scenario runs / total scenario runs
+```
+
+The summary also reports per-scenario pass/fail counts, the number of
+record-quality issues, and median replay duration. A command exits zero only
+when every executed run passes.

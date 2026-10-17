@@ -12,6 +12,13 @@ data class PersistedRecorderSession(
     val recordedActions: List<Action>
 )
 
+internal enum class FocusedTextSnapshotResult {
+    NOT_TRACKED,
+    UNCHANGED,
+    UPDATED,
+    FOCUS_LOST
+}
+
 /**
  * Storage boundary for an in-progress recording. Keeping this free of Android APIs makes the
  * recorder's ownership and persistence behavior unit-testable.
@@ -50,11 +57,14 @@ class RecorderSessionOwner(
     private var lastSeenForegroundPackage: String? = null
     private var lastAppBeforeLauncherPackage: String? = null
     private val pendingLauncherClicks = mutableListOf<Action>()
+    /** True once the user has done anything since the most recent recorded app launch. */
+    private var interactedSinceLaunch = true
     private var lastClickTarget: String? = null
     private var lastClickAtMillis: Long = Long.MIN_VALUE
     private var pendingText: PendingText? = null
     private var lastCommittedText: PendingText? = null
     private var focusedField: RecorderEvent? = null
+    private var trackedFieldSawKeyboard = false
     private var pendingScroll: PendingScroll? = null
     private val lastScrollPositionByTarget = mutableMapOf<String, ScrollPosition>()
 
@@ -63,6 +73,8 @@ class RecorderSessionOwner(
 
     private val _recordedActions = MutableStateFlow<List<Action>>(emptyList())
     val recordedActions: StateFlow<List<Action>> = _recordedActions.asStateFlow()
+
+    var onTextCommitListener: ((RecorderEvent) -> Unit)? = null
 
     init {
         restore()
@@ -132,7 +144,10 @@ class RecorderSessionOwner(
 
             if (event.eventType == RecorderEventType.APP_CHANGE) {
                 if (!isIgnored && !isPackageTransition) {
-                    inferSubmitFromWindowChangeLocked(event)
+                    // A new screen in the same app ends the field edit: keep the typed text as a
+                    // step, but never invent an Enter from it (the screen change is not evidence
+                    // that the user pressed the keyboard's submit key).
+                    flushPendingTextLocked()
                 }
                 return
             }
@@ -156,7 +171,8 @@ class RecorderSessionOwner(
                     return
                 }
                 RecorderEventType.CONTENT_CHANGE -> {
-                    processContentChangeLocked(event)
+                    // Autocomplete, validation, and dialogs all use content changes. They are
+                    // not evidence that the user pressed the keyboard submit key.
                     return
                 }
                 else -> Unit
@@ -172,7 +188,6 @@ class RecorderSessionOwner(
                     return
                 }
                 RecorderEventType.CONTENT_CHANGE -> {
-                    processContentChangeLocked(event)
                     return
                 }
                 else -> Unit
@@ -220,11 +235,40 @@ class RecorderSessionOwner(
             appendActionLocked(action)
             if (event.eventType == RecorderEventType.CLICK) {
                 focusedField = event.takeIf { it.sourceIsEditable }
+                trackedFieldSawKeyboard = false
             } else if (event.eventType == RecorderEventType.LONG_PRESS) {
                 focusedField = null
+                trackedFieldSawKeyboard = false
             }
         }
     }
+
+    /**
+     * Overlay taps are built from a pre-tap hit-test. Some custom edit controls (including
+     * Chrome's omnibox on some releases) expose an EditText class but omit `isEditable` in that
+     * snapshot. Adopt that narrow class signal here so the post-relay live-focus fallback starts
+     * tracking the field without another accessibility-tree lookup.
+     */
+    internal fun processCapturedGesture(
+        event: RecorderEvent,
+        myPackageName: String,
+        launcherPackage: String? = null,
+        transientPackages: Set<String> = emptySet()
+    ) {
+        val normalizedEvent = if (
+            event.eventType == RecorderEventType.CLICK &&
+            !event.sourceIsEditable &&
+            isEditableClassName(event.sourceClassName)
+        ) {
+            event.copy(sourceIsEditable = true)
+        } else {
+            event
+        }
+        processEvent(normalizedEvent, myPackageName, launcherPackage, transientPackages)
+    }
+
+    /** The app the recording is currently attributed to; null until the first app is seen. */
+    fun foregroundPackage(): String? = synchronized(lock) { lastSeenForegroundPackage }
 
     /**
      * Returns the editable field whose focus was observed through a focus or click callback.
@@ -236,15 +280,42 @@ class RecorderSessionOwner(
 
     /**
      * Feeds a live `findFocus(FOCUS_INPUT)` snapshot into the same text-change buffer used by
-     * normal TYPE_VIEW_TEXT_CHANGED callbacks. Returns true only when the value really changed.
+     * normal TYPE_VIEW_TEXT_CHANGED callbacks and reports when focus moved to another field.
      */
-    fun processLiveFocusedTextSnapshot(event: RecorderEvent): Boolean = synchronized(lock) {
-        if (!_isRecording.value || event.occurredAtMillis >= stopRequestedAtMillis) return false
-        val tracked = focusedField ?: return false
-        if (!sameTextTarget(tracked, event) || tracked.enteredText == event.enteredText) return false
+    internal fun processLiveFocusedTextSnapshot(
+        event: RecorderEvent,
+        keyboardVisible: Boolean = false
+    ): FocusedTextSnapshotResult = synchronized(lock) {
+        if (!_isRecording.value || event.occurredAtMillis >= stopRequestedAtMillis) {
+            return FocusedTextSnapshotResult.NOT_TRACKED
+        }
+        val tracked = focusedField ?: return FocusedTextSnapshotResult.NOT_TRACKED
+        if (!sameTextTarget(tracked, event)) {
+            flushPendingTextLocked()
+            focusedField = null
+            trackedFieldSawKeyboard = false
+            return FocusedTextSnapshotResult.FOCUS_LOST
+        }
+        if (trackedFieldSawKeyboard && !keyboardVisible) {
+            flushPendingTextLocked()
+            focusedField = null
+            trackedFieldSawKeyboard = false
+            return FocusedTextSnapshotResult.FOCUS_LOST
+        }
+        trackedFieldSawKeyboard = trackedFieldSawKeyboard || keyboardVisible
+        if (tracked.enteredText == event.enteredText) return FocusedTextSnapshotResult.UNCHANGED
 
         processTextChangeLocked(event.copy(eventType = RecorderEventType.TEXT_CHANGE))
-        true
+        FocusedTextSnapshotResult.UPDATED
+    }
+
+    /** Commits buffered text before the tracked input disappears from the live focus tree. */
+    internal fun onTrackedEditableFocusLost(): FocusedTextSnapshotResult = synchronized(lock) {
+        if (!_isRecording.value || focusedField == null) return FocusedTextSnapshotResult.NOT_TRACKED
+        flushPendingTextLocked()
+        focusedField = null
+        trackedFieldSawKeyboard = false
+        FocusedTextSnapshotResult.FOCUS_LOST
     }
 
     /**
@@ -260,6 +331,7 @@ class RecorderSessionOwner(
         flushPendingScrollLocked()
         clearTextCommitCandidateLocked()
         focusedField = null
+        trackedFieldSawKeyboard = false
         pendingLauncherClicks.clear()
         appendActionLocked(action)
     }
@@ -271,6 +343,7 @@ class RecorderSessionOwner(
         flushPendingTextLocked()
         clearTextCommitCandidateLocked()
         focusedField = null
+        trackedFieldSawKeyboard = false
         flushPendingScrollLocked()
 
         val previousPackage = lastSeenForegroundPackage
@@ -293,6 +366,7 @@ class RecorderSessionOwner(
         val returnedToSameApp = wasOnLauncher && newPackageName == lastAppBeforeLauncherPackage
         val launchedFromHome = !returnedToSameApp && (wasOnLauncher || hasPendingLauncherClicks)
             
+        val lastAction = _recordedActions.value.lastOrNull()
         if (launchedFromHome) {
             discardPendingLauncherClicksLocked()
             appendActionLocked(
@@ -302,6 +376,15 @@ class RecorderSessionOwner(
                     delayMillis = 500L
                 )
             )
+            interactedSinceLaunch = false
+        } else if (!interactedSinceLaunch && !returnedToSameApp &&
+            lastAction?.actionType == ActionType.APP_INTENT && lastAction.packageName != newPackageName
+        ) {
+            // Another app replaced the one just launched before the user did anything in it
+            // (e.g. an overlay app that opens its own activity when Home is shown). The launch
+            // step belongs to the app the user actually went on to use.
+            _recordedActions.value = _recordedActions.value.dropLast(1) + lastAction.copy(packageName = newPackageName)
+            persistLocked()
         } else if (returnedToSameApp && discardPendingLauncherClicksLocked()) {
             // Returning to the same app is not a replayable shortcut step.
             persistLocked()
@@ -312,6 +395,7 @@ class RecorderSessionOwner(
     }
 
     private fun appendActionLocked(action: Action) {
+        if (action.actionType != ActionType.APP_INTENT) interactedSinceLaunch = true
         val currentActions = _recordedActions.value
         _recordedActions.value = if (
             action.uiActionType == "TYPE_TEXT" &&
@@ -340,6 +424,7 @@ class RecorderSessionOwner(
     }
 
     private fun resetForegroundTrackingLocked() {
+        interactedSinceLaunch = true
         lastSeenForegroundPackage = null
         lastAppBeforeLauncherPackage = null
         pendingLauncherClicks.clear()
@@ -348,6 +433,7 @@ class RecorderSessionOwner(
         pendingText = null
         lastCommittedText = null
         focusedField = null
+        trackedFieldSawKeyboard = false
         pendingScroll = null
         lastScrollPositionByTarget.clear()
     }
@@ -432,6 +518,10 @@ class RecorderSessionOwner(
             flushPendingTextLocked()
         }
 
+        val previousFocusedField = focusedField
+        if (previousFocusedField != null && !sameTextTarget(previousFocusedField, event)) {
+            trackedFieldSawKeyboard = false
+        }
         pendingText = PendingText(event, targetKey, timestamp)
         focusedField = event
     }
@@ -443,20 +533,12 @@ class RecorderSessionOwner(
             flushPendingTextLocked()
         }
         if (lastCommittedText?.targetKey != targetKey) clearTextCommitCandidateLocked()
+        val previousFocusedField = focusedField
+        if (previousFocusedField == null || !sameTextTarget(previousFocusedField, event)) {
+            trackedFieldSawKeyboard = false
+        }
         focusedField = event.takeIf { it.sourceIsEditable }
-    }
-
-    private fun processContentChangeLocked(event: RecorderEvent) {
-        val candidate = pendingText ?: lastCommittedText ?: return
-        if (candidate.event.packageName != event.packageName) return
-        if (eventTimestamp(event) - candidate.lastEventAtMillis < TEXT_QUIET_PERIOD_MS) return
-        commitTextAndSubmitLocked()
-    }
-
-    private fun inferSubmitFromWindowChangeLocked(event: RecorderEvent) {
-        val candidate = pendingText ?: lastCommittedText ?: return
-        if (candidate.event.packageName != event.packageName) return
-        commitTextAndSubmitLocked()
+        if (focusedField == null) trackedFieldSawKeyboard = false
     }
 
     private fun processPressEnterLocked(event: RecorderEvent) {
@@ -465,13 +547,6 @@ class RecorderSessionOwner(
             ?: focusedField?.let(::createTypeAction)
             ?: event.takeIf { hasTargetSelector(it) }?.let(::createTypeAction)
             ?: return
-        appendActionLocked(createPressEnterAction(textAction))
-        clearTextCommitCandidateLocked()
-    }
-
-    private fun commitTextAndSubmitLocked() {
-        flushPendingTextLocked()
-        val textAction = lastCommittedText?.let { createTypeAction(it.event) } ?: return
         appendActionLocked(createPressEnterAction(textAction))
         clearTextCommitCandidateLocked()
     }
@@ -486,6 +561,7 @@ class RecorderSessionOwner(
         pendingText = null
         appendActionLocked(createTypeAction(text.event))
         lastCommittedText = text
+        onTextCommitListener?.invoke(text.event)
     }
 
     private fun clearTextCommitCandidateLocked() {
@@ -616,6 +692,10 @@ class RecorderSessionOwner(
         fun hasTargetSelector(event: RecorderEvent): Boolean =
             event.sourceViewId != null || event.sourceText != null ||
                 event.sourceContentDescription != null || event.sourceClassName != null
+
+        fun isEditableClassName(className: String?): Boolean = className.orEmpty().let {
+            it.endsWith("EditText") || it.endsWith("AutoCompleteTextView")
+        }
 
         fun scrollDirection(event: RecorderEvent, previous: ScrollPosition?): String? {
             val verticalDelta = event.scrollDeltaY ?: difference(event.scrollY, previous?.y)

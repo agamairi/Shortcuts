@@ -1,3 +1,59 @@
+# Pending commits — Engine v2 recovery (2026-10-17)
+
+Nothing below is committed. Each block names the worktree/branch that holds the uncommitted change.
+Every branch was created from `development` (= `main` at b0b27ea). Review, then commit on that branch.
+
+## feat/p0-fixture-app — `../autmation-widget-android-worktrees/p0-fixtures`
+Add RK Fixtures app for on-device record/replay tests
+
+A separate :fixtures module (com.repeatkit.fixtures) with 12 deliberately hard screens — Views,
+Compose without view ids, 60-row lists of identical rows, near-duplicate labels, dialogs/sheets/
+menus, text fields with IME actions, delayed content, multi-screen navigation, a WebView and tabs.
+Every interaction is logged as single-line JSON on tag FixtureEvent.
+
+## feat/p0-debug-hooks — `../autmation-widget-android-worktrees/p0-debug-hooks`
+Add RepeatKit Dev build and debug-only adb control surface
+
+- Debug builds install as com.shortcuts.app.dev ("RepeatKit Dev") beside the real app.
+- DebugControlActivity (debug source set only): start/stop/dump/save/run/list/delete over adb,
+  receipts in filesDir/debug, one CMD_DONE log line per command. Runs use the widget entry point.
+- RunResultBus publishes finished runs in-process for that receipt.
+- Fix: accessibility-enabled detection compares component package and class exactly, so the
+  normal install can't mistake RepeatKit Dev's enabled service for its own.
+
+## feat/p0-e2e-harness — `../autmation-widget-android-worktrees/p0-e2e-harness`
+Add on-device record→replay E2E harness
+
+tools/e2e/rk_e2e.py plays the human over adb while RepeatKit Dev records, saves, resets the
+fixture, replays through the widget path, and diffs fixture events (recording vs replay).
+Recording and replay faults are scored separately. Refuses to touch the non-dev package.
+
+## feat/engine-v2-foundation — `../autmation-widget-android-worktrees/e2-foundation`
+Engine v2 WP1: versioned workflow model, codec, legacy migration
+
+Additive groundwork under com.shortcuts.app.automation (nothing calls it yet): WorkflowV2 steps
+with rich element/window selectors, a strict codec that fails loudly, legacy Action migration,
+immutable node/window snapshots with multi-window hit-testing, shared text/geometry/role helpers,
+and the capture/replay/trace interfaces. Adds the Engine v2 spec and touch-capture research.
+
+## feat/capture-overlay-spike — `../autmation-widget-android-worktrees/e2-capture-spike`
+Record every tap with a capture-and-relay overlay
+
+While recording, a transparent accessibility overlay receives each touch, hit-tests the
+accessibility tree under the finger, records the step through the existing session pipeline,
+then relays the same tap/long-press/swipe with dispatchGesture. Leaves the status bar,
+navigation bar and keyboard native; steps aside for the shade, permission dialogs and RepeatKit
+itself; suppresses passive click/scroll events only around its own relays. PASSIVE mode remains
+as a fallback and keeps Mark a tap.
+
+## chore/recovery-plan — main checkout
+Add Engine v2 recovery plan; refresh executor routing
+
+okf-docs/recovery-plan.md, engine-v2-spec.md, research/touch-capture.md; Agents.md and the
+agy-connector model list updated to the current agy/Codex models.
+
+---
+
 # Proposed Commit:
 Feat: Expand shortcut tile palette with 8 new colours
 

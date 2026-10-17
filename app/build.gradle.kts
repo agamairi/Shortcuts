@@ -16,8 +16,8 @@ android {
         applicationId = "com.shortcuts.app"
         minSdk = 26
         targetSdk = 36
-        versionCode = 8
-        versionName = "0.7.4"
+        versionCode = 10
+        versionName = "0.9.0"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
             useSupportLibrary = true
@@ -37,6 +37,10 @@ android {
     }
 
     buildTypes {
+        debug {
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+        }
         release {
             // Supply RELEASE_STORE_FILE, RELEASE_STORE_PASSWORD, RELEASE_KEY_ALIAS and
             // RELEASE_KEY_PASSWORD in an untracked gradle.properties/CI secret. Until then,

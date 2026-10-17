@@ -43,6 +43,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.shortcuts.app.data.Action
 import com.shortcuts.app.data.ActionType
+import com.shortcuts.app.data.ShortcutDocument
+import com.shortcuts.app.data.ShortcutSteps
+import com.shortcuts.app.diagnostics.Diagnostics
 import com.shortcuts.app.service.AutomationRecorder
 import com.shortcuts.app.ui.theme.LocalShortcutsPalette
 import com.shortcuts.app.util.AccessibilityStatusChecker
@@ -93,6 +96,7 @@ fun RecorderScreen(
         mutableStateOf(AccessibilityStatusChecker.isAccessibilityServiceActive(context))
     }
     var recordingStatusMessage by remember { mutableStateOf<String?>(null) }
+    var validationNotice by remember { mutableStateOf<String?>(null) }
     val recorderSessionController = remember { RecorderSessionController() }
     val lifecycleOwner = LocalLifecycleOwner.current
 
@@ -125,16 +129,28 @@ fun RecorderScreen(
     }
 
     val editableActions = remember { mutableStateListOf<Action>() }
+    var loadedDocument by remember { mutableStateOf<ShortcutDocument?>(null) }
     var wasRecording by remember { mutableStateOf(isRecording) }
 
     LaunchedEffect(isRecording, isAccessibilityServiceActive, recordedActionsFlow) {
-        if (!isRecording && recordedActionsFlow.isNotEmpty() && editableActions.isEmpty()) {
-            editableActions.addAll(recordedActionsFlow)
+        if (!isRecording && (recordedActionsFlow.isNotEmpty() || com.shortcuts.app.automation.android.capture.V2CaptureBridge.lastWorkflowJson != null) && editableActions.isEmpty()) {
+            val v2Json = com.shortcuts.app.automation.android.capture.V2CaptureBridge.lastWorkflowJson
+            val doc = if (!v2Json.isNullOrBlank()) {
+                ShortcutSteps.decode(v2Json)
+            } else null
+
+            if (doc is ShortcutDocument.V2 && doc.actions.isNotEmpty()) {
+                loadedDocument = doc
+                editableActions.addAll(doc.actions)
+            } else {
+                loadedDocument = ShortcutDocument.Legacy(recordedActionsFlow)
+                editableActions.addAll(recordedActionsFlow)
+            }
         }
         if (wasRecording && !isRecording) {
             val serviceStillActive = AccessibilityStatusChecker.isAccessibilityServiceActive(context)
             isAccessibilityServiceActive = serviceStillActive
-            if (!serviceStillActive && recordedActionsFlow.isNotEmpty()) {
+            if (!serviceStillActive && (recordedActionsFlow.isNotEmpty() || editableActions.isNotEmpty())) {
                 recordingStatusMessage = "Accessibility was turned off, so recording ended. Your captured steps are ready to review."
             }
         }
@@ -196,6 +212,8 @@ fun RecorderScreen(
             confirmButton = {
                 TextButton(onClick = {
                     AutomationRecorder.clearRecording()
+                    loadedDocument = null
+                    editableActions.clear()
                     showDiscardConfirmation = false
                     onNavigateBack()
                 }) { Text("Discard") }
@@ -281,16 +299,41 @@ fun RecorderScreen(
                                             snackbarHostState.showSnackbar("The web token couldn't be secured. Your shortcut was not saved.")
                                             return@launch
                                         }
+                                        val currentActions = safe.filterNotNull()
+                                        val doc = loadedDocument
+                                        val encodeResult = ManualBuilderUtils.safeEncodeForSave(doc, currentActions)
+                                        if (encodeResult.isFailure) {
+                                            isSaving = false
+                                            val errorMsg = encodeResult.exceptionOrNull()?.localizedMessage ?: "Invalid step edits"
+                                            validationNotice = errorMsg
+                                            recordingStatusMessage = errorMsg
+                                            snackbarHostState.showSnackbar("Save failed: $errorMsg. Your recorded draft has been kept.")
+                                            return@launch
+                                        }
+                                        validationNotice = null
+                                        val actionsJson = encodeResult.getOrThrow()
+                                        val isV2 = actionsJson.trimStart().startsWith("{")
+                                        val format = if (isV2) "v2" else "legacy"
+                                        val isEdited = (doc is ShortcutDocument.V2 && currentActions != doc.actions) ||
+                                            (doc is ShortcutDocument.Legacy && currentActions != doc.actions)
+                                        val why = when {
+                                            !com.shortcuts.app.automation.android.EngineV2.enabled || doc !is ShortcutDocument.V2 -> "v2_unavailable"
+                                            isEdited -> "edited"
+                                            else -> "v2"
+                                        }
+                                        Diagnostics.log("recording", "save", mapOf("format" to format, "why" to why))
                                         val automation = ManualBuilderUtils.buildManualAutomation(
                                             shortcutName,
-                                            safe.filterNotNull(),
+                                            currentActions,
                                             selectedColor.name,
                                             selectedIcon.name
-                                        )
+                                        ).copy(actionsJson = actionsJson)
                                         val saveResult = viewModel?.insert(automation) ?: Result.success(Unit)
 
                                         if (saveResult.isSuccess) {
                                             AutomationRecorder.clearRecording()
+                                            loadedDocument = null
+                                            editableActions.clear()
                                             isSaving = false
                                             onNavigateBack()
                                         } else {
@@ -472,12 +515,22 @@ fun RecorderScreen(
                         .padding(start = 24.dp, end = 24.dp, top = 10.dp),
                     verticalArrangement = Arrangement.spacedBy(18.dp)
                 ) {
-                    recordingStatusMessage?.let { message ->
+                    (validationNotice ?: recordingStatusMessage)?.let { message ->
                         item {
                             Text(
                                 message,
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = palette.danger
+                            )
+                        }
+                    }
+                    if (loadedDocument !is ShortcutDocument.V2) {
+                        item {
+                            Text(
+                                "Recorded using legacy engine (Engine v2 workflow unavailable).",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = palette.ink.copy(alpha = 0.7f),
+                                modifier = Modifier.padding(bottom = 8.dp)
                             )
                         }
                     }
@@ -581,9 +634,22 @@ fun RecorderScreen(
                             .border(1.5.dp, palette.ink.copy(alpha = .6f), androidx.compose.foundation.shape.RoundedCornerShape(26.dp))
                             .clickable {
                                 val snapshot = editableActions.toList()
+                                val doc = loadedDocument
                                 scope.launch {
+                                    val encodeResult = ManualBuilderUtils.safeEncodeWorkflow(doc, snapshot)
+                                    val v2Json = encodeResult.getOrElse { error ->
+                                        val errorMsg = error.message ?: "This shortcut cannot be encoded with the current edits."
+                                        validationNotice = errorMsg
+                                        recordingStatusMessage = errorMsg
+                                        return@launch
+                                    }
+                                    validationNotice = null
                                     preflightReport = withContext(Dispatchers.IO) {
-                                        ShortcutRunner(context.applicationContext).preflight(snapshot)
+                                        if (v2Json != null) {
+                                            ShortcutRunner(context.applicationContext).preflight(v2Json)
+                                        } else {
+                                            ShortcutRunner(context.applicationContext).preflight(snapshot)
+                                        }
                                     }
                                 }
                             },
@@ -599,21 +665,38 @@ fun RecorderScreen(
                             .clickable {
                                 val snapshot = editableActions.toList()
                                 val name = shortcutName
+                                val doc = loadedDocument
                                 scope.launch {
+                                    val encodeResult = ManualBuilderUtils.safeEncodeWorkflow(doc, snapshot)
+                                    val v2Json = encodeResult.getOrElse { error ->
+                                        val errorMsg = error.message ?: "This shortcut cannot be encoded with the current edits."
+                                        validationNotice = errorMsg
+                                        recordingStatusMessage = errorMsg
+                                        return@launch
+                                    }
+                                    validationNotice = null
                                     val report = withContext(Dispatchers.IO) {
-                                        ShortcutRunner(context.applicationContext).preflight(snapshot)
+                                        if (v2Json != null) {
+                                            ShortcutRunner(context.applicationContext).preflight(v2Json)
+                                        } else {
+                                            ShortcutRunner(context.applicationContext).preflight(snapshot)
+                                        }
                                     }
                                     if (!report.canRun) {
                                         preflightReport = report
                                         return@launch
                                     }
-                                    val effects = ShortcutRunSafety.confirmationEffects(snapshot)
+                                    val effects = if (v2Json != null) {
+                                        ShortcutRunSafety.confirmationEffects(v2Json)
+                                    } else {
+                                        ShortcutRunSafety.confirmationEffects(snapshot)
+                                    }
                                     if (effects.isEmpty()) {
                                         snackbarHostState.showSnackbar(
-                                            runEditorDraftThroughGateway(context, name, snapshot).userMessage()
+                                            runEditorDraftThroughGateway(context, name, snapshot, actionsJson = v2Json).userMessage()
                                         )
                                     } else {
-                                        pendingEditorRun = PendingEditorRun(name, snapshot, effects)
+                                        pendingEditorRun = PendingEditorRun(name, snapshot, effects, actionsJson = v2Json)
                                     }
                                 }
                             },
@@ -659,12 +742,17 @@ fun RecorderScreen(
                             editableActions[index] = if (currentPicker.isSecondaryText) {
                                 action.copy(textInput = textInputState)
                             } else {
-                                when (action.actionType) {
-                                    ActionType.HTTP_REQUEST -> action.copy(url = textInputState)
-                                    ActionType.SEND_MESSAGE -> action.copy(target = textInputState)
-                                    ActionType.DIAL_NUMBER -> action.copy(target = textInputState)
-                                    ActionType.UI_AUTOMATION -> action.copy(targetText = textInputState)
-                                    else -> action
+                                if (action.v2StepId != null) {
+                                    // Recorded v2 step targets cannot be edited
+                                    action
+                                } else {
+                                    when (action.actionType) {
+                                        ActionType.HTTP_REQUEST -> action.copy(url = textInputState)
+                                        ActionType.SEND_MESSAGE -> action.copy(target = textInputState)
+                                        ActionType.DIAL_NUMBER -> action.copy(target = textInputState)
+                                        ActionType.UI_AUTOMATION -> action.copy(targetText = textInputState)
+                                        else -> action
+                                    }
                                 }
                             }
                         }
@@ -685,7 +773,7 @@ fun RecorderScreen(
                         ManualSlotKind.CONTROL -> action.copy(target = picked)
                         ManualSlotKind.APP -> action.copy(packageName = picked)
                         ManualSlotKind.HTTP_METHOD -> action.copy(method = picked)
-                        ManualSlotKind.UI_ACTION_TYPE -> action.copy(uiActionType = picked)
+                        ManualSlotKind.UI_ACTION_TYPE -> if (action.v2StepId != null) action else action.copy(uiActionType = picked)
                         else -> action
                     }
                 }
@@ -693,7 +781,7 @@ fun RecorderScreen(
             }, onAppActionPicked = { pickedAction ->
                 val index = currentPicker.stepIndex
                 if (index in editableActions.indices) {
-                    editableActions[index] = pickedAction
+                    editableActions[index] = ManualBuilderUtils.preserveV2StepId(editableActions[index], pickedAction)
                 }
                 picker = null
             })
@@ -738,7 +826,8 @@ fun RecorderScreen(
                             context,
                             pending.shortcutName,
                             pending.actions,
-                            externalEffectsConfirmed = true
+                            externalEffectsConfirmed = true,
+                            actionsJson = pending.actionsJson
                         ).userMessage()
                     )
                 }
@@ -750,6 +839,9 @@ fun RecorderScreen(
 
 
 object RecorderListOperations {
+    fun preserveV2StepId(existing: Action, picked: Action): Action =
+        ManualBuilderUtils.preserveV2StepId(existing, picked)
+
     fun moveUp(list: MutableList<Action>, index: Int) {
         if (index in 1 until list.size) {
             val item = list.removeAt(index)

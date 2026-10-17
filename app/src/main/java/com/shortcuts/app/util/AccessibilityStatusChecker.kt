@@ -4,20 +4,27 @@ import android.content.Context
 import android.provider.Settings
 
 object AccessibilityStatusChecker {
+    private const val SERVICE_CLASS_NAME = "com.shortcuts.app.service.AutomationAccessibilityService"
+
+    /**
+     * The service class keeps its Kotlin package even in the `.dev` build, whose application id
+     * differs, so the component's package and class are compared separately and exactly. A prefix
+     * match would let the normal install mistake RepeatKit Dev's enabled service for its own.
+     */
     fun isAccessibilityServiceEnabledFromSettingString(
         enabledServices: String?,
-        packageName: String = "com.shortcuts.app",
-        serviceClassName: String = "com.shortcuts.app.service.AutomationAccessibilityService"
+        packageName: String,
+        serviceClassName: String = SERVICE_CLASS_NAME
     ): Boolean {
         if (enabledServices.isNullOrBlank()) return false
-        val shortComponent = "$packageName/.service.AutomationAccessibilityService"
-        val fullComponent = "$packageName/$serviceClassName"
         return enabledServices.split(":").any { item ->
             val trimmed = item.trim()
-            if (!trimmed.contains("/")) return@any false
-            trimmed.equals(shortComponent, ignoreCase = true) ||
-            trimmed.equals(fullComponent, ignoreCase = true) ||
-            (trimmed.startsWith(packageName) && trimmed.contains("AutomationAccessibilityService"))
+            val slash = trimmed.indexOf('/')
+            if (slash <= 0 || slash == trimmed.lastIndex) return@any false
+            val componentPackage = trimmed.substring(0, slash)
+            val componentClass = trimmed.substring(slash + 1)
+                .let { if (it.startsWith(".")) componentPackage + it else it }
+            componentPackage == packageName && componentClass == serviceClassName
         }
     }
 

@@ -1,5 +1,6 @@
 package com.shortcuts.app.service
 
+import android.annotation.SuppressLint
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -7,18 +8,24 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.Looper
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.shortcuts.app.R
+import com.shortcuts.app.automation.android.replay.EngineV2RunRuntime
 import com.shortcuts.app.data.ActionConverter
 import com.shortcuts.app.data.AppDatabase
+import com.shortcuts.app.data.ShortcutSteps
 import com.shortcuts.app.ui.MainActivity
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
@@ -29,12 +36,23 @@ class AutomationExecutionService : Service() {
     @Volatile private var currentRunId: String? = null
     @Volatile private var latestStartId: Int = -1
 
+    @SuppressLint("ForegroundServiceType")
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         latestStartId = startId
         if (intent?.action == ACTION_STOP) {
             val runId = intent.getStringExtra(EXTRA_RUN_ID).orEmpty()
             if (ShortcutRunCoordinator.cancel(runId)) {
-                startForeground(FOREGROUND_NOTIFICATION_ID, stoppingNotification())
+                val foregroundServiceType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                } else {
+                    0
+                }
+                ServiceCompat.startForeground(
+                    this,
+                    FOREGROUND_NOTIFICATION_ID,
+                    stoppingNotification(),
+                    foregroundServiceType
+                )
             } else {
                 stopSelf(startId)
             }
@@ -54,17 +72,37 @@ class AutomationExecutionService : Service() {
         }
 
         currentRunId = runId
-        startForeground(FOREGROUND_NOTIFICATION_ID, foregroundNotification(runId))
-        serviceScope.launch {
+        val foregroundServiceType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+        } else {
+            0
+        }
+        ServiceCompat.startForeground(
+            this,
+            FOREGROUND_NOTIFICATION_ID,
+            foregroundNotification(runId),
+            foregroundServiceType
+        )
+        val runJob = serviceScope.launch {
             try {
                 if (!editorActionsJson.isNullOrBlank()) {
-                    val result = ActionExecutorService(
-                        context = this@AutomationExecutionService,
-                        cancellation = lease.cancellation
-                    ).executeActions(
-                        ActionConverter().toActionList(editorActionsJson),
-                        editorShortcutName?.trim().takeUnless { it.isNullOrBlank() } ?: "Shortcut"
+                    val name = editorShortcutName?.trim().takeUnless { it.isNullOrBlank() } ?: "Shortcut"
+                    val v2Result = EngineV2RunRuntime(this@AutomationExecutionService).tryRun(
+                        editorActionsJson,
+                        name,
+                        lease.cancellation
                     )
+                    val result = if (v2Result != null) {
+                        v2Result
+                    } else {
+                        ActionExecutorService(
+                            context = this@AutomationExecutionService,
+                            cancellation = lease.cancellation
+                        ).executeActions(
+                            ShortcutSteps.decode(editorActionsJson).actions,
+                            name
+                        )
+                    }
                     publishResult(result)
                 } else {
                     val automation = AppDatabase.getDatabase(this@AutomationExecutionService)
@@ -74,15 +112,26 @@ class AutomationExecutionService : Service() {
                         automation == null -> publishFailure("Shortcut", "This shortcut no longer exists.")
                         !automation.isActive -> publishFailure(automation.name, "This shortcut is deactivated.")
                         else -> {
-                            val actions = ActionConverter().toActionList(automation.actionsJson)
-                            val result = ActionExecutorService(
-                                context = this@AutomationExecutionService,
-                                cancellation = lease.cancellation
-                            ).executeActions(actions, automation.name)
-                            publishResult(result)
+                            val v2Result = EngineV2RunRuntime(this@AutomationExecutionService).tryRun(
+                                automation.actionsJson,
+                                automation.name,
+                                lease.cancellation
+                            )
+                            val result = if (v2Result != null) {
+                                v2Result
+                            } else {
+                                val actions = ShortcutSteps.decode(automation.actionsJson).actions
+                                ActionExecutorService(
+                                    context = this@AutomationExecutionService,
+                                    cancellation = lease.cancellation
+                                ).executeActions(actions, automation.name)
+                            }
+                            publishResult(result, automationId)
                         }
                     }
                 }
+            } catch (_: CancellationException) {
+                // Stop cancels this run's own coroutine. Do not convert it into a generic error.
             } catch (_: Exception) {
                 publishFailure("Shortcut", "This shortcut couldn't complete. Please try again.")
             } finally {
@@ -92,8 +141,12 @@ class AutomationExecutionService : Service() {
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf(latestStartId)
                 ShortcutRunCoordinator.release(runId)
+                lease.cancellation.clearRunJob(coroutineContext[Job]!!)
             }
         }
+        // Bind after launch so cancellation in the tiny setup window still cancels an existing
+        // child that will execute its finally block and release the admission lease.
+        lease.cancellation.bindRunJob(runJob)
         return START_NOT_STICKY
     }
 
@@ -105,7 +158,34 @@ class AutomationExecutionService : Service() {
         super.onDestroy()
     }
 
-    private fun publishResult(result: RunResult) {
+    /** Diagnostics only; it must never stop the result from being published. */
+    private fun logRunFinished(result: RunResult, automationId: Int) = runCatching {
+        val stepsList = result.steps.map { step ->
+            when (step) {
+                is StepResult.Success -> "ok"
+                is StepResult.Failed -> "failed:${step.reason.name}"
+                is StepResult.NeedsPermission -> "needs_permission"
+                is StepResult.Skipped -> "skipped"
+            }
+        }
+        val firstFailure = result.firstFailure
+        val diagFields = mutableMapOf<String, Any?>(
+            "automationId" to automationId,
+            "runId" to currentRunId,
+            "success" to result.allSucceeded,
+            "steps" to stepsList
+        )
+        result.firstIncompleteIndex.takeIf { it != -1 }?.let { diagFields["failingStepIndex"] = it }
+        if (firstFailure != null) {
+            diagFields["failureReason"] = firstFailure.reason.name
+            diagFields["userMessage"] = firstFailure.userMessage.take(300)
+        }
+        com.shortcuts.app.diagnostics.Diagnostics.log("replay", "run_finished", diagFields)
+    }
+
+    private fun publishResult(result: RunResult, automationId: Int = NO_AUTOMATION_ID) {
+        logRunFinished(result, automationId)
+        RunResultBus.tryEmit(RunResultEvent(automationId, currentRunId, result))
         if (result.allSucceeded) {
             announce(result.userSummary())
             return
@@ -235,7 +315,8 @@ class AutomationExecutionService : Service() {
             context: Context,
             shortcutName: String,
             actions: List<com.shortcuts.app.data.Action>,
-            runId: String
+            runId: String,
+            actionsJson: String? = null
         ) {
             val notificationManager = context.getSystemService(NotificationManager::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -246,13 +327,25 @@ class AutomationExecutionService : Service() {
                     NotificationChannel(ATTENTION_CHANNEL_ID, "Shortcuts needing attention", NotificationManager.IMPORTANCE_DEFAULT)
                 )
             }
+            val jsonToSend = if (!actionsJson.isNullOrBlank()) {
+                actionsJson
+            } else {
+                ActionConverter().fromActionList(actions)
+            }
             ContextCompat.startForegroundService(
                 context,
                 Intent(context, AutomationExecutionService::class.java)
-                    .putExtra(EXTRA_EDITOR_ACTIONS_JSON, ActionConverter().fromActionList(actions))
+                    .putExtra(EXTRA_EDITOR_ACTIONS_JSON, jsonToSend)
                     .putExtra(EXTRA_EDITOR_SHORTCUT_NAME, shortcutName)
                     .putExtra(EXTRA_RUN_ID, runId)
             )
         }
+
+        internal fun startAcceptedEditorDraft(
+            context: Context,
+            shortcutName: String,
+            actions: List<com.shortcuts.app.data.Action>,
+            runId: String
+        ) = startAcceptedEditorDraft(context, shortcutName, actions, runId, actionsJson = null)
     }
 }

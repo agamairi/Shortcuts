@@ -2,42 +2,45 @@
 title: Widget Architecture
 type: architecture
 author: antigravity_gemini_3_1_pro
-tags: [widgets, glance, appwidget, android]
+tags: [widgets, glance, appwidget, android, keyguard, lockscreen]
 ---
 
 # Widget Architecture
 
 ## Overview
-The application supports adding widgets to the Android home screen via Jetpack Glance. There is currently one widget provider declared in `AndroidManifest.xml` (`ShortcutWidgetReceiver`). Five legacy widget receivers documented in earlier versions of this file have been removed.
+RepeatKit provides home-screen and lock-screen widgets powered by Jetpack Glance (`androidx.glance.appwidget`). The widget architecture consolidates single, list, grid, and custom AI-styled widgets into an adaptive unified provider (`UnifiedShortcutWidget` / `ShortcutWidgetReceiver`).
 
-## Widget Providers
+## Widget Hosts & Capabilities
+The widget is declared in `res/xml/shortcut_widget_info.xml`:
+- **Categories**: `home_screen|keyguard` (`android:widgetCategory="home_screen|keyguard"`), allowing placement on both Android home screen launchers and lock-screen widget hosts.
+- **Preview & Initial Layouts**:
+  - `initialLayout="@layout/shortcut_widget_preview"`
+  - `initialKeyguardLayout="@layout/shortcut_widget_preview"`
+- **Update Frequency**: `updatePeriodMillis="1800000"` (30 minutes, the platform minimum) as a defensive safety net.
 
-### Current Widget
-- **`ShortcutWidgetReceiver`**: The current, unified adaptive widget. Consolidates multiple widget styles into a single receiver.
-  - **Metadata**: `res/xml/shortcut_widget_info.xml`
-  - **Config Activity**: `ShortcutWidgetConfigActivity`
-  - **Room Binding Table**: `widget_configs` (`WidgetConfig`), with `sourceType = "UNIFIED"`.
-    Verified on-device: pinning writes a row such as `(28, 'UNIFIED', '[2]')`. The legacy
-    `widget_bindings` table is NOT used by this provider and stays empty for new widgets.
+## Component Breakdown
 
-## The Pin Flow
-Users can pin the adaptive widget directly from the app via an explicit pin flow:
-1. **`ShortcutWidgetPinRequest`**: Invoked to request a pin from the `AppWidgetManager`.
-2. **`ShortcutWidgetPinReceiver`**: A broadcast receiver that listens for the pin result success callback.
-3. **`refreshShortcutWidget`**: Once pinned, the app must bind the configuration and force a Glance refresh so the widget renders its payload.
+### 1. Unified Glance Widget (`UnifiedShortcutWidget`)
+- **Reactive State Composition (D1)**: Inside `provideGlance`, the widget resolves an initial snapshot guarded by `runCatching` (falling back to a setup state). Inside `provideContent`, it observes a reactive Room `Flow` (`observeWidgetSnapshot`) combining `widget_configs`, `automations`, and `custom_widget_templates` via `collectAsState`.
+- **Session State Nudge**: Reads `currentState<Preferences>()[PREF_KEY_LAST_UPDATE]` inside `provideContent`, ensuring Glance's 45-second worker session re-renders when `updateAppWidgetState` writes a timestamp.
+- **Adaptive Layout Modes**: Supports `AUTO` (responsive size-based), `SINGLE` (1 prominent shortcut), `LIST` (vertical list), and `GRID` (2x2 grid). Grid cells use weighted heights to prevent label clipping (D7).
 
-### The Glance-Id Race Condition (Known Issue & Fix)
-The single most confusing race condition in this layer occurs during the pin flow. When a widget is pinned, Android successfully binds the widget and the app writes its configuration row. However, the subsequent forced redraw often asks Glance for the new widget's `GlanceId` *before* Glance's internal registry has tracked it.
+### 2. Configuration Activity (`ShortcutWidgetConfigActivity`)
+- **Pre-selection & Layout Retention (D3)**: Computes initial selection (`computeInitialSelection`) from existing `WidgetConfig` on re-configuration, preserving shortcut order and layout. Supports single shortcut pre-selection from intent extras when launched from in-app shortcut cards.
+- **State Preservation**: Persists `selectedIds` across rotation and configuration changes using Compose `Saver`.
+- **Cancellation Contract (D8)**: Sets `RESULT_CANCELED` with `EXTRA_APPWIDGET_ID` upfront in `onCreate`.
+- **Non-destructive Creation**: Opening the shortcut creator ("Create a shortcut") retains the configuration activity on the back stack instead of finishing, allowing seamless return to widget setup.
 
-`getGlanceIdBy` throws an exception during this window. Previously, this exception vanished inside the broadcast receiver's coroutine and the widget remained stuck on "Tap to set up" forever.
+### 3. Pinning Flows (`ShortcutWidgetPinRequest` & `ShortcutWidgetPinReceiver`)
+- **Custom Widget Template Pinning (D2)**: When pinning a custom-styled widget from `CreateWidgetScreen`, the inserted `CustomWidgetTemplate` ID is passed via `EXTRA_TEMPLATE_ID` in the success-callback `PendingIntent`.
+- **Pin Receiver Binding**: `ShortcutWidgetPinReceiver` decodes `appWidgetId`, `automationId`, and `templateId`, populating `WidgetConfig` with template styling (label, colorKey, iconKey) before triggering a widget refresh.
 
-**Fix:** `refreshShortcutWidget` now handles this by briefly retrying the `GlanceId` lookup. If it still fails, it falls back to redrawing *every* instance of that widget class.
+### 4. Lock-Screen Safety & Keyguard Trampoline
+- **Tap Routing (`WidgetTapRouter`)**: When a widget tile is tapped, `RunAutomationCallback` checks device lock status (`KeyguardManager.isKeyguardLocked`) and reversibility (`WidgetTapRouter.isIrreversible`).
+- **Confirmation & Irreversibility**: Analyzed via `ShortcutRunSafety.confirmationEffects` (detects destructive/outward actions such as sending messages, making phone calls, or mutating HTTP POST/PUT/DELETE requests).
+- **Keyguard Dismissal Trampoline (`WidgetUnlockTrampolineActivity`)**: If locked and irreversible, the tap launches a transparent activity that calls `KeyguardManager.requestDismissKeyguard` and executes the shortcut with `ShortcutRunner` only after successful authentication. Harmless shortcuts or unlocked taps run directly in the background.
 
-### Redraw Reliability and Launcher Caching
-The pin-flow fallback and the on-launch self-heal formerly used Glance `updateAll()`. The reliability problem was not that all widgets needed a redraw; it was **batch failure isolation**: an exception while `provideGlance` composed one instance could abort the batch, so later instances were never attempted and stayed stale.
-
-**Fix:** `refreshShortcutWidget` falls back to `GlanceAppWidgetManager.getGlanceIds(ShortcutWidget::class.java)` after its `GlanceId` lookup retries are exhausted, then calls `ShortcutWidget().update(...)` separately for every returned id. `MainActivity.onCreate` uses the same per-instance loop for its self-heal redraw. Every individual update has its own `runCatching`, so a bad widget does not prevent an attempt to redraw its neighbours. The `ShortcutWidgetRefresh` logs identify the targeted `appWidgetId` and `glanceId` when available; its fallback and the `MainActivity` logs identify each `glanceId` that succeeds or fails.
-
-After a *targeted* successful refresh (the normal pin/configuration path), `ShortcutWidgetRefresh` also reads that widget's current `AppWidgetOptions` bundle and passes the same bundle back to `AppWidgetManager.updateAppWidgetOptions()`. This is a no-op “launcher nudge” intended to encourage a launcher to re-inflate cached `RemoteViews`. It is a mitigation for a suspected Glance/launcher caching quirk, not a confirmed or guaranteed refresh mechanism: the source comment says it *can* act as a nudge. The fallback per-instance loop and `MainActivity` self-heal do not perform this options update.
-
-Implementation: `app/src/main/java/com/shortcuts/app/widget/ShortcutWidgetRefresh.kt:24-56`; `app/src/main/java/com/shortcuts/app/ui/MainActivity.kt:55-70`.
+### 5. Data Synchronization & Pruning (D6)
+- **Room Invalidation Tracker**: `AppDatabase.installWidgetRefreshObserver` monitors `"automations"`, `"widget_configs"`, and `"custom_widget_templates"`. Changes trigger serialized widget refreshes.
+- **Deleted Shortcut Pruning (`pruneConfigs`)**: When automations are deleted, stale automation IDs are pruned from `WidgetConfig` rows so widgets don't point at missing shortcuts.
+- **Package Update**: `ShortcutWidgetReceiver` handles `ACTION_MY_PACKAGE_REPLACED` to refresh all widgets upon app install/update.

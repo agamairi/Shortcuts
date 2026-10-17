@@ -25,9 +25,15 @@
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
+        <!-- The recorder must see the default home app to recognise "opened an app from Home". -->
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.HOME" />
+        </intent>
     </queries>
 
     <application
+        android:name=".ShortcutsApplication"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/full_backup_content"
@@ -47,13 +53,13 @@
         </activity>
 
         <service
-            android:name=".service.ModelDownloaderService"
+            android:name="com.shortcuts.app.service.ModelDownloaderService"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
 
         <service
-            android:name=".service.AutomationExecutionService"
+            android:name="com.shortcuts.app.service.AutomationExecutionService"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="specialUse">
@@ -63,7 +69,7 @@
         </service>
 
         <service
-            android:name=".service.RecorderSessionService"
+            android:name="com.shortcuts.app.service.RecorderSessionService"
             android:enabled="true"
             android:exported="false"
             android:foregroundServiceType="specialUse">
@@ -110,6 +116,7 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="android.appwidget.action.APPWIDGET_UPDATE" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
             <meta-data
                 android:name="android.appwidget.provider"
@@ -128,6 +135,21 @@
             </intent-filter>
         </activity>
 
-        
+        <activity
+            android:name=".widget.WidgetUnlockTrampolineActivity"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar"
+            android:excludeFromRecents="true"
+            android:noHistory="true"
+            android:exported="false" />
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.diagnostics"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/diagnostics_paths" />
+        </provider>
     </application>
 </manifest>

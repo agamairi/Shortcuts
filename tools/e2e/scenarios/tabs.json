@@ -1,0 +1,11 @@
+{
+  "id": "tabs",
+  "launcher_label": "Tabs",
+  "description": "Switch to Search, like the content, then switch to Profile.",
+  "steps": [
+    {"tap": {"text": "Search"}},
+    {"tap": {"text": "Like"}},
+    {"tap": {"text": "Profile"}}
+  ],
+  "expect": "recorded"
+}

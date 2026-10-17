@@ -33,13 +33,12 @@ This server runs `agy` with **`--dangerously-skip-permissions`** — i.e. it lau
 
 ## Tools
 
-Valid `model` values are the exact ids printed by `agy models` (this repo's install, `agy` 1.1.10):
+Valid `model` values are the exact ids printed by `agy models` (re-verified 2026-10-16):
 
-- `gemini-3.6-flash-high` / `gemini-3.6-flash-medium` / `gemini-3.6-flash-low`
-- `gemini-3.5-flash-high` / `gemini-3.5-flash-medium` / `gemini-3.5-flash-low`
-- `gemini-3.1-pro-high` / `gemini-3.1-pro-low`
-- `claude-sonnet-4-6`
-- `claude-opus-4-6-thinking`
+- `gemini-4-argon-high` / `gemini-4-argon-medium` / `gemini-4-argon-low`
+- `gemini-3.8-flash-high` / `gemini-3.8-flash-medium` / `gemini-3.8-flash-low`
+- `claude-opus-5-5-high` / `-medium` / `-low`
+- `claude-sonnet-5-5-high` / `-medium` / `-low`
 - `gpt-oss-120b-medium`
 
 Run `agy models` on your own install to confirm — this list depends on the installed `agy` version and your Antigravity subscription/tier.
@@ -50,7 +49,7 @@ Delegate a development task (writing code, implementing a feature, fixing a bug)
 | Field | Required | Description |
 |---|---|---|
 | `task` | yes | Detailed description of what to do. |
-| `model` | yes | Exact id from `agy models`. A flash tier for quick tasks; `gemini-3.1-pro-*` / `claude-sonnet-4-6` for moderate reasoning; `claude-opus-4-6-thinking` for complex, correctness-critical work. |
+| `model` | yes | Exact id from `agy models`. A flash tier for well-specified code writing; `gemini-4-argon-high` for research and complex work; `claude-opus-5-5-*` / `claude-sonnet-5-5-*` for reviews and correctness-critical work. |
 | `success_criteria` | yes | Explicit conditions `agy` must verify before finishing, e.g. `"./gradlew testDebugUnitTest passes"`. |
 | `context_files` | no | Array of absolute file paths to point `agy` at the relevant code. |
 | `cwd` | no | Absolute working directory to run `agy` in (the repo/project to operate on). Defaults to the server's current directory. |
@@ -84,7 +83,7 @@ List all jobs the server knows about (in-memory; cleared on restart), each with 
 ## Tips for good results
 
 - Give `execute` a **strict, machine-checkable `success_criteria`** (a command that exits 0). The agent is told to verify it before returning.
-- Use `gemini-3.1-pro-*` or `claude-sonnet-4-6` for architecture/refactors, a flash tier for small edits and most research, and `claude-opus-4-6-thinking` for complex, correctness-critical work.
+- Use `gemini-4-argon-high` for architecture and research, a flash tier for well-specified edits, and `claude-opus-5-5-*` for complex, correctness-critical work.
 - Provide `context_files` so the agent starts in the right place, and `cwd` to point it at the right repo.
 - Use `antigravity_wait` instead of your own sleep+poll loop.
 

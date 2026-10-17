@@ -14,9 +14,14 @@ import androidx.annotation.VisibleForTesting
 import androidx.core.os.bundleOf
 import com.shortcuts.app.data.Action
 import com.shortcuts.app.data.ActionType
+import com.shortcuts.app.service.capture.TouchCaptureOverlay
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import com.shortcuts.app.automation.android.AccessibilitySnapshotAdapter
+import com.shortcuts.app.automation.android.EngineV2
+import com.shortcuts.app.automation.android.replay.AndroidUiEventHub
+import com.shortcuts.app.diagnostics.Diagnostics
 import java.util.Collections
 import java.util.IdentityHashMap
 import kotlin.math.abs
@@ -149,8 +154,10 @@ open class AutomationAccessibilityService : AccessibilityService() {
         configuredInfo.flags = AccessibilityServiceConfiguration.requiredFlags(configuredInfo.flags)
         serviceInfo = configuredInfo
         instance = this
+        EngineV2.snapshotSource = AccessibilitySnapshotAdapter(this)
         AutomationRecorder.onAccessibilityServiceConnected()
         Log.d(TAG, "AutomationAccessibilityService connected with flags=${configuredInfo.flags}")
+        Diagnostics.log("service", "connected")
     }
 
     override fun onDestroy() {
@@ -158,25 +165,66 @@ open class AutomationAccessibilityService : AccessibilityService() {
         super.onDestroy()
         if (wasConnectedInstance) {
             RecordingHudOverlay.hide()
+            TouchCaptureOverlay.hide()
             instance = null
+            EngineV2.snapshotSource = null
+            AndroidUiEventHub.onDisconnected()
             AutomationRecorder.stopForAccessibilityDisconnect(this)
         }
         Log.d(TAG, "AutomationAccessibilityService destroyed")
+        Diagnostics.log("service", "destroyed")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event != null) {
+            if (event.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED || event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+                TouchCaptureOverlay.onWindowsChanged(this)
+            }
+            AndroidUiEventHub.onAccessibilityEvent(event)
             AutomationRecorder.onAccessibilityEvent(event, this)
             lastEventTimeMs = System.currentTimeMillis()
         }
         // Handle UI Automation feedback here
     }
 
+    /**
+     * Debug builds: `dumpsys activity service <this> rk-ui` prints the screen for the E2E harness;
+     * `rk-ime` prints only the keyboard, so the harness can type by tapping its keys like a person.
+     */
+    override fun dump(fd: java.io.FileDescriptor?, writer: java.io.PrintWriter, args: Array<out String>?) {
+        if (com.shortcuts.app.BuildConfig.DEBUG && args?.contains("rk-ui") == true) {
+            DebugUiDump.write(runCatching { windows }.getOrNull().orEmpty(), writer)
+            return
+        }
+        if (com.shortcuts.app.BuildConfig.DEBUG && args?.contains("rk-ime") == true) {
+            DebugUiDump.write(runCatching { windows }.getOrNull().orEmpty(), writer, inputMethodOnly = true)
+            return
+        }
+        super.dump(fd, writer, args)
+    }
+
     override fun onKeyEvent(event: KeyEvent): Boolean {
-        val root = getRootNode()
-        val activePackageName = root?.packageName?.toString()
-        root?.recycle()
-        return AutomationRecorder.onKeyEvent(event, this, activePackageName)
+        // Only a recording needs to know where a key went; reading windows while idle is not needed.
+        if (!AutomationRecorder.isRecording.value) return false
+        val target = keyEventPackage()
+        if (com.shortcuts.app.BuildConfig.DEBUG) {
+            Log.d(TAG, "Recording key: code=${event.keyCode} action=${event.action} target=$target")
+        }
+        return AutomationRecorder.onKeyEvent(event, this, target)
+    }
+
+    private fun keyEventPackage(): String? {
+        val described = runCatching { windows }.getOrNull().orEmpty().map { window ->
+            val packageName = if (window.isFocused) {
+                window.root?.let { root -> root.packageName?.toString().also { root.recycle() } }
+            } else {
+                null
+            }
+            KeyEventTarget.Window(window.type, window.isFocused, packageName)
+        }
+        return KeyEventTarget.packageFor(described) {
+            getRootNode()?.let { root -> root.packageName?.toString().also { root.recycle() } }
+        }
     }
 
     @Volatile
@@ -246,6 +294,7 @@ open class AutomationAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {
         Log.d(TAG, "Interrupted")
+        Diagnostics.log("service", "interrupted")
     }
 
     open fun getRootNode(): AccessibilityNodeInfo? = rootInActiveWindow
@@ -471,6 +520,12 @@ open class AutomationAccessibilityService : AccessibilityService() {
     }
 
     private fun handleClickNode(action: Action): Boolean {
+        // The editor lets a user pin a repaired step to its recorded point; honour that before
+        // any text matching, still behind the coordinate-safety checks in tapAtRecordedPoint.
+        if (action.preferCoordinateReplay && action.screenX != null && action.screenY != null) {
+            if (tapAtRecordedPoint(action)) return true
+            return if (lastFailureMessage != null) false else fail("The recorded point could not be tapped on this screen.")
+        }
         val targetNode = awaitTargetNode(action)
         if (targetNode == null) {
             Log.w(TAG, "Target node not found for click action; semantic selectors were unavailable")
@@ -644,9 +699,9 @@ open class AutomationAccessibilityService : AccessibilityService() {
         }
 
         val path = Path().apply { moveTo(safePlan.x, safePlan.y) }
-        val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0L, TAP_DURATION_MS))
-            .build()
+        val builder = GestureDescription.Builder()
+        builder.addStroke(GestureDescription.StrokeDescription(path, 0L, TAP_DURATION_MS))
+        val gesture = builder.build()
 
         val finished = CountDownLatch(1)
         val landed = AtomicBoolean(false)

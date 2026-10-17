@@ -453,7 +453,14 @@ fun CreateWidgetScreen(
                             val appWidgetManager = AppWidgetManager.getInstance(context)
                             val provider = ComponentName(context, com.shortcuts.app.widget.ShortcutWidgetReceiver::class.java)
                             if (appWidgetManager.isRequestPinAppWidgetSupported) {
-                                appWidgetManager.requestPinAppWidget(provider, null, null)
+                                val successCallback = data.selectedAutomationId?.let { autoId ->
+                                    com.shortcuts.app.widget.ShortcutWidgetPinRequest.createSuccessCallback(
+                                        context = context,
+                                        automationId = autoId,
+                                        templateId = data.savedTemplateId
+                                    )
+                                }
+                                appWidgetManager.requestPinAppWidget(provider, null, successCallback)
                             }
                         },
                         modifier = Modifier.fillMaxWidth()

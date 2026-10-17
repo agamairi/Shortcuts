@@ -11,6 +11,97 @@ class RecorderSessionOwnerTest {
     private val launcherPackage = "com.example.launcher"
 
     @Test
+    fun `captured Chrome omnibox tap tracks live text and commits query before URL replacement`() {
+        val recorder = RecorderSessionOwner()
+        val commits = mutableListOf<RecorderEvent>()
+        recorder.onTextCommitListener = { commits.add(it) }
+        recorder.start()
+
+        val capturedTap = RecorderEvent(
+            eventType = RecorderEventType.CLICK,
+            packageName = "com.android.chrome",
+            sourceText = "Search or type web address",
+            sourceContentDescription = null,
+            sourceViewId = "com.android.chrome:id/url_bar",
+            enteredText = "",
+            sourceClassName = "android.widget.EditText",
+            // Chrome can omit this flag in the overlay's pre-tap snapshot.
+            sourceIsEditable = false,
+            occurredAtMillis = 1_000L,
+            windowId = 7
+        )
+        recorder.processCapturedGesture(capturedTap, myPackage)
+
+        val typed = capturedTap.copy(
+            eventType = RecorderEventType.TEXT_CHANGE,
+            sourceText = "repeatkit android",
+            enteredText = "repeatkit android",
+            sourceIsEditable = true,
+            occurredAtMillis = 1_200L
+        )
+        assertEquals(
+            FocusedTextSnapshotResult.UPDATED,
+            recorder.processLiveFocusedTextSnapshot(typed, keyboardVisible = true)
+        )
+
+        // Enter navigates in the same activity. Chrome can expose the URL before dropping focus,
+        // but Gboard has already disappeared, so the URL must not replace the buffered query.
+        val resultUrl = typed.copy(
+            sourceText = "https://www.google.com/search?q=repeatkit+android",
+            enteredText = "https://www.google.com/search?q=repeatkit+android",
+            occurredAtMillis = 1_300L
+        )
+        assertEquals(
+            FocusedTextSnapshotResult.FOCUS_LOST,
+            recorder.processLiveFocusedTextSnapshot(resultUrl, keyboardVisible = false)
+        )
+
+        assertEquals("repeatkit android", commits.single().enteredText)
+        assertEquals(listOf("TAP", "TYPE_TEXT"), recorder.recordedActions.value.map { it.uiActionType })
+        assertEquals("repeatkit android", recorder.recordedActions.value.last().textInput)
+    }
+
+    @Test
+    fun `foreground package follows the app the recording is attributed to`() {
+        val recorder = RecorderSessionOwner()
+        recorder.start()
+        assertEquals(null, recorder.foregroundPackage())
+
+        recorder.processEvent(
+            RecorderEvent(RecorderEventType.APP_CHANGE, "com.android.chrome", null, null, null, "", occurredAtMillis = 1_000L),
+            myPackage,
+            launcherPackage
+        )
+        assertEquals("com.android.chrome", recorder.foregroundPackage())
+
+        // The keyboard and RepeatKit itself never become the recorded app.
+        recorder.processEvent(
+            RecorderEvent(RecorderEventType.CONTENT_CHANGE, myPackage, null, null, null, "", occurredAtMillis = 1_100L),
+            myPackage,
+            launcherPackage
+        )
+        assertEquals("com.android.chrome", recorder.foregroundPackage())
+    }
+
+    @Test
+    fun `captured non-editable tap leaves live text fallback untracked`() {
+        val recorder = RecorderSessionOwner()
+        recorder.start()
+        recorder.processCapturedGesture(clickEvent(1_000L), myPackage)
+
+        assertEquals(null, recorder.trackedFocusedEditableField())
+        assertEquals(
+            FocusedTextSnapshotResult.NOT_TRACKED,
+            recorder.processLiveFocusedTextSnapshot(
+                clickEvent(1_100L).copy(
+                    eventType = RecorderEventType.TEXT_CHANGE,
+                    enteredText = "ignored"
+                )
+            )
+        )
+    }
+
+    @Test
     fun `launcher to Chrome typing and Enter records the intended replayable sequence`() {
         val recorder = RecorderSessionOwner()
         val chromePackage = "com.android.chrome"
@@ -124,7 +215,7 @@ class RecorderSessionOwnerTest {
     }
 
     @Test
-    fun `same-app window transition after typing infers one submit action`() {
+    fun `same-app window transition after typing does not invent submit action`() {
         val recorder = RecorderSessionOwner()
         val browserPackage = "com.example.browser"
         recorder.start()
@@ -150,10 +241,7 @@ class RecorderSessionOwnerTest {
             launcherPackage
         )
 
-        assertEquals(
-            listOf("TYPE_TEXT", "PRESS_ENTER"),
-            recorder.recordedActions.value.map { it.uiActionType }
-        )
+        assertEquals(listOf("TYPE_TEXT"), recorder.recordedActions.value.map { it.uiActionType })
     }
 
     @Test
@@ -307,6 +395,39 @@ class RecorderSessionOwnerTest {
         assertEquals(1, actions.size)
         assertEquals(ActionType.APP_INTENT, actions.single().actionType)
         assertEquals("com.duolingo", actions.single().packageName)
+    }
+
+    @Test
+    fun `an app that pops up on its own after Home does not steal the launch step`() {
+        val recorder = RecorderSessionOwner()
+        recorder.start()
+
+        recorder.processEvent(appChangeEvent(launcherPackage), myPackage, launcherPackage)
+        // An overlay app (the owner's "Dynamic Island") opens its own activity when Home shows.
+        recorder.processEvent(appChangeEvent("com.pryshedko.mtisland"), myPackage, launcherPackage)
+        recorder.processEvent(appChangeEvent("com.duolingo"), myPackage, launcherPackage)
+        recorder.processEvent(clickEvent().copy(packageName = "com.duolingo", sourceText = "Start"), myPackage, launcherPackage)
+
+        val actions = recorder.recordedActions.value
+        assertEquals(2, actions.size)
+        assertEquals(ActionType.APP_INTENT, actions.first().actionType)
+        assertEquals("com.duolingo", actions.first().packageName)
+        assertEquals("Start", actions.last().targetText)
+    }
+
+    @Test
+    fun `switching apps after interacting keeps the original launch step`() {
+        val recorder = RecorderSessionOwner()
+        recorder.start()
+
+        recorder.processEvent(appChangeEvent(launcherPackage), myPackage, launcherPackage)
+        recorder.processEvent(appChangeEvent("com.duolingo"), myPackage, launcherPackage)
+        recorder.processEvent(clickEvent().copy(packageName = "com.duolingo", sourceText = "Share"), myPackage, launcherPackage)
+        recorder.processEvent(appChangeEvent("com.google.android.apps.messaging"), myPackage, launcherPackage)
+
+        val actions = recorder.recordedActions.value
+        assertEquals("com.duolingo", actions.first().packageName)
+        assertEquals(2, actions.size)
     }
 
     @Test
