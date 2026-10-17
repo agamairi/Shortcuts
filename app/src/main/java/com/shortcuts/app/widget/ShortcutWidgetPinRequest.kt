@@ -9,19 +9,28 @@ import android.os.Build
 object ShortcutWidgetPinRequest {
     const val ACTION_WIDGET_PINNED = "com.shortcuts.app.action.SHORTCUT_WIDGET_PINNED"
     const val EXTRA_AUTOMATION_ID = "com.shortcuts.app.extra.AUTOMATION_ID"
+    const val EXTRA_TEMPLATE_ID = "com.shortcuts.app.extra.TEMPLATE_ID"
 
     /** Kept pure so the API-specific mutability contract is unit-testable. */
     fun successCallbackFlags(sdkInt: Int): Int =
         PendingIntent.FLAG_UPDATE_CURRENT or
             if (sdkInt >= Build.VERSION_CODES.S) PendingIntent.FLAG_MUTABLE else 0
 
-    fun createSuccessCallback(context: Context, automationId: Int): PendingIntent {
+    fun createSuccessCallback(
+        context: Context,
+        automationId: Int,
+        templateId: Int? = null
+    ): PendingIntent {
         val callbackIntent = Intent(context, ShortcutWidgetPinReceiver::class.java)
             .setAction(ACTION_WIDGET_PINNED)
             .putExtra(EXTRA_AUTOMATION_ID, automationId)
+        if (templateId != null && templateId > 0) {
+            callbackIntent.putExtra(EXTRA_TEMPLATE_ID, templateId)
+        }
+        val requestCode = if (templateId != null && templateId > 0) 100000 + templateId else automationId
         return PendingIntent.getBroadcast(
             context,
-            automationId,
+            requestCode,
             callbackIntent,
             successCallbackFlags(Build.VERSION.SDK_INT)
         )

@@ -30,7 +30,8 @@ data class CustomWidgetBuilderData(
     val isGeneratingAi: Boolean = false,
     val downloadProgress: Int? = null,
     val aiNoMatchMessage: String? = null,
-    val isSaved: Boolean = false
+    val isSaved: Boolean = false,
+    val savedTemplateId: Int? = null
 )
 
 class CustomWidgetViewModel(
@@ -215,7 +216,7 @@ class CustomWidgetViewModel(
 
         viewModelScope.launch {
             try {
-                templateDao?.insert(
+                val insertedId = templateDao?.insert(
                     CustomWidgetTemplate(
                         label = label,
                         colorKey = colorKey.name,
@@ -223,7 +224,7 @@ class CustomWidgetViewModel(
                         automationId = automationId
                     )
                 )
-                currentData = currentData.copy(isSaved = true)
+                currentData = currentData.copy(isSaved = true, savedTemplateId = insertedId?.toInt())
                 _uiState.value = UiState.Success(currentData)
             } catch (e: Exception) {
                 _uiState.value = UiState.Error("Failed to save template: ${e.localizedMessage}", e)

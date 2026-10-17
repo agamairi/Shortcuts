@@ -64,6 +64,7 @@ class CustomWidgetViewModelTest {
 
     @Test
     fun `manual save succeeds when all required fields are set`() = runTest {
+        coEvery { mockTemplateDao.insert(any()) } returns 55L
         val viewModel = CustomWidgetViewModel(mockRepository, mockTemplateDao, mockInferenceService, downloadStateFlow)
 
         viewModel.updateLabel("My Custom Tile")
@@ -78,7 +79,9 @@ class CustomWidgetViewModelTest {
 
         val state = viewModel.uiState.value
         assertTrue(state is UiState.Success)
-        assertTrue((state as UiState.Success).data.isSaved)
+        val data = (state as UiState.Success).data
+        assertTrue(data.isSaved)
+        assertEquals(55, data.savedTemplateId)
     }
 
     @Test

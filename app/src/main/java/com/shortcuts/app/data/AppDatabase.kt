@@ -7,9 +7,12 @@ import androidx.room.RoomDatabase
 import androidx.room.InvalidationTracker
 import androidx.room.migration.Migration
 import androidx.sqlite.db.SupportSQLiteDatabase
+import com.google.gson.Gson
 import com.shortcuts.app.widget.ShortcutWidgetUpdater
+import com.shortcuts.app.widget.WidgetConfigParser
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 @Database(
@@ -37,13 +40,29 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun widgetConfigDao(): WidgetConfigDao
 
     private fun installWidgetRefreshObserver(context: Context) {
-        invalidationTracker.addObserver(object : InvalidationTracker.Observer("automations") {
+        val appContext = context.applicationContext
+        invalidationTracker.addObserver(object : InvalidationTracker.Observer(
+            "automations",
+            "widget_configs",
+            "custom_widget_templates"
+        ) {
             override fun onInvalidated(tables: Set<String>) {
                 CoroutineScope(Dispatchers.IO).launch {
-                    ShortcutWidgetUpdater.refreshAll(context)
+                    runCatching {
+                        if ("automations" in tables) {
+                            pruneDeletedAutomationsFromConfigs(this@AppDatabase)
+                        }
+                        ShortcutWidgetUpdater.refreshAll(appContext)
+                    }
                 }
             }
         })
+        CoroutineScope(Dispatchers.IO).launch {
+            runCatching {
+                pruneDeletedAutomationsFromConfigs(this@AppDatabase)
+                ShortcutWidgetUpdater.refreshAll(appContext)
+            }
+        }
     }
 
     companion object {
@@ -171,3 +190,32 @@ abstract class AppDatabase : RoomDatabase() {
         }
     }
 }
+
+fun pruneConfigs(
+    configs: List<WidgetConfig>,
+    existingAutomationIds: Set<Int>
+): List<WidgetConfig> {
+    val modified = mutableListOf<WidgetConfig>()
+    val gson = Gson()
+    for (config in configs) {
+        val currentIds = WidgetConfigParser.automationIds(config.automationIdsJson)
+        val prunedIds = currentIds.filter { it in existingAutomationIds }
+        if (prunedIds != currentIds) {
+            modified.add(config.copy(automationIdsJson = gson.toJson(prunedIds)))
+        }
+    }
+    return modified
+}
+
+internal suspend fun pruneDeletedAutomationsFromConfigs(db: AppDatabase) {
+    runCatching {
+        val automations = db.automationDao().getAllAutomations().first()
+        val existingIds = automations.map { it.id }.toSet()
+        val configs = db.widgetConfigDao().getAllConfigs()
+        val modified = pruneConfigs(configs, existingIds)
+        for (config in modified) {
+            db.widgetConfigDao().upsertConfig(config)
+        }
+    }
+}
+
