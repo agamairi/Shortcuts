@@ -302,19 +302,20 @@ class SelectorContractRegressionTest {
     }
 
     @Test
-    fun `fix 5a sole candidate window selected waives confidence floor and sets soleCandidate flag`() {
+    fun `fix 5a a lone window on the wrong activity is rejected, a lone matching window is selected`() {
         val soleWin = window("com.example.app", id = 1, type = WindowType.APPLICATION) {
             node("android.widget.FrameLayout", id = 1)
         }
         val selector = windowSelector(
             packageName = "com.example.app",
-            observedActivityClass = "com.example.app.TargetActivity",
-            titleToken = "token_Title"
+            observedActivityClass = "com.example.app.TargetActivity"
         )
-        val decision = windowMatcher.match(listOf(soleWin), selector, currentActivityClass = "com.example.app.OtherActivity")
-        assertTrue("Sole candidate window must be Selected even if confidence < 0.80, got $decision", decision is WindowDecision.Selected)
-        val selected = decision as WindowDecision.Selected
-        assertTrue("soleCandidate breakdown flag must be true", selected.breakdown.soleCandidate)
+        // Review finding #2: being the only window of the package must never waive identity.
+        val wrong = windowMatcher.match(listOf(soleWin), selector, currentActivityClass = "com.example.app.OtherActivity")
+        assertTrue("A lone window on the wrong activity must not be selected, got $wrong", wrong !is WindowDecision.Selected)
+
+        val right = windowMatcher.match(listOf(soleWin), selector, currentActivityClass = "com.example.app.TargetActivity")
+        assertTrue("A lone window on the recorded activity must be selected, got $right", right is WindowDecision.Selected)
     }
 
     @Test
@@ -339,11 +340,11 @@ class SelectorContractRegressionTest {
         )
         val scoredReal = windowMatcher.scoreWindow(win, realSelector, currentActivityClass = "com.example.app.MainActivity")
         assertTrue("MainActivity must match as an activity", scoredReal.breakdown.activityMatched)
-        assertEquals(30.0, scoredReal.breakdown.activityWeight, 0.001)
+        assertEquals(40.0, scoredReal.breakdown.activityWeight, 0.001)
     }
 
     @Test
-    fun `fix 5c dialog window over activity containing target point wins over activity underneath`() {
+    fun `fix 5c a recording made in a dialog selects the dialog over its activity`() {
         val baseActivityWindow = window(
             "com.example.app",
             id = 1,
@@ -367,7 +368,8 @@ class SelectorContractRegressionTest {
         val selector = windowSelector(
             packageName = "com.example.app",
             windowType = WindowType.APPLICATION,
-            boundsOnDisplay = NormalizedRect(0.45f, 0.45f, 0.55f, 0.55f)
+            // The recording was made inside the dialog, so it carries the dialog's bounds.
+            boundsOnDisplay = NormalizedRect(0.1f, 0.2f, 0.9f, 0.8f)
         )
 
         val windowSet = windowSet(baseActivityWindow, dialogWindow, width = 1000, height = 2000)

@@ -19,28 +19,32 @@ Window selection implements spec §2.A to identify the exact window for interact
 
 1. **Overlay & IME Filtering:** `WindowType.ACCESSIBILITY_OVERLAY` and `WindowType.INPUT_METHOD` windows are excluded unless the `WindowSelector` explicitly expects that type.
 2. **Package Hard Filter:** Only windows matching `WindowSelector.packageName` are evaluated.
-3. **Sole Candidate Selection (Fix 5a):** If exactly one eligible window exists for the expected package with the expected window type, select it immediately (confidence floor waived; records `soleCandidate = true` in `WindowScoreBreakdown`). The element matcher then decides element identity.
-4. **Dialog Over Activity (Fix 5c):** When multiple windows of the same package contain the recorded point (e.g., a dialog over an activity), the topmost dialog window wins over the activity underneath without triggering ambiguity or failing the confidence floor.
-5. **Applicable Evidence Scoring:** Remaining windows are scored across criteria, normalizing only over evidence recorded in the selector:
+3. **No Identity Waivers:** Every candidate, including a sole package/type candidate or a dialog, must satisfy the confidence floor and ambiguity margin.
+4. **Unexpected Modal Blocking:** When the selector records an activity-sized window, a smaller higher-layer same-package dialog/popup overlapping it blocks selection of the activity beneath it. Replay reports `WINDOW_NOT_FOUND`; it never falls through to a control behind the modal.
+5. **Recorded Dialog Identity:** A smaller recorded window is treated as an explicit dialog selector. The dialog must win through its ordinary bounds and optional title-token evidence; layer does not waive either threshold.
+6. **Applicable Evidence Scoring:** Windows are scored across criteria, normalizing only over evidence recorded in the selector:
    $$\text{windowConfidence} = \frac{\text{matchedWeight}}{\text{applicableWeight}}$$
 
 ### Scoring Table
 
 | Evidence Criterion | Max Points | Applicable Condition | Match Condition |
 |---|---|---|---|
-| **Activity Class** | 30 | `selector.observedActivityClass != null` AND simple name ends with `"Activity"` (Fix 5b) | `currentActivityClass == selector.observedActivityClass` |
-| **Window Type** | 15 | `selector.windowType != WindowType.UNKNOWN` | `window.type == selector.windowType` |
-| **Salted Title Token** | 10 | `selector.titleToken != null` | `titleTokenizer(window.title) == selector.titleToken` |
-| **Normalized Bounds** | 10 | Display bounds known | Coordinates match within 5% tolerance or IoU $\ge 0.80$ |
-| **Screen Fingerprint** | 35 | `selector.fingerprint != null` | $35.0 \times \text{fingerprinter.similarity(recorded, observed)}$ |
+| **Activity Class** | 40 | `selector.observedActivityClass != null` AND simple name ends with `"Activity"` | `currentActivityClass == selector.observedActivityClass` |
+| **Window Type** | 20 | `selector.windowType != WindowType.UNKNOWN` | `window.type == selector.windowType` |
+| **Salted Title Token** | 20 | `selector.titleToken != null` | shared `InstallTextTokenizer` produces `selector.titleToken` from `window.title` |
+| **Normalized Bounds** | 20 | Valid display bounds known | Coordinates match within 5% tolerance or IoU $\ge 0.80$ |
 
 Dialog classes (e.g. `androidx.appcompat.app.AlertDialog`) recorded in `observedActivityClass` do not count toward activity weight.
 
+Screen fingerprints never contribute to window identity confidence. They remain a separate, soft expected-screen wait hint in the replay state machine, so a scrolled list or changed tab content cannot weaken otherwise matching package/activity/type/title/bounds identity.
+
+`InstallTextTokenizer` is the single title-token contract for capture and replay. It normalizes text with `TextNormalizer`, then produces lowercase hex HMAC-SHA256 using the shared per-install salt as the HMAC key. The raw title and salt are not persisted in the selector.
+
 ### Decision Thresholds
 
-- **Confidence Floor:** Best window must reach $\text{confidence} \ge 0.80$ (waived for sole candidates and topmost dialog winners).
-- **Runner-up Margin:** Margin over the second candidate must be $\ge 0.15$ (waived when the runner-up is an activity covered by a dialog winner).
-- **Z-Order (Layer):** Used as a tie-breaker for deterministic sorting and for selecting topmost dialog windows; never replaces semantic identity.
+- **Confidence Floor:** Best window must reach $\text{confidence} \ge 0.80$ with no exceptions.
+- **Runner-up Margin:** Margin over the second candidate must be $\ge 0.15$ with no exceptions.
+- **Z-Order (Layer):** Used only as a deterministic tie-breaker and to detect an unexpected modal above an activity; it never replaces semantic identity.
 
 ### Sealed Decision (`WindowDecision`)
 
