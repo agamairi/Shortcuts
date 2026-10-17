@@ -187,62 +187,17 @@ class AndroidUiEnvironment(
             val actionToPerform = request.semanticAction
             val operation = request.operation
 
-            val success = when {
-                request.text != null && (actionToPerform == NodeAction.SET_TEXT || operation is UiOperation.SET_TEXT) -> {
-                    val args = bundleOf(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE to request.text)
-                    liveNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, args)
-                }
-                actionToPerform == NodeAction.IME_ENTER || operation is UiOperation.IME_ACTION -> {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                        liveNode.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
-                    } else {
-                        return DispatchResult.Rejected("ACTION_IME_ENTER requires API 30+")
-                    }
-                }
-                actionToPerform == NodeAction.CLICK || operation == UiOperation.TAP -> {
-                    liveNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-                }
-                actionToPerform == NodeAction.LONG_CLICK || operation == UiOperation.LONG_PRESS -> {
-                    liveNode.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)
-                }
-                actionToPerform == NodeAction.FOCUS -> {
-                    liveNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
-                }
-                actionToPerform == NodeAction.CLEAR_FOCUS -> {
-                    liveNode.performAction(AccessibilityNodeInfo.ACTION_CLEAR_FOCUS)
-                }
-                actionToPerform == NodeAction.SCROLL_FORWARD -> {
-                    liveNode.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
-                }
-                actionToPerform == NodeAction.SCROLL_BACKWARD -> {
-                    liveNode.performAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
-                }
-                actionToPerform == NodeAction.SCROLL_UP -> {
-                    liveNode.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP.id)
-                }
-                actionToPerform == NodeAction.SCROLL_DOWN -> {
-                    liveNode.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.id)
-                }
-                actionToPerform == NodeAction.SCROLL_LEFT -> {
-                    liveNode.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT.id)
-                }
-                actionToPerform == NodeAction.SCROLL_RIGHT -> {
-                    liveNode.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT.id)
-                }
-                actionToPerform == NodeAction.EXPAND -> {
-                    liveNode.performAction(AccessibilityNodeInfo.ACTION_EXPAND)
-                }
-                actionToPerform == NodeAction.COLLAPSE -> {
-                    liveNode.performAction(AccessibilityNodeInfo.ACTION_COLLAPSE)
-                }
-                actionToPerform == NodeAction.SELECT -> {
-                    liveNode.performAction(AccessibilityNodeInfo.ACTION_SELECT)
-                }
-                actionToPerform == NodeAction.SET_PROGRESS -> {
-                    liveNode.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SET_PROGRESS.id)
-                }
-                else -> {
-                    liveNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            // Dispatch on the action the engine asked for. The step's operation is only a fallback:
+            // a reveal scroll requested during a TAP step must scroll the container, not click it,
+            // and a FOCUS request during a SET_TEXT step must focus, not set the text early.
+            val success = if (actionToPerform != null) {
+                performNodeAction(liveNode, actionToPerform, request.text)
+            } else {
+                when (operation) {
+                    is UiOperation.SET_TEXT -> performNodeAction(liveNode, NodeAction.SET_TEXT, request.text ?: operation.text)
+                    is UiOperation.IME_ACTION -> performNodeAction(liveNode, NodeAction.IME_ENTER, null)
+                    UiOperation.LONG_PRESS -> performNodeAction(liveNode, NodeAction.LONG_CLICK, null)
+                    else -> performNodeAction(liveNode, NodeAction.CLICK, null)
                 }
             }
 
@@ -255,6 +210,33 @@ class AndroidUiEnvironment(
             liveNode.safeRecycle()
         }
     }
+
+    private fun performNodeAction(liveNode: AccessibilityNodeInfo, action: NodeAction, text: String?): Boolean =
+        when (action) {
+            NodeAction.SET_TEXT -> {
+                if (text == null) false else liveNode.performAction(
+                    AccessibilityNodeInfo.ACTION_SET_TEXT,
+                    bundleOf(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE to text)
+                )
+            }
+            // ACTION_FOCUS returns false for a field that already has input focus; that is success.
+            NodeAction.FOCUS -> liveNode.isFocused || liveNode.performAction(AccessibilityNodeInfo.ACTION_FOCUS)
+            NodeAction.CLEAR_FOCUS -> liveNode.performAction(AccessibilityNodeInfo.ACTION_CLEAR_FOCUS)
+            NodeAction.IME_ENTER -> Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
+                liveNode.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id)
+            NodeAction.CLICK -> liveNode.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+            NodeAction.LONG_CLICK -> liveNode.performAction(AccessibilityNodeInfo.ACTION_LONG_CLICK)
+            NodeAction.SCROLL_FORWARD -> liveNode.performAction(AccessibilityNodeInfo.ACTION_SCROLL_FORWARD)
+            NodeAction.SCROLL_BACKWARD -> liveNode.performAction(AccessibilityNodeInfo.ACTION_SCROLL_BACKWARD)
+            NodeAction.SCROLL_UP -> liveNode.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_UP.id)
+            NodeAction.SCROLL_DOWN -> liveNode.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_DOWN.id)
+            NodeAction.SCROLL_LEFT -> liveNode.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_LEFT.id)
+            NodeAction.SCROLL_RIGHT -> liveNode.performAction(AccessibilityNodeInfo.AccessibilityAction.ACTION_SCROLL_RIGHT.id)
+            NodeAction.EXPAND -> liveNode.performAction(AccessibilityNodeInfo.ACTION_EXPAND)
+            NodeAction.COLLAPSE -> liveNode.performAction(AccessibilityNodeInfo.ACTION_COLLAPSE)
+            NodeAction.SELECT -> liveNode.performAction(AccessibilityNodeInfo.ACTION_SELECT)
+            NodeAction.SET_PROGRESS -> false
+        }
 
     private suspend fun performGesture(request: UiActionRequest): DispatchResult {
         val plan = buildGesturePlan(request.gesturePoints, request.operation, request.gesture)
