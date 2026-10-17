@@ -191,6 +191,13 @@ def find_bounds(xml_text, locator):
     if locator.get("unlabeled"):
         return _find_unlabeled_bounds(xml_text, locator)
     candidates = [node for node in parse_ui_nodes(xml_text) if _node_matches(node, locator)]
+    if not candidates and "text" in locator and not any(key in locator for key in ("desc", "content-desc", "content_desc")):
+        # RepeatKit's service sees only accessibility-important nodes (uiautomator also saw the rest).
+        # Some widgets, e.g. Material bottom-navigation items, then expose their label only as the
+        # item's content description. Fall back to that only when no node carries the text itself.
+        by_desc = dict(locator, desc=locator["text"])
+        del by_desc["text"]
+        candidates = [node for node in parse_ui_nodes(xml_text) if _node_matches(node, by_desc)]
     if not candidates:
         raise HarnessError("Element not found: %s" % json.dumps(locator, sort_keys=True))
     if row_of is None:

@@ -269,3 +269,27 @@ fun createCapturedGlobalAction(
         precomputedFingerprint = precomputedFingerprint
     )
 }
+
+/**
+ * The field a text event came from. By view id when it has one; otherwise the focused editable, then
+ * the editable whose current text is what was typed. Never just "the first editable of that class":
+ * Compose fields have no view ids, so that picked whichever field came first on screen and credited
+ * the typing to it. When several fields still fit, returns null rather than guess.
+ */
+internal fun resolveTextField(
+    window: WindowSnapshot,
+    sourceViewId: String?,
+    sourceClassName: String?,
+    enteredText: String?
+): NodeSnapshot? {
+    val editables = window.nodes.values.filter { it.editable }
+    if (sourceViewId != null) {
+        val byId = editables.filter { it.resourceId == sourceViewId }
+        (byId.firstOrNull { it.focused } ?: byId.firstOrNull())?.let { return it }
+    }
+    val sameClass = editables.filter { sourceClassName == null || it.className == sourceClassName }
+    return sameClass.firstOrNull { it.focused }
+        ?: editables.firstOrNull { it.focused }
+        ?: enteredText?.takeIf { it.isNotEmpty() }?.let { typed -> sameClass.singleOrNull { it.text == typed } }
+        ?: sameClass.singleOrNull()
+}

@@ -409,11 +409,9 @@ object V2CaptureBridge {
                     ?: snapshot.windows.maxByOrNull { it.layer }
                     ?: return@synchronized
 
-                val focusedEditable = window.nodes.values.firstOrNull { it.focused && it.editable }
-                val fieldNode = capturedContext?.fieldNode ?: focusedEditable ?: window.nodes.values.firstOrNull { candidate ->
-                    (event.sourceViewId != null && candidate.resourceId == event.sourceViewId) ||
-                        (candidate.className == event.sourceClassName && candidate.editable)
-                } ?: return@synchronized
+                val fieldNode = capturedContext?.fieldNode
+                    ?: resolveTextField(window, event.sourceViewId, event.sourceClassName, event.enteredText)
+                    ?: return@synchronized
 
                 val committedText = capturedContext?.enteredText ?: event.enteredText
                 val commit = createCapturedTextCommit(fieldNode, committedText, window, event.occurredAtMillis)
@@ -601,11 +599,8 @@ object V2CaptureBridge {
                 val window = (event.windowId?.let { snapshot.window(it) })
                     ?: snapshot.windows.firstOrNull { it.packageName == event.packageName && it.type != WindowType.ACCESSIBILITY_OVERLAY && it.type != WindowType.INPUT_METHOD }
                     ?: return@synchronized
-                val field = window.nodes.values.firstOrNull { candidate ->
-                    candidate.editable &&
-                        (event.sourceViewId == null || candidate.resourceId == event.sourceViewId) &&
-                        (event.sourceClassName == null || candidate.className == event.sourceClassName)
-                } ?: window.nodes.values.firstOrNull { it.editable && it.focused } ?: return@synchronized
+                val field = resolveTextField(window, event.sourceViewId, event.sourceClassName, event.enteredText)
+                    ?: return@synchronized
                 val previousTextContext = pendingTextContext?.takeIf {
                     it.packageName == window.packageName &&
                         (field.resourceId == null || it.resourceId == field.resourceId) &&

@@ -9,7 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 - **In-app searches record the whole search (verified in YouTube Music).** The keyboard was mistaken for a foreground app, and pressing Search/Go on a screen that shows results in place gives accessibility services no signal at all, so recordings stopped after the typed text. RepeatKit now keeps the real app as the target, and detects a submit when the field loses focus or the keyboard closes and the app's screen changes. It shows the step as a detected keyboard action. Chrome's address bar is still not captured reliably; see Known issues.
-- **Chrome address-bar searches now record the query and submission.** RepeatKit follows the address field after a captured tap even when Chrome emits no normal text-change events, commits the typed query before Chrome replaces it with the results URL, and records the resulting Search action for replay.
+- **Typed text is never credited to the wrong field.** Fields built with Jetpack Compose have no view ids. When the recorder couldn't tell which field was typed into, it took the first text field on screen, so text typed into a Message box could be recorded as typed into the Search box above it. It now uses the focused field, then the field holding the typed text, and records nothing rather than guess.
+- **Typed text is kept when a field loses focus or the keyboard closes.** A tapped text field is now followed even if it does not report itself as editable until focused (Chrome's address bar does this). Its text is committed when focus or the keyboard goes away, before an app can replace it with something else, such as a results URL. This did not yet make Chrome address-bar searches record on a Pixel 6a; see Known issues.
 - **Stopping a recording no longer quietly falls back to the old format in busy apps.** Every screen-content change (dozens a second in apps with animations) took a full screen snapshot on the recording queue. The queue fell so far behind that stopping timed out before the new-format workflow was built, and the old format was saved instead. Screen changes are now coalesced, and only examined when a typed field or app switch is waiting on one.
 - **Recorded taps say what was tapped.** In the editor, a recorded tap on an icon button (Calculator's "7", a gear icon) read "Tap target", because only the element's text was shown and icon buttons have none. It now shows the text, else the accessibility description, else a readable form of the element's id.
 - **A tap that opens a search field no longer fails its check on replay.** The screen after such a tap was captured only once typing had finished, showing suggestions or results. Replay checked for that screen right after the tap and never found it. The tap now checks that the field to type into is present.
@@ -141,6 +142,14 @@ to a Play Store release.
 - **A permission failure opens the setting that would actually fix it**, rather than a generic app-details page.
 - **Help no longer overstates the product.** It implied shortcuts eventually run automatically; the app has no time, location or event triggers today.
 - **Removed a widget-creation screen that was unreachable** through normal navigation.
+
+### Known issues
+- **Chrome address-bar searches don't record the typed text yet.** The recording keeps "open Chrome, tap the address bar" but not the query or its submission, so the replay stops at the address bar. Searches inside apps (YouTube Music, for example) do record.
+- **Google Messages is untested on device.** The test phone's Messages app was blocked by a mandatory Play Store update.
+- **Lock-screen widgets are untested on device.** The widget declares lock-screen support, and actions that need the phone unlocked ask for it, but the Pixel 6a's Android build has no lock-screen widget host to place one on.
+- **After choosing a shortcut for an empty widget, you land in RepeatKit** instead of back on the home screen.
+- **A tap made the instant a screen opens can be recorded but not received.** If the app isn't accepting input yet, it ignores the tap but RepeatKit still records it, so replay performs a tap that had no effect during recording.
+- **Back is detected, not observed.** Android never tells accessibility services about the on-screen Back button or gesture, so Back is inferred from the app returning to its previous screen. If an app returns to the previous screen on its own more than 0.6 s after a tap, that's also recorded as "Go back (detected)". Replay then skips it when the app has already gone back, so it can't navigate one screen too far.
 
 ## [0.7.4] - 2026-08-22
 ### Added

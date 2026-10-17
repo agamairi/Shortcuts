@@ -43,6 +43,15 @@ class UiAutomatorTests(unittest.TestCase):
 
 
 class VerdictTests(unittest.TestCase):
+    def test_text_locator_falls_back_to_content_description_only_when_no_text_matches(self):
+        xml = (
+            '<hierarchy><node text="" content-desc="Search" bounds="[0,0][10,10]"/>'
+            '<node text="Search" content-desc="" bounds="[20,20][30,30]"/></hierarchy>'
+        )
+        self.assertEqual(find_bounds(xml, {"text": "Search"}), (20, 20, 30, 30))
+        only_desc = '<hierarchy><node text="" content-desc="Search" bounds="[0,0][10,10]"/></hierarchy>'
+        self.assertEqual(find_bounds(only_desc, {"text": "Search"}), (0, 0, 10, 10))
+
     def test_event_diff_ignores_open_and_seq(self):
         expected = [{"event": "open", "target": "screen", "seq": 1}, {"event": "tap", "target": "save", "seq": 2, "value": "x"}]
         actual = [{"event": "open", "target": "other", "seq": 77}, {"event": "tap", "target": "save", "seq": 99, "value": "x"}]
