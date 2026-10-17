@@ -136,7 +136,10 @@ class RecorderSessionOwner(
 
             if (event.eventType == RecorderEventType.APP_CHANGE) {
                 if (!isIgnored && !isPackageTransition) {
-                    inferSubmitFromWindowChangeLocked(event)
+                    // A new screen in the same app ends the field edit: keep the typed text as a
+                    // step, but never invent an Enter from it (the screen change is not evidence
+                    // that the user pressed the keyboard's submit key).
+                    flushPendingTextLocked()
                 }
                 return
             }
@@ -160,7 +163,8 @@ class RecorderSessionOwner(
                     return
                 }
                 RecorderEventType.CONTENT_CHANGE -> {
-                    processContentChangeLocked(event)
+                    // Autocomplete, validation, and dialogs all use content changes. They are
+                    // not evidence that the user pressed the keyboard submit key.
                     return
                 }
                 else -> Unit
@@ -176,7 +180,6 @@ class RecorderSessionOwner(
                     return
                 }
                 RecorderEventType.CONTENT_CHANGE -> {
-                    processContentChangeLocked(event)
                     return
                 }
                 else -> Unit
@@ -462,32 +465,12 @@ class RecorderSessionOwner(
         focusedField = event.takeIf { it.sourceIsEditable }
     }
 
-    private fun processContentChangeLocked(event: RecorderEvent) {
-        val candidate = pendingText ?: lastCommittedText ?: return
-        if (candidate.event.packageName != event.packageName) return
-        if (eventTimestamp(event) - candidate.lastEventAtMillis < TEXT_QUIET_PERIOD_MS) return
-        commitTextAndSubmitLocked()
-    }
-
-    private fun inferSubmitFromWindowChangeLocked(event: RecorderEvent) {
-        val candidate = pendingText ?: lastCommittedText ?: return
-        if (candidate.event.packageName != event.packageName) return
-        commitTextAndSubmitLocked()
-    }
-
     private fun processPressEnterLocked(event: RecorderEvent) {
         flushPendingTextLocked()
         val textAction = lastCommittedText?.let { createTypeAction(it.event) }
             ?: focusedField?.let(::createTypeAction)
             ?: event.takeIf { hasTargetSelector(it) }?.let(::createTypeAction)
             ?: return
-        appendActionLocked(createPressEnterAction(textAction))
-        clearTextCommitCandidateLocked()
-    }
-
-    private fun commitTextAndSubmitLocked() {
-        flushPendingTextLocked()
-        val textAction = lastCommittedText?.let { createTypeAction(it.event) } ?: return
         appendActionLocked(createPressEnterAction(textAction))
         clearTextCommitCandidateLocked()
     }

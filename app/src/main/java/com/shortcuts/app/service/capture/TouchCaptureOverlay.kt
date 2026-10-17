@@ -30,6 +30,8 @@ import com.shortcuts.app.service.RecorderEventType
 import com.shortcuts.app.service.captureDisplaySnapshotForRecording
 import com.shortcuts.app.service.deriveNodeLabel
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.Executors
+import java.util.concurrent.Future
 
 /** Always-on, transparent accessibility overlay which buffers a physical touch, records it, then relays it. */
 object TouchCaptureOverlay {
@@ -41,6 +43,10 @@ object TouchCaptureOverlay {
     private const val MAX_RELAY_ATTEMPTS = 4
     private const val RELAY_RETRY_DELAY_MS = 50L
     private val lock = Any()
+    /** The only thread allowed to traverse/copy capture snapshots or compile a v2 gesture. */
+    private val captureExecutor = Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "v2-capture").apply { isDaemon = true }
+    }
     private var state: State? = null
 
     private class State(
@@ -137,7 +143,12 @@ object TouchCaptureOverlay {
         if (current.added) runCatching { current.windowManager.updateViewLayout(current.view, current.params) }
     }
 
-    private fun beginRelay(current: State, gesture: ClassifiedGesture, hit: HitSnapshot?) {
+    private fun beginRelay(
+        current: State,
+        gesture: ClassifiedGesture,
+        hit: HitSnapshot?,
+        afterDispatched: () -> Unit
+    ) {
         val plan = RelayPlanner.plan(gesture) ?: return
         current.relayInFlight = true
         setTouchableLocked(current, null)
@@ -145,13 +156,13 @@ object TouchCaptureOverlay {
         val hasRun = AtomicBoolean(false)
         fun dispatchOnce() {
             if (!hasRun.compareAndSet(false, true)) return
-            relay(current, plan, asideAt, gesture, hit, attempt = 1)
+            relay(current, plan, asideAt, gesture, hit, attempt = 1, afterDispatched = afterDispatched)
         }
         Choreographer.getInstance().postFrameCallback { current.handler.postDelayed({ dispatchOnce() }, STEP_ASIDE_AFTER_FRAME_MS) }
         current.handler.postDelayed({ dispatchOnce() }, STEP_ASIDE_WATCHDOG_MS)
     }
 
-    private fun relay(current: State, plan: RelayStrokePlan, asideAt: Long, gesture: ClassifiedGesture, hit: HitSnapshot?, attempt: Int) {
+    private fun relay(current: State, plan: RelayStrokePlan, asideAt: Long, gesture: ClassifiedGesture, hit: HitSnapshot?, attempt: Int, afterDispatched: () -> Unit) {
         if (state !== current || !AutomationRecorder.isRecording.value) return restore(current)
         val path = Path().apply {
             val first = plan.points.firstOrNull() ?: return@apply
@@ -169,7 +180,7 @@ object TouchCaptureOverlay {
                 // The overlay caught its own relay: the window manager hasn't applied the
                 // non-touchable flag yet. Wait a little longer and send the same gesture again.
                 current.selfHitDuringRelay = false
-                current.handler.postDelayed({ relay(current, plan, asideAt, gesture, hit, attempt + 1) }, RELAY_RETRY_DELAY_MS)
+                current.handler.postDelayed({ relay(current, plan, asideAt, gesture, hit, attempt + 1, afterDispatched) }, RELAY_RETRY_DELAY_MS)
                 return
             }
             AutomationRecorder.onCaptureRelayFinished(SystemClock.uptimeMillis())
@@ -186,6 +197,7 @@ object TouchCaptureOverlay {
             }, current.handler)
         }.getOrDefault(false)
         relayDispatched = dispatched
+        if (dispatched) afterDispatched()
         if (!dispatched) finish(false)
         current.handler.postDelayed({ finish(false) }, plan.durationMs + RELAY_TIMEOUT_MS)
     }
@@ -202,7 +214,7 @@ object TouchCaptureOverlay {
             ViewConfiguration.get(context).scaledTouchSlop.toFloat(), ViewConfiguration.getLongPressTimeout().toLong()
         )
         private var hit: HitSnapshot? = null
-        private var v2Snapshot: com.shortcuts.app.automation.core.tree.WindowSetSnapshot? = null
+        private var downSnapshot: Future<com.shortcuts.app.automation.core.tree.WindowSetSnapshot?>? = null
         private var longPressTick: Runnable? = null
         private val paint = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.argb(160, 90, 180, 255); strokeWidth = 8f; style = Paint.Style.STROKE }
         private val trail = Path()
@@ -226,10 +238,14 @@ object TouchCaptureOverlay {
                 }, event.rawX, event.rawY, event.eventTime
             )
             if (sample.action == TouchAction.DOWN) {
-                v2Snapshot = if (com.shortcuts.app.automation.android.EngineV2.enabled) {
-                    com.shortcuts.app.automation.android.EngineV2.snapshotSource?.snapshot()
-                } else null
-                hit = hitTest(owner.service, sample.x.toInt(), sample.y.toInt())
+                // Never traverse the accessibility tree on the input dispatcher. The source is
+                // started at DOWN so its immutable copy still describes the pre-tap screen.
+                downSnapshot = captureExecutor.submit<com.shortcuts.app.automation.core.tree.WindowSetSnapshot?> {
+                    if (com.shortcuts.app.automation.android.EngineV2.enabled) {
+                        com.shortcuts.app.automation.android.EngineV2.snapshotSource?.snapshot()
+                    } else null
+                }
+                hit = null
                 trail.reset(); trail.moveTo(event.x, event.y)
                 scheduleLongPressTick()
             } else if (sample.action == TouchAction.MOVE) {
@@ -240,7 +256,8 @@ object TouchCaptureOverlay {
             if (classified != null) {
                 cancelLongPressTick()
                 if (classified.kind == CapturedGestureKind.CANCELLED) {
-                    v2Snapshot = null
+                    downSnapshot?.cancel(true)
+                    downSnapshot = null
                     Toast.makeText(context, "Multi-touch is not recorded", Toast.LENGTH_SHORT).show()
                     Log.d(TAG, "kind=CANCELLED relayDispatched=false")
                 } else {
@@ -250,21 +267,72 @@ object TouchCaptureOverlay {
                         CapturedGestureKind.SWIPE -> com.shortcuts.app.automation.model.GestureKind.SWIPE
                         CapturedGestureKind.CANCELLED -> null
                     }
-                    if (gestureKind != null) {
-                        com.shortcuts.app.automation.android.capture.V2CaptureBridge.onGestureClassified(
-                            kind = gestureKind,
-                            samples = classified.samples,
-                            beforeSnapshot = v2Snapshot,
-                            ownPackage = owner.service.packageName
-                        )
-                    }
-                    v2Snapshot = null
-                    record(classified, hit)
-                    rippleX = event.x; rippleY = event.y; feedbackUntil = SystemClock.uptimeMillis() + 300L; invalidate()
-                    beginRelay(owner, classified, hit)
+                    awaitDownSnapshot(classified, gestureKind, event.x, event.y)
                 }
             }
             return true
+        }
+
+        private fun awaitDownSnapshot(
+            classified: ClassifiedGesture,
+            gestureKind: com.shortcuts.app.automation.model.GestureKind?,
+            localX: Float,
+            localY: Float
+        ) {
+            val snapshotFuture = downSnapshot
+            downSnapshot = null
+            val upAt = classified.up?.uptimeMs ?: SystemClock.uptimeMillis()
+            val startedRelay = AtomicBoolean(false)
+            val relayDispatched = AtomicBoolean(false)
+            var pendingV2: Pair<com.shortcuts.app.automation.core.tree.WindowSetSnapshot?, SnapshotAvailability>? = null
+
+            fun deliverToCompilerIfRelayed() {
+                val delivery = pendingV2 ?: return
+                if (!relayDispatched.get() || gestureKind == null) return
+                pendingV2 = null
+                com.shortcuts.app.automation.android.capture.V2CaptureBridge.onGestureClassified(
+                    kind = gestureKind,
+                    samples = classified.samples,
+                    beforeSnapshot = delivery.first,
+                    ownPackage = owner.service.packageName,
+                    lateSnapshot = delivery.second != SnapshotAvailability.READY
+                )
+            }
+            fun startRelay(snapshot: com.shortcuts.app.automation.core.tree.WindowSetSnapshot?, availability: SnapshotAvailability) {
+                if (!startedRelay.compareAndSet(false, true)) return
+                hit = snapshot?.hitTest(classified.down?.x?.toInt() ?: 0, classified.down?.y?.toInt() ?: 0)
+                    ?.let { result -> HitSnapshot(result.window.packageName, result.target.text, result.target.contentDescription, result.target.resourceId, result.target.className, result.target.editable, result.window.windowId) }
+                rippleX = localX; rippleY = localY; feedbackUntil = SystemClock.uptimeMillis() + 300L; invalidate()
+                pendingV2 = snapshot to availability
+                beginRelay(owner, classified, hit) {
+                    // Legacy session persistence and v2 compiler persistence both happen only
+                    // after dispatchGesture accepted the relay.
+                    record(classified, hit)
+                    relayDispatched.set(true)
+                    deliverToCompilerIfRelayed()
+                }
+            }
+            val remaining = (upAt + 120L - SystemClock.uptimeMillis()).coerceAtLeast(0L)
+            handler.postDelayed({
+                // Relay first when the pre-tap snapshot misses its fixed budget. The capture
+                // worker will attach it as late evidence once available.
+                startRelay(null, SnapshotAvailability.LATE)
+            }, remaining)
+            captureExecutor.execute {
+                val snapshot = try { snapshotFuture?.get() } catch (_: Exception) { null }
+                val availability = classifySnapshotAvailability(snapshot != null, SystemClock.uptimeMillis(), upAt)
+                handler.post {
+                    if (!AutomationRecorder.isRecording.value) return@post
+                    if (!startedRelay.get()) {
+                        startRelay(snapshot, availability)
+                    } else if (snapshot != null) {
+                        // The relay is already in flight. Preserve the DOWN-time hit evidence
+                        // without delaying user input; the bridge queues it after dispatch.
+                        pendingV2 = snapshot to SnapshotAvailability.LATE
+                        deliverToCompilerIfRelayed()
+                    }
+                }
+            }
         }
 
         private fun scheduleLongPressTick() {

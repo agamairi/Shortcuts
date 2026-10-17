@@ -136,11 +136,7 @@ class ImeSubmitInferenceTest {
         inference.onTextCommit(commit, activityClass = "com.example.app.ChatActivity")
 
         // Field cleared within 2 seconds (the classic "sent" pattern)
-        val inferred = inference.onFieldCleared(
-            fieldNodeId = 20,
-            resourceId = "com.example.app:id/edit_message",
-            uptimeMs = 2_400L
-        )
+        val inferred = inference.onFieldTextChanged(messageField.copy(text = null, focused = true), "", 2_400L)
 
         assertNotNull(inferred)
         assertEquals(ImeActionKind.SEND, inferred!!.action.kind)
@@ -148,6 +144,24 @@ class ImeSubmitInferenceTest {
         assertEquals("field_cleared", inferred.reason)
         assertEquals(2_400L, inferred.action.actionAtUptimeMs)
         assertNull(inferred.pendingCommit)
+    }
+
+    @Test
+    fun testProgressiveDeletionToEmptyDoesNotInferSubmit() {
+        val field = createFieldNode(nodeId = 21, text = "Hello", hintText = "Message")
+        val window = createWindow(nodes = mapOf(21 to field))
+        inference.onTextCommit(createCapturedTextCommit(field, "Hello", window, 2_000L)!!, "com.example.app.ChatActivity")
+
+        assertNull(inference.onFieldTextChanged(field.copy(text = "Hell"), "Hell", 2_100L))
+        assertNull(inference.onFieldTextChanged(field.copy(text = null), "", 2_200L))
+    }
+
+    @Test
+    fun testClearWithoutMatchingNodeIdDoesNotInferSubmit() {
+        val field = createFieldNode(nodeId = 22, text = "Hello", hintText = "Message")
+        val window = createWindow(nodes = mapOf(22 to field))
+        inference.onTextCommit(createCapturedTextCommit(field, "Hello", window, 2_000L)!!, "com.example.app.ChatActivity")
+        assertNull(inference.onFieldCleared(fieldNodeId = null, resourceId = field.resourceId, uptimeMs = 2_100L))
     }
 
     @Test
@@ -338,7 +352,7 @@ class ImeSubmitInferenceTest {
     }
 
     @Test
-    fun testUncommittedTypingProducesPendingCommitOnInference() {
+    fun testUncommittedTypingDoesNotInventSubmit() {
         val field = createFieldNode(
             nodeId = 90,
             resourceId = "com.example.app:id/message_box",
@@ -362,13 +376,7 @@ class ImeSubmitInferenceTest {
             uptimeMs = 11_300L
         )
 
-        assertNotNull(inferred)
-        assertEquals(ImeActionKind.SEND, inferred!!.action.kind)
-        // Must contain pendingCommit so compiler receives the text commit before the IME action
-        assertNotNull(inferred.pendingCommit)
-        assertEquals("quick message", inferred.pendingCommit!!.finalText)
-        assertEquals(90, inferred.pendingCommit!!.fieldNode.nodeId)
-        assertTrue(inferred.action.actionAtUptimeMs >= inferred.pendingCommit!!.committedAtUptimeMs)
+        assertNull(inferred)
     }
 
     @Test
@@ -419,7 +427,7 @@ class ImeSubmitInferenceTest {
     }
 
     @Test
-    fun testDialogAppearanceInfersSubmit() {
+    fun testSameActivityDialogDoesNotInferSubmit() {
         val field = createFieldNode(
             nodeId = 110,
             resourceId = "com.example.app:id/search",
@@ -445,8 +453,6 @@ class ImeSubmitInferenceTest {
             uptimeMs = 12_500L
         )
 
-        assertNotNull(inferred)
-        assertEquals(ImeActionKind.SEARCH, inferred!!.action.kind)
-        assertTrue(inferred.reason.contains("dialog"))
+        assertNull(inferred)
     }
 }

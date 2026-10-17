@@ -124,7 +124,7 @@ class RecorderSessionOwnerTest {
     }
 
     @Test
-    fun `same-app window transition after typing infers one submit action`() {
+    fun `same-app window transition after typing does not invent submit action`() {
         val recorder = RecorderSessionOwner()
         val browserPackage = "com.example.browser"
         recorder.start()
@@ -150,10 +150,7 @@ class RecorderSessionOwnerTest {
             launcherPackage
         )
 
-        assertEquals(
-            listOf("TYPE_TEXT", "PRESS_ENTER"),
-            recorder.recordedActions.value.map { it.uiActionType }
-        )
+        assertEquals(listOf("TYPE_TEXT"), recorder.recordedActions.value.map { it.uiActionType })
     }
 
     @Test

@@ -87,8 +87,8 @@ fun inferImeActionKind(
  * - The capture overlay shrinks above the keyboard and does not cover it.
  *
  * Therefore, submission must be inferred from its observable effects:
- * 1. An application window change to a different activity or new window/dialog for the package.
- * 2. The field's text becoming empty (the "sent" pattern).
+ * 1. An application window change to a different activity for the package.
+ * 2. The focused field's committed non-empty value becoming empty in one text event.
  *
  * Both must occur within [maxDelayMs] (2 seconds) after a text commit or typing, without any
  * intervening overlay tap or navigation key (BACK, HOME, RECENTS).
@@ -105,7 +105,9 @@ class ImeSubmitInference(
         val initialActivityClass: String?,
         val text: String,
         val timestampMs: Long,
-        val hasCommitted: Boolean
+        val hasCommitted: Boolean,
+        /** A changed non-empty value means the user is editing/deleting, not submitting. */
+        val sawIntermediateTextChange: Boolean = false
     )
 
     var candidate: Candidate? = null
@@ -115,6 +117,10 @@ class ImeSubmitInference(
      * Records a committed field edit as an active candidate for IME submission inference.
      */
     fun onTextCommit(commit: CapturedTextCommit, activityClass: String? = null) {
+        if (commit.finalText.isEmpty() || commit.fieldNode.nodeId < 0 || !commit.fieldNode.focused) {
+            candidate = null
+            return
+        }
         candidate = Candidate(
             fieldNode = commit.fieldNode,
             windowSnapshot = commit.windowSnapshot,
@@ -125,9 +131,7 @@ class ImeSubmitInference(
         )
     }
 
-    /**
-     * Records typed text in a field prior to commit, allowing inference if submitted before commit.
-     */
+    /** Uncommitted typing is deliberately not eligible for effect-only inference. */
     fun onTextTyped(
         fieldNode: NodeSnapshot,
         text: String,
@@ -135,15 +139,7 @@ class ImeSubmitInference(
         activityClass: String? = null,
         uptimeMs: Long
     ) {
-        if (text.isEmpty()) return
-        candidate = Candidate(
-            fieldNode = fieldNode,
-            windowSnapshot = windowSnapshot,
-            initialActivityClass = activityClass,
-            text = text,
-            timestampMs = uptimeMs,
-            hasCommitted = false
-        )
+        // Kept as a compatibility hook for the Android boundary. No candidate is created.
     }
 
     /**
@@ -163,8 +159,8 @@ class ImeSubmitInference(
             // Switched to another app (e.g. launcher or system UI), not a result screen for that package
             return null
         }
-        val isDifferentActivity = looksLikeActivityClass(activityClass) &&
-            activityClass != current.initialActivityClass
+        val isDifferentActivity = current.initialActivityClass != null &&
+            looksLikeActivityClass(activityClass) && activityClass != current.initialActivityClass
         if (isDifferentActivity) {
             return emitInference(
                 current = current,
@@ -176,9 +172,7 @@ class ImeSubmitInference(
         return null
     }
 
-    /**
-     * Inspects a window change (e.g. dialog or new window appearing for the package).
-     */
+    /** Window/popup changes are not submit evidence. Only a different Activity is eligible. */
     fun onWindowChanged(
         toPackage: String,
         windowId: Int,
@@ -193,20 +187,6 @@ class ImeSubmitInference(
         }
         if (toPackage != current.windowSnapshot.packageName) {
             return null
-        }
-        if (windowType == WindowType.INPUT_METHOD || windowType == WindowType.ACCESSIBILITY_OVERLAY) {
-            return null
-        }
-        val isNewWindow = windowId != current.windowSnapshot.windowId
-        val isDialog = className != null && (className.contains("Dialog") || className.endsWith("Dialog"))
-        if (isNewWindow || isDialog) {
-            val reason = if (isDialog) "dialog: $className" else "new_window: $windowId"
-            return emitInference(
-                current = current,
-                reason = reason,
-                targetActivityClass = className,
-                uptimeMs = uptimeMs
-            )
         }
         return null
     }
@@ -224,9 +204,7 @@ class ImeSubmitInference(
             candidate = null
             return null
         }
-        val matchesField = (fieldNodeId != null && fieldNodeId == current.fieldNode.nodeId) ||
-            (resourceId != null && resourceId == current.fieldNode.resourceId) ||
-            (fieldNodeId == null && resourceId == null)
+        val matchesField = fieldNodeId != null && fieldNodeId == current.fieldNode.nodeId
         if (matchesField) {
             return emitInference(
                 current = current,
@@ -251,11 +229,18 @@ class ImeSubmitInference(
             candidate = null
             return null
         }
-        val matchesField = (fieldNode.nodeId == current.fieldNode.nodeId) ||
-            (fieldNode.resourceId != null && fieldNode.resourceId == current.fieldNode.resourceId)
+        val matchesField = fieldNode.nodeId == current.fieldNode.nodeId
         if (!matchesField) return null
 
-        if (newText.isEmpty() && current.text.isNotEmpty()) {
+        if (!fieldNode.focused) {
+            candidate = null
+            return null
+        }
+        if (newText.isNotEmpty() && newText != current.text) {
+            candidate = current.copy(sawIntermediateTextChange = true)
+            return null
+        }
+        if (newText.isEmpty() && current.text.isNotEmpty() && !current.sawIntermediateTextChange) {
             return emitInference(
                 current = current,
                 reason = "field_cleared",

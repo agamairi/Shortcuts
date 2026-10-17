@@ -46,10 +46,11 @@ The recorder emits `UI_AUTOMATION` / `PRESS_ENTER` with the selectors from the e
 
 - a physical Enter or numpad-Enter key is released (the service observes but does not consume it);
 - an accessibility click from the active IME has the semantic label Enter, Go, Search, Send, Done, or Next;
-- the edited app reports a same-package window transition;
-- the edited app reports a window-content transition after the text burst has been quiet for 400 ms.
 
-The last two are fallbacks for soft keyboards that do not expose their action key. An ordinary click, scroll, manual tap, focus move, app switch, or stop closes the candidate without inventing Enter.
+Content and window changes are never legacy fallback evidence for Enter. An ordinary click, scroll,
+manual tap, focus move, app switch, or stop closes the candidate without inventing Enter. Engine v2
+may mark a narrowly evidenced soft-keyboard effect as `INFERRED_IME_ACTION`; it requires the exact
+focused field after a committed value, not merely a dialog, popup, or a progressively emptied field.
 
 ### Long-press capture
 
@@ -59,7 +60,7 @@ The last two are fallbacks for soft keyboards that do not expose their action ke
 
 `TouchCaptureOverlay` is added through the live accessibility service's `WindowManager` while a recording is active in `OVERLAY` mode. It never covers the status bar or 3-button navigation bar. When an IME is visible its lower edge is moved to the IME window's top, so all keyboard interaction stays native. It becomes non-touchable for the notification shade, RepeatKit itself, and permission/package-install dialogs.
 
-On `ACTION_DOWN`, it snapshots the top eligible accessibility window and reverse-walks its tree to the deepest visible node under the user's actual coordinate. It selects a nearby actionable ancestor when that ancestor is not a near-full-window container, deriving selectors from that node and retaining the touch point itself as coordinate fallback. On release, it classifies the samples as a tap, long press, swipe, or cancelled multi-touch; taps become `CLICK`, holds become `LONG_PRESS`, and swipes become `SCROLL` with vector-derived deltas. These events enter `RecorderSessionOwner.processEvent`, preserving launcher-collapse, app-switch, text flush, review, save, and replay behavior.
+On `ACTION_DOWN`, it starts an immutable accessibility snapshot on the dedicated capture worker. That worker hit-tests the deepest visible node under the user's actual coordinate and selects a nearby actionable ancestor when it is not a near-full-window container, retaining the touch point as coordinate fallback. On release, it classifies the samples as a tap, long press, swipe, or cancelled multi-touch; taps become `CLICK`, holds become `LONG_PRESS`, and swipes become `SCROLL` with vector-derived deltas. It waits no more than 120 ms for the already-started snapshot before stepping aside; a late/missing result never blocks relay. These events enter `RecorderSessionOwner.processEvent`, preserving launcher-collapse, app-switch, text flush, review, save, and replay behavior.
 
 Before relay, the overlay sets `FLAG_NOT_TOUCHABLE`, waits one Choreographer frame plus 20 ms (with a 35 ms watchdog), then injects the recorded path. Taps use 50 ms, long presses use 600–1500 ms, and swipes use an 80–700 ms bounded duration with at most twelve timing-ordered points. A 40 ms post-relay settle recomputes the safe region before touchability returns. The overlay draws a tap ripple or short fading swipe trail so delayed, post-release scrolling is intentional rather than surprising. While this mode is active, passive click/long-click/scroll callbacks are disabled to prevent relay duplicates; text, focus, IME submit, keys, and window changes remain enabled.
 

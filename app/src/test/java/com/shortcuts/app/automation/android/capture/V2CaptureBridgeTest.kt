@@ -154,6 +154,7 @@ class V2CaptureBridgeTest {
             beforeSnapshot = initialSnapshot,
             ownPackage = "com.shortcuts.app"
         )
+        V2CaptureBridge.awaitCaptureIdleForTest()
 
         // 2. Global action
         val keyEvent = mockk<KeyEvent>()

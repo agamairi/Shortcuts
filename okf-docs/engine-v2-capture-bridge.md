@@ -38,6 +38,25 @@ review-and-save pipeline.
 
 ## Core Components
 
+### Capture hardening
+
+Finger-down snapshotting is started on a single dedicated capture worker, never in the overlay
+input callback. At lift the overlay gives that immutable pre-tap snapshot at most 120 ms before
+starting relay; a late result is tagged as late evidence and a missing result leaves the legacy
+coordinate fallback intact. The worker receives compiler acceptance and persistence only after
+`dispatchGesture` accepted the relay.
+
+In-progress persistence uses a versioned JSONL event log plus an atomic session manifest. Each
+record is fsynced; manifests and finished workflows are written via temp file, fsync and rename.
+The cache is capped at 500 events / 2 MiB, stores only target selector context rather than whole
+screens, accepts a truncated final JSONL record, and reports any earlier corruption as an
+unrecoverable v2 session so the save path can use legacy recording safely.
+
+IME inference is deliberately narrow: a committed non-empty focused field with a real node ID may
+yield an `INFERRED_IME_ACTION` only for a same-package *different Activity*, or a one-event clear
+of that same still-focused field. Dialogs, popups, content updates and progressive deletion are not
+submission evidence. Explicit IME actions require the focused editable field.
+
 ### 1. Pure Mappings (`V2CapturePure.kt`)
 To keep business logic isolated and testable without Android mocks or Robolectric, capture
 heuristics and conversions are implemented as pure Kotlin functions:
