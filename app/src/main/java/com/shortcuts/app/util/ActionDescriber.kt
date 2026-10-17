@@ -66,6 +66,7 @@ object ActionDescriber {
         val isType = uiType in setOf("TYPE", "TYPE_TEXT", "TEXT_ENTRY", "INPUT_TEXT", "SET_TEXT")
         val isLongPress = uiType == "LONG_PRESS"
         val isPressEnter = uiType == "PRESS_ENTER"
+        val isGlobalAction = uiType == "GLOBAL_ACTION"
 
         return when {
             isScroll -> {
@@ -82,6 +83,8 @@ object ActionDescriber {
             isType && !action.textInput.isNullOrBlank() -> "Type \"${action.textInput}\""
             isPressEnter && target != null -> "Press Enter in $target"
             isPressEnter -> "Press Enter"
+            isGlobalAction && action.globalAction.equals("BACK", ignoreCase = true) && target != null -> target
+            isGlobalAction && action.globalAction.equals("BACK", ignoreCase = true) -> "Go back"
             isLongPress && target != null -> "Long-press $target"
             isLongPress -> "Long-press the current screen"
             target != null -> "Tap $target"

@@ -256,6 +256,26 @@ class ShortcutStepsTest {
     }
 
     @Test
+    fun `project inferred Back as detected go back action`() {
+        val step = UiStep(
+            id = "detected-back",
+            operation = UiOperation.GLOBAL_ACTION("BACK"),
+            expectedWindow = sampleWindow(),
+            element = null,
+            gesture = null,
+            verification = VerificationSpec(emptyList()),
+            migrationWarnings = listOf("INFERRED_BACK")
+        )
+        val workflow = WorkflowV2(workflowId = "detected-back", recordedDevice = sampleDevice(), steps = listOf(step))
+
+        val action = (ShortcutSteps.decode(codec.encode(workflow)) as ShortcutDocument.V2).actions.single()
+
+        assertEquals("GLOBAL_ACTION", action.uiActionType)
+        assertEquals("BACK", action.globalAction)
+        assertEquals("Go back (detected)", action.target)
+    }
+
+    @Test
     fun `project UiStep SWIPE computes scrollDirection from gesture vector and fallback to reveal`() {
         // Vertical swipe up: dy < 0
         val swipeUpGesture = CapturedGesture(

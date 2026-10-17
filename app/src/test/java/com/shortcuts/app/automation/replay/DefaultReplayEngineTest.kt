@@ -310,6 +310,47 @@ class DefaultReplayEngineTest {
         assertEquals(ReplayResult.Success(1), engine(env, { testScheduler.currentTime }).run(workflow(step), RecordingSink()))
     }
 
+    @Test fun `inferred Back already on after screen skips dispatch`() = runTest {
+        val after = changedTargetScreen()
+        val env = FakeEnvironment(after) { error("Detected Back must not dispatch when already satisfied") }
+        env.activities[1] = "ProfileActivity"
+        val beforeSelector = expectedWindow.copy(observedActivityClass = "EditActivity")
+        val afterFingerprint = DefaultScreenFingerprinter().fingerprint(after.windows.single(), "ProfileActivity")
+        val step = tapStep(operation = UiOperation.GLOBAL_ACTION("BACK"), element = null,
+            verification = VerificationSpec(emptyList(), allowBestEffort = true)).copy(
+            expectedWindow = beforeSelector,
+            expectedAfter = afterFingerprint,
+            migrationWarnings = listOf("INFERRED_BACK")
+        )
+        val trace = RecordingSink()
+
+        assertEquals(ReplayResult.Success(1), engine(env, { testScheduler.currentTime }).run(workflow(step), trace))
+        assertTrue(env.requests.isEmpty())
+        assertTrue(trace.events.any { it is com.shortcuts.app.automation.diagnostics.DispatchRecorded && it.reason == "inferred back already satisfied" })
+    }
+
+    @Test fun `inferred Back dispatches while still on departing screen`() = runTest {
+        val before = screen(withTarget = true)
+        val after = changedTargetScreen()
+        val env = FakeEnvironment(before) { request ->
+            assertEquals("BACK", request.globalAction)
+            snapshot = after
+            DispatchResult.Accepted(DispatchMethod.GLOBAL_ACTION)
+        }
+        env.activities[1] = "EditActivity"
+        val beforeSelector = expectedWindow.copy(observedActivityClass = "EditActivity")
+        val afterFingerprint = DefaultScreenFingerprinter().fingerprint(after.windows.single(), "ProfileActivity")
+        val step = tapStep(operation = UiOperation.GLOBAL_ACTION("BACK"), element = null,
+            verification = VerificationSpec(emptyList(), allowBestEffort = true)).copy(
+            expectedWindow = beforeSelector,
+            expectedAfter = afterFingerprint,
+            migrationWarnings = listOf("INFERRED_BACK")
+        )
+
+        assertEquals(ReplayResult.Success(1), engine(env, { testScheduler.currentTime }).run(workflow(step), RecordingSink()))
+        assertEquals(1, env.requests.size)
+    }
+
     @Test fun `retry is skipped when the pre state changes`() = runTest {
         var calls = 0
         val env = FakeEnvironment(screen(withTarget = true)) { calls++; snapshot = changedTargetScreen(); DispatchResult.Accepted(DispatchMethod.SEMANTIC_ACTION) }

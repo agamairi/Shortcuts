@@ -445,6 +445,26 @@ class RecordingCompilerTest {
     }
 
     @Test
+    fun `inferred Back keeps departing screen as expected window and warning`() {
+        val home = snapshot(screen(APP, "Home"), 1_000)
+        val profile = snapshot(screen(APP, "Profile"), 2_000)
+        val edit = snapshot(screen(APP, "Edit"), 3_000)
+        val compiler = compiler()
+        compiler.start(CaptureScreenContext("inferred-back", home))
+        compiler.accept(CapturedAppSwitch(null, APP, "com.example.HomeActivity", home, 1_000))
+        compiler.accept(CapturedAppSwitch(APP, APP, "com.example.ProfileActivity", profile, 2_000))
+        compiler.accept(CapturedAppSwitch(APP, APP, "com.example.EditActivity", edit, 3_000))
+        compiler.accept(CapturedGlobalAction("BACK", edit, 4_000, inferred = true))
+        compiler.accept(CapturedAppSwitch(APP, APP, "com.example.ProfileActivity", profile, 4_000))
+
+        val step = compiler.finish().steps.filterIsInstance<UiStep>().single()
+
+        assertEquals(UiOperation.GLOBAL_ACTION("BACK"), step.operation)
+        assertEquals("com.example.EditActivity", step.expectedWindow.observedActivityClass)
+        assertEquals("INFERRED_BACK", step.migrationWarnings.single())
+    }
+
+    @Test
     fun `verification prefers boolean state and destructive labels are irreversible`() {
         val unchecked = snapshot(screen(APP, "Delete", checked = false), 1_000)
         val checked = snapshot(screen(APP, "Delete", checked = true), 1_500)

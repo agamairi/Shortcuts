@@ -168,6 +168,7 @@ object ShortcutSteps {
                         v2StepId = step.id
                     )
                 }
+                val isInferredBack = step.migrationWarnings.contains("INFERRED_BACK")
 
                 when (val op = step.operation) {
                     UiOperation.TAP -> Action(
@@ -238,6 +239,8 @@ object ShortcutSteps {
                         actionType = ActionType.UI_AUTOMATION,
                         uiActionType = "GLOBAL_ACTION",
                         globalAction = op.kind,
+                        target = if (isInferredBack && op.kind.equals("BACK", ignoreCase = true)) "Go back (detected)" else null,
+                        targetText = if (isInferredBack && op.kind.equals("BACK", ignoreCase = true)) "Go back (detected)" else null,
                         targetPackageName = pkg,
                         v2StepId = step.id
                     )

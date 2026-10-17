@@ -51,8 +51,12 @@ object V2CaptureBridge {
     private var activeSession: PersistedV2Session? = null
     private var lastForegroundPackage: String? = null
     private val lastActivitiesByPackage = mutableMapOf<String, String>()
+    /** Most recent capture snapshot for each confirmed screen, retained for inferred Back's before state. */
+    private val lastSnapshotsByScreen = mutableMapOf<Pair<String, String>, WindowSetSnapshot>()
+    private var launcherPackages = emptySet<String>()
     private val activityCache = java.util.concurrent.ConcurrentHashMap<Pair<String, String>, Boolean>()
     private val imeInference = ImeSubmitInference()
+    private var backInference = BackNavigationInference()
     private var degradedLogged = false
 
     @Volatile
@@ -108,6 +112,7 @@ object V2CaptureBridge {
                 lastWorkflowJson = null
                 lastForegroundPackage = null
                 lastActivitiesByPackage.clear()
+                lastSnapshotsByScreen.clear()
                 activityCache.clear()
                 imeInference.reset()
                 degradedLogged = false
@@ -121,6 +126,8 @@ object V2CaptureBridge {
 
                 val launcherPackages = queryHomePackages(context.packageManager)
                 val recorderPackage = context.packageName ?: "com.shortcuts.app"
+                this@V2CaptureBridge.launcherPackages = launcherPackages
+                backInference = BackNavigationInference(ignoredPackages = launcherPackages + recorderPackage)
                 val tokenizer = com.shortcuts.app.automation.android.InstallTokens.tokenizer(context)
                 val deviceMetadata = RecordingDeviceMetadata(
                     manufacturer = Build.MANUFACTURER ?: "unknown",
@@ -166,8 +173,10 @@ object V2CaptureBridge {
                     lastWorkflowJson = null
                     lastForegroundPackage = null
                     lastActivitiesByPackage.clear()
+                    lastSnapshotsByScreen.clear()
                     activityCache.clear()
                     imeInference.reset()
+                    backInference.reset()
                     degradedLogged = false
                     store?.clearAll()
                     Log.d(TAG, "Recording stopped without compiling; capture files deleted")
@@ -221,8 +230,10 @@ object V2CaptureBridge {
                 lastWorkflowJson = null
                 lastForegroundPackage = null
                 lastActivitiesByPackage.clear()
+                lastSnapshotsByScreen.clear()
                 activityCache.clear()
                 imeInference.reset()
+                backInference.reset()
                 degradedLogged = false
                 store?.clearAll()
                 Log.d(TAG, "Recording cleared")
@@ -252,6 +263,8 @@ object V2CaptureBridge {
             if (savedSession != null) {
                 val launcherPackages = queryHomePackages(context.packageManager)
                 val recorderPackage = context.packageName ?: "com.shortcuts.app"
+                this@V2CaptureBridge.launcherPackages = launcherPackages
+                backInference = BackNavigationInference(ignoredPackages = launcherPackages + recorderPackage)
                 val tokenizer = com.shortcuts.app.automation.android.InstallTokens.tokenizer(context)
                 val deviceMetadata = RecordingDeviceMetadata(
                     manufacturer = Build.MANUFACTURER ?: "unknown",
@@ -316,11 +329,13 @@ object V2CaptureBridge {
             val interaction = createCapturedInteraction(kind, samples, beforeSnapshot, ownPackage)
             val firstSample = samples.firstOrNull()
             imeInference.onOverlayInteraction(firstSample?.x?.toInt(), firstSample?.y?.toInt(), firstSample?.uptimeMs)
+            backInference.onInteraction(interaction.downUptimeMs)
             activeCompiler.accept(interaction)
             persistEventLocked(PersistedV2EventWrapper(type = "interaction", interaction = interaction, lateSnapshot = lateSnapshot))
 
             val targetNode = interaction.hitNodeId?.let { beforeSnapshot.node(it) }
             val window = interaction.hitWindowId?.let { beforeSnapshot.window(it) }
+            window?.packageName?.let { rememberSnapshotLocked(it, beforeSnapshot) }
             Log.d(
                 TAG,
                 "Delivered Interaction: kind=$kind pkg=${window?.packageName} nodeClass=${targetNode?.className} windowId=${interaction.hitWindowId} nodeId=${interaction.hitNodeId} viewId=${targetNode?.resourceId} points=${interaction.points.size} down=${interaction.downUptimeMs} up=${interaction.upUptimeMs}"
@@ -358,10 +373,12 @@ object V2CaptureBridge {
 
                 val commit = createCapturedTextCommit(fieldNode, event.enteredText, window, event.occurredAtMillis)
                     ?: return@synchronized
+                backInference.onInteraction(commit.committedAtUptimeMs)
                 activeCompiler.accept(commit)
                 persistEventLocked(PersistedV2EventWrapper(type = "text_commit", textCommit = commit))
                 val currentActivity = lastActivitiesByPackage[window.packageName]
                 imeInference.onTextCommit(commit, currentActivity)
+                rememberSnapshotLocked(window.packageName, snapshot)
 
                 Log.d(
                     TAG,
@@ -399,8 +416,10 @@ object V2CaptureBridge {
                     ?: return@synchronized
 
                 val action = createCapturedImeAction(fieldNode, kind, window, uptimeMs)
+                backInference.onInteraction(action.actionAtUptimeMs)
                 activeCompiler.accept(action)
                 persistEventLocked(PersistedV2EventWrapper(type = "ime_action", imeAction = action))
+                rememberSnapshotLocked(window.packageName, snapshot)
 
                 Log.d(
                     TAG,
@@ -430,16 +449,27 @@ object V2CaptureBridge {
                     return@synchronized
                 }
 
-                val activityClass = if (isConfirmedActivity(toPackage, classNameStr)) {
-                    if (classNameStr != null) lastActivitiesByPackage[toPackage] = classNameStr
-                    classNameStr
-                } else {
-                    lastActivitiesByPackage[toPackage]
-                }
+                val confirmedActivityClass = classNameStr?.takeIf { isConfirmedActivity(toPackage, it) }
+                val activityClass = confirmedActivityClass ?: lastActivitiesByPackage[toPackage]
 
                 val inferred = imeInference.onActivityChanged(toPackage, activityClass, uptimeMs)
                 if (inferred != null) {
                     deliverInferredImeSubmitLocked(inferred)
+                }
+
+                val fromPackage = lastForegroundPackage
+                if (fromPackage != null && fromPackage in launcherPackages) {
+                    backInference.onInteraction(uptimeMs)
+                }
+                val inferredBack = backInference.onActivityChanged(toPackage, confirmedActivityClass, uptimeMs)
+                if (confirmedActivityClass != null) lastActivitiesByPackage[toPackage] = confirmedActivityClass
+                if (inferredBack != null) {
+                    val previousSnapshot = lastSnapshotsByScreen[
+                        inferredBack.packageName to inferredBack.fromActivityClass
+                    ]
+                    if (previousSnapshot != null) {
+                        deliverInferredBackLocked(inferredBack, previousSnapshot, uptimeMs)
+                    }
                 }
 
                 val appSwitch = createCapturedAppSwitch(
@@ -452,6 +482,7 @@ object V2CaptureBridge {
                 activeCompiler.accept(appSwitch)
                 persistEventLocked(PersistedV2EventWrapper(type = "app_switch", appSwitch = appSwitch))
                 lastForegroundPackage = toPackage
+                confirmedActivityClass?.let { rememberSnapshotLocked(toPackage, snapshot, it) }
 
                 Log.d(
                     TAG,
@@ -494,8 +525,29 @@ object V2CaptureBridge {
             )
         }
         activeCompiler.accept(inferred.action)
+        backInference.onInteraction(inferred.action.actionAtUptimeMs)
         persistEventLocked(PersistedV2EventWrapper(type = "ime_action", imeAction = inferred.action, inferredImeReason = inferred.reason))
         Log.w(TAG, "Inferred ImeAction (reason=${inferred.reason}; INFERRED_IME_ACTION)")
+    }
+
+    private fun deliverInferredBackLocked(
+        inferred: BackInference,
+        previousSnapshot: WindowSetSnapshot,
+        uptimeMs: Long
+    ) {
+        val activeCompiler = compiler ?: return
+        val action = createCapturedGlobalAction(
+            kind = "BACK",
+            snapshot = previousSnapshot,
+            actionAtUptimeMs = uptimeMs,
+            inferred = true
+        )
+        activeCompiler.accept(action)
+        persistEventLocked(PersistedV2EventWrapper(type = "global_action", globalAction = action))
+        Log.d(
+            TAG,
+            "Inferred GlobalAction BACK (from=${inferred.fromActivityClass} to=${inferred.toActivityClass}; INFERRED_BACK)"
+        )
     }
 
     /**
@@ -510,6 +562,7 @@ object V2CaptureBridge {
                 if (!EngineV2.enabled || compiler == null) return@synchronized
                 imeInference.onKeyEvent(keyCode, eventTime)
                 val kind = mapKeyCodeToGlobalAction(keyCode) ?: return@synchronized
+                backInference.onKeyDeliveredGlobalAction(kind, eventTime)
                 val snapshot = EngineV2.snapshotSource?.snapshot()
                 if (snapshot == null) {
                     logDegraded("Snapshot source unavailable for global action $kind")
@@ -519,6 +572,7 @@ object V2CaptureBridge {
                 val globalAction = createCapturedGlobalAction(kind, snapshot, eventTime)
                 compiler?.accept(globalAction)
                 persistEventLocked(PersistedV2EventWrapper(type = "global_action", globalAction = globalAction))
+                primaryApplicationPackage(snapshot)?.let { rememberSnapshotLocked(it, snapshot) }
                 Log.d(TAG, "Delivered GlobalAction: kind=$kind at=$eventTime")
             }
         }
@@ -548,24 +602,56 @@ object V2CaptureBridge {
     private fun rebuildBridgeStateLocked(session: PersistedV2Session) {
         lastForegroundPackage = null
         lastActivitiesByPackage.clear()
+        lastSnapshotsByScreen.clear()
         imeInference.reset()
+        backInference.reset()
         session.events.forEach { event ->
             event.appSwitch?.let { appSwitch ->
                 lastForegroundPackage = appSwitch.toPackageName
-                appSwitch.observedActivityClass?.takeIf { isConfirmedActivity(appSwitch.toPackageName, it) }?.let {
+                val confirmed = appSwitch.observedActivityClass?.takeIf { isConfirmedActivity(appSwitch.toPackageName, it) }
+                backInference.onActivityChanged(appSwitch.toPackageName, confirmed, appSwitch.switchedAtUptimeMs)
+                confirmed?.let {
                     lastActivitiesByPackage[appSwitch.toPackageName] = it
+                    rememberSnapshotLocked(appSwitch.toPackageName, appSwitch.snapshot, it)
                 }
             }
             event.interaction?.let {
                 val pt = it.points.firstOrNull()?.displayPx
                 imeInference.onOverlayInteraction(pt?.x, pt?.y, it.downUptimeMs)
+                backInference.onInteraction(it.downUptimeMs)
+                it.hitWindowId?.let(it.beforeSnapshot::window)?.packageName?.let { packageName ->
+                    rememberSnapshotLocked(packageName, it.beforeSnapshot)
+                }
             }
             event.textCommit?.let { commit ->
                 imeInference.onTextCommit(commit, lastActivitiesByPackage[commit.windowSnapshot.packageName])
+                backInference.onInteraction(commit.committedAtUptimeMs)
             }
-            if (event.imeAction != null || event.globalAction != null) imeInference.reset()
+            event.imeAction?.let {
+                backInference.onInteraction(it.actionAtUptimeMs)
+                imeInference.reset()
+            }
+            event.globalAction?.let {
+                if (it.inferred) backInference.onInteraction(it.actionAtUptimeMs)
+                else backInference.onKeyDeliveredGlobalAction(it.kind, it.actionAtUptimeMs)
+                imeInference.reset()
+            }
         }
     }
+
+    private fun rememberSnapshotLocked(
+        packageName: String,
+        snapshot: WindowSetSnapshot,
+        activityClass: String? = lastActivitiesByPackage[packageName]
+    ) {
+        if (activityClass != null) lastSnapshotsByScreen[packageName to activityClass] = snapshot
+    }
+
+    private fun primaryApplicationPackage(snapshot: WindowSetSnapshot): String? = snapshot.windows
+        .filterNot { it.type == WindowType.ACCESSIBILITY_OVERLAY || it.type == WindowType.INPUT_METHOD }
+        .sortedWith(compareByDescending<WindowSnapshot> { it.isActive || it.isFocused }.thenByDescending { it.layer })
+        .firstOrNull()
+        ?.packageName
 
     private fun ensureStore(context: Context): V2CaptureStore {
         return store ?: run {
@@ -627,7 +713,10 @@ object V2CaptureBridge {
             lastWorkflowJson = null
             lastForegroundPackage = null
             lastActivitiesByPackage.clear()
+            lastSnapshotsByScreen.clear()
             imeInference.reset()
+            backInference = BackNavigationInference()
+            launcherPackages = emptySet()
             degradedLogged = false
             store = null
         }
