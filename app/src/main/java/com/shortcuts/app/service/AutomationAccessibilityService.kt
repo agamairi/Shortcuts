@@ -483,6 +483,12 @@ open class AutomationAccessibilityService : AccessibilityService() {
     }
 
     private fun handleClickNode(action: Action): Boolean {
+        // The editor lets a user pin a repaired step to its recorded point; honour that before
+        // any text matching, still behind the coordinate-safety checks in tapAtRecordedPoint.
+        if (action.preferCoordinateReplay && action.screenX != null && action.screenY != null) {
+            if (tapAtRecordedPoint(action)) return true
+            return if (lastFailureMessage != null) false else fail("The recorded point could not be tapped on this screen.")
+        }
         val targetNode = awaitTargetNode(action)
         if (targetNode == null) {
             Log.w(TAG, "Target node not found for click action; semantic selectors were unavailable")
@@ -656,9 +662,9 @@ open class AutomationAccessibilityService : AccessibilityService() {
         }
 
         val path = Path().apply { moveTo(safePlan.x, safePlan.y) }
-        val gesture = GestureDescription.Builder()
-            .addStroke(GestureDescription.StrokeDescription(path, 0L, TAP_DURATION_MS))
-            .build()
+        val builder = GestureDescription.Builder()
+        builder.addStroke(GestureDescription.StrokeDescription(path, 0L, TAP_DURATION_MS))
+        val gesture = builder.build()
 
         val finished = CountDownLatch(1)
         val landed = AtomicBoolean(false)
