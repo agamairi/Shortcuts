@@ -362,18 +362,29 @@ private fun ActionParameterEditor(
             )
         }
         ActionType.UI_AUTOMATION -> {
+            val isRecorded = action.v2StepId != null
             OutlinedTextField(
                 value = action.targetText ?: action.targetNodeId ?: action.target.orEmpty(),
                 onValueChange = { onUpdateAction(action.copy(targetText = it, targetNodeId = it)) },
-                label = { Text("What appears on screen") },
+                label = { Text(if (isRecorded) "What appears on screen (Recorded)" else "What appears on screen") },
+                enabled = !isRecorded,
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )
+            if (isRecorded) {
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    text = "Target element was captured during recording and cannot be edited.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
             Spacer(Modifier.height(8.dp))
             OutlinedTextField(
                 value = action.textInput.orEmpty(),
                 onValueChange = { onUpdateAction(action.copy(textInput = it, uiActionType = "TYPE_TEXT")) },
-                label = { Text("Text to type (leave blank to tap)") },
+                label = { Text(if (isRecorded) "Text to type" else "Text to type (leave blank to tap)") },
+                enabled = !isRecorded || action.uiActionType?.trim()?.uppercase() == "TYPE_TEXT",
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true
             )

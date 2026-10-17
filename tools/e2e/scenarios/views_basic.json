@@ -1,0 +1,13 @@
+{
+  "id": "views_basic",
+  "launcher_label": "Views basic",
+  "description": "Exercise semantic, descriptive, unlabeled, toggle, and long-press Views controls.",
+  "steps": [
+    {"tap": {"text": "Save"}},
+    {"tap": {"desc": "Settings gear"}},
+    {"tap": {"id": "com.repeatkit.fixtures:id/icon_unlabeled"}},
+    {"tap": {"text": "Wi-Fi"}},
+    {"long_press": {"text": "Hold me"}}
+  ],
+  "expect": "recorded"
+}

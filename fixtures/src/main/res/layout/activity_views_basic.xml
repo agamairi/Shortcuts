@@ -1,0 +1,80 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical">
+
+    <TextView
+        android:id="@+id/title_views_basic"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:padding="16dp"
+        android:text="Views basic"
+        android:textSize="22sp"
+        android:textStyle="bold" />
+
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical"
+            android:padding="16dp">
+
+            <Button
+                android:id="@+id/btn_save"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="16dp"
+                android:text="Save" />
+
+            <ImageButton
+                android:id="@+id/btn_gear"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginBottom="16dp"
+                android:contentDescription="Settings gear"
+                android:src="@drawable/ic_settings" />
+
+            <ImageButton
+                android:id="@+id/icon_unlabeled"
+                android:layout_width="48dp"
+                android:layout_height="48dp"
+                android:layout_marginBottom="16dp"
+                android:contentDescription="@null"
+                android:src="@drawable/ic_unlabeled" />
+
+            <CheckBox
+                android:id="@+id/chk_remember"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="16dp"
+                android:text="Remember me" />
+
+            <com.google.android.material.switchmaterial.SwitchMaterial
+                android:id="@+id/sw_wifi"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginBottom="16dp"
+                android:text="Wi-Fi" />
+
+            <TextView
+                android:id="@+id/txt_hold"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:background="#DDDDDD"
+                android:clickable="true"
+                android:focusable="true"
+                android:padding="16dp"
+                android:text="Hold me"
+                android:textSize="16sp" />
+
+        </LinearLayout>
+    </ScrollView>
+
+    <include layout="@layout/view_event_log_footer" />
+
+</LinearLayout>

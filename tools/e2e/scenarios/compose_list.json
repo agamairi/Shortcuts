@@ -1,0 +1,10 @@
+{
+  "id": "compose_list",
+  "launcher_label": "Compose list",
+  "description": "Scroll a Compose list to Item 45 and open that row.",
+  "steps": [
+    {"scroll_until": {"text": "Item 45"}},
+    {"tap": {"text": "Open", "row_of": "Item 45"}}
+  ],
+  "expect": "recorded"
+}

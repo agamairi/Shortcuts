@@ -14,11 +14,19 @@ import com.shortcuts.app.data.AppDatabase
 import com.shortcuts.app.data.Action
 import com.shortcuts.app.data.ActionType
 import com.shortcuts.app.data.Automation
+import com.shortcuts.app.data.ActionConverter
+import com.shortcuts.app.automation.model.DecodeResult
+import com.shortcuts.app.automation.model.LegacyActionStep
+import com.shortcuts.app.automation.model.StepSafety
+import com.shortcuts.app.automation.model.UiStep
+import com.shortcuts.app.automation.model.WorkflowCodec
+import com.shortcuts.app.automation.model.WorkflowV2
 import com.shortcuts.app.util.AccessibilityStatusChecker
 import java.net.URI
 import java.util.UUID
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.Job
 
 /**
  * The one product-level request to run a saved shortcut.
@@ -42,7 +50,8 @@ enum class ShortcutRunSource {
 data class RunnableShortcut(
     val id: Int,
     val name: String,
-    val isActive: Boolean
+    val isActive: Boolean,
+    val actionsJson: String = ""
 )
 
 /**
@@ -165,16 +174,20 @@ fun interface AcceptedShortcutRunStarter {
 }
 
 /** Starts an admitted, unsaved editor draft in the same foreground service as saved shortcuts. */
-fun interface AcceptedEditorRunStarter {
+interface AcceptedEditorRunStarter {
     fun start(shortcutName: String, actions: List<Action>, runId: String)
+    fun start(shortcutName: String, actions: List<Action>, actionsJson: String, runId: String) {
+        start(shortcutName, actions, runId)
+    }
 }
 
 data class EditorShortcutRunRequest(
     val shortcutName: String,
-    val actions: List<Action>,
+    val actions: List<Action> = emptyList(),
     val source: ShortcutRunSource = ShortcutRunSource.EDITOR,
     /** Set only after the editor has shown one combined, effect-specific confirmation. */
-    val externalEffectsConfirmed: Boolean = false
+    val externalEffectsConfirmed: Boolean = false,
+    val actionsJson: String = ""
 )
 
 interface ShortcutRunAdmission {
@@ -306,6 +319,51 @@ class ShortcutPreflight(
     fun check(actions: List<Action>): ShortcutPreflightReport {
         val issues = actions.flatMapIndexed { index, action -> checkAction(index, action) }
         return ShortcutPreflightReport(issues)
+    }
+
+    fun check(workflow: WorkflowV2): ShortcutPreflightReport {
+        val issues = mutableListOf<ShortcutPreflightIssue>()
+        val firstUiIndex = workflow.steps.indexOfFirst { it is UiStep }
+        if (firstUiIndex != -1 && !environment.isAccessibilityServiceActive()) {
+            issues.add(
+                issue(
+                    firstUiIndex,
+                    ShortcutIssueCategory.SYSTEM_SETTING_REQUIRED,
+                    "Turn on RepeatKit Accessibility Service before this screen step can run.",
+                    resolution = ShortcutPreflightResolution.ACCESSIBILITY_SETTINGS
+                )
+            )
+        }
+        workflow.steps.forEachIndexed { index, step ->
+            if (step is LegacyActionStep) {
+                issues.addAll(checkAction(index, step.action))
+            }
+        }
+        return ShortcutPreflightReport(issues)
+    }
+
+    fun check(actionsJson: String): ShortcutPreflightReport {
+        val codec = WorkflowCodec()
+        return when (val decode = codec.decode(actionsJson)) {
+            is DecodeResult.Success -> {
+                if (decode.migratedFromLegacy) {
+                    check(ActionConverter().toActionList(actionsJson))
+                } else {
+                    check(decode.workflow)
+                }
+            }
+            is DecodeResult.Failure -> {
+                ShortcutPreflightReport(
+                    listOf(
+                        issue(
+                            0,
+                            ShortcutIssueCategory.UNSUPPORTED_ACTION,
+                            "Workflow data cannot be read: ${decode.message}"
+                        )
+                    )
+                )
+            }
+        }
     }
 
     private fun checkAction(index: Int, action: Action): List<ShortcutPreflightIssue> = when (action.actionType) {
@@ -543,6 +601,40 @@ object ShortcutRunSafety {
         if (actions.any { it.actionType == ActionType.UI_AUTOMATION }) add("interact with another app's screen")
     }
 
+    fun confirmationEffects(workflow: WorkflowV2): List<String> = buildList {
+        var hasIrreversibleUi = false
+        for (step in workflow.steps) {
+            when (step) {
+                is UiStep -> {
+                    if (step.safety == StepSafety.IRREVERSIBLE) {
+                        hasIrreversibleUi = true
+                    }
+                }
+                is LegacyActionStep -> {
+                    addAll(confirmationEffects(listOf(step.action)))
+                }
+                else -> Unit
+            }
+        }
+        if (hasIrreversibleUi) {
+            add("interact with another app's screen")
+        }
+    }
+
+    fun confirmationEffects(actionsJson: String): List<String> {
+        val codec = WorkflowCodec()
+        return when (val decode = codec.decode(actionsJson)) {
+            is DecodeResult.Success -> {
+                if (decode.migratedFromLegacy) {
+                    confirmationEffects(ActionConverter().toActionList(actionsJson))
+                } else {
+                    confirmationEffects(decode.workflow)
+                }
+            }
+            is DecodeResult.Failure -> emptyList()
+        }
+    }
+
     private val safeHttpReadMethods = setOf("GET", "HEAD")
 }
 
@@ -552,36 +644,41 @@ class ShortcutRunLease internal constructor(
 )
 
 /**
- * Cooperative cancellation shared by the foreground service and executor. Cancellation interrupts
- * a cancellable delay immediately and is checked before each subsequent action.
+ * Cooperative cancellation shared by the foreground service and executor. The foreground service
+ * binds the accepted run's coroutine [Job], so Stop cancels the structured execution rather than
+ * interrupting an arbitrary pooled worker thread.
  */
 interface ExecutionCancellation {
     val isCancellationRequested: Boolean
 
     fun enterExecution()
     fun leaveExecution()
+    fun bindRunJob(job: Job) = Unit
+    fun clearRunJob(job: Job) = Unit
 }
 
-private class ActiveRunCancellation : ExecutionCancellation {
+internal class ActiveRunCancellation : ExecutionCancellation {
     private val cancelled = AtomicBoolean(false)
-    private val executingThread = AtomicReference<Thread?>(null)
+    private val runJob = AtomicReference<Job?>(null)
 
     override val isCancellationRequested: Boolean
         get() = cancelled.get()
 
     fun cancel() {
         cancelled.set(true)
-        executingThread.get()?.interrupt()
+        runJob.get()?.cancel()
     }
 
-    override fun enterExecution() {
-        val thread = Thread.currentThread()
-        executingThread.set(thread)
-        if (cancelled.get()) thread.interrupt()
+    override fun enterExecution() = Unit
+    override fun leaveExecution() = Unit
+
+    override fun bindRunJob(job: Job) {
+        runJob.set(job)
+        if (cancelled.get()) job.cancel()
     }
 
-    override fun leaveExecution() {
-        executingThread.compareAndSet(Thread.currentThread(), null)
+    override fun clearRunJob(job: Job) {
+        runJob.compareAndSet(job, null)
     }
 }
 
@@ -632,13 +729,20 @@ class ShortcutRunner(
         acceptedRunStarter = AcceptedShortcutRunStarter { shortcutId, runId ->
             AutomationExecutionService.startAccepted(context.applicationContext, shortcutId, runId)
         },
-        acceptedEditorRunStarter = AcceptedEditorRunStarter { shortcutName, actions, runId ->
-            AutomationExecutionService.startAcceptedEditorDraft(
-                context = context.applicationContext,
-                shortcutName = shortcutName,
-                actions = actions,
-                runId = runId
-            )
+        acceptedEditorRunStarter = object : AcceptedEditorRunStarter {
+            override fun start(shortcutName: String, actions: List<Action>, runId: String) {
+                start(shortcutName, actions, "", runId)
+            }
+
+            override fun start(shortcutName: String, actions: List<Action>, actionsJson: String, runId: String) {
+                AutomationExecutionService.startAcceptedEditorDraft(
+                    context = context.applicationContext,
+                    shortcutName = shortcutName,
+                    actions = actions,
+                    runId = runId,
+                    actionsJson = actionsJson.takeIf { it.isNotBlank() }
+                )
+            }
         },
         preflightEnvironment = AndroidShortcutPreflightEnvironment(context.applicationContext)
     )
@@ -649,6 +753,20 @@ class ShortcutRunner(
             "ShortcutRunner needs a preflight environment before it can check a draft."
         }
         return ShortcutPreflight(environment).check(actions)
+    }
+
+    fun preflight(workflow: WorkflowV2): ShortcutPreflightReport {
+        val environment = requireNotNull(preflightEnvironment) {
+            "ShortcutRunner needs a preflight environment before it can check a draft."
+        }
+        return ShortcutPreflight(environment).check(workflow)
+    }
+
+    fun preflight(actionsJson: String): ShortcutPreflightReport {
+        val environment = requireNotNull(preflightEnvironment) {
+            "ShortcutRunner needs a preflight environment before it can check a draft."
+        }
+        return ShortcutPreflight(environment).check(actionsJson)
     }
 
     suspend fun run(request: ShortcutRunRequest): ShortcutRunOutcome {
@@ -698,17 +816,25 @@ class ShortcutRunner(
                 "Give this shortcut a name before running it."
             )
         }
-        if (request.actions.isEmpty()) {
+        if (request.actions.isEmpty() && request.actionsJson.isBlank()) {
             return ShortcutRunOutcome.EditorRejectedInvalidDraft(
                 request,
                 "Add at least one step before running this shortcut."
             )
         }
         preflightEnvironment?.let { environment ->
-            val report = ShortcutPreflight(environment).check(request.actions)
+            val report = if (request.actionsJson.isNotBlank()) {
+                ShortcutPreflight(environment).check(request.actionsJson)
+            } else {
+                ShortcutPreflight(environment).check(request.actions)
+            }
             if (!report.canRun) return ShortcutRunOutcome.EditorRejectedPreflight(request, report)
         }
-        val effects = ShortcutRunSafety.confirmationEffects(request.actions)
+        val effects = if (request.actionsJson.isNotBlank()) {
+            ShortcutRunSafety.confirmationEffects(request.actionsJson)
+        } else {
+            ShortcutRunSafety.confirmationEffects(request.actions)
+        }
         if (effects.isNotEmpty() && !request.externalEffectsConfirmed) {
             return ShortcutRunOutcome.EditorConfirmationRequired(request, effects)
         }
@@ -722,7 +848,7 @@ class ShortcutRunner(
             ?: return ShortcutRunOutcome.EditorRejectedAlreadyRunning(request)
 
         return try {
-            starter.start(request.shortcutName.trim(), request.actions, lease.runId)
+            starter.start(request.shortcutName.trim(), request.actions, request.actionsJson, lease.runId)
             ShortcutRunOutcome.EditorStarted(request, lease.runId)
         } catch (_: Exception) {
             admission.release(lease.runId)
@@ -759,5 +885,6 @@ private class RoomShortcutRunStore(context: Context) : ShortcutRunStore {
 private fun Automation.toRunnableShortcut() = RunnableShortcut(
     id = id,
     name = name,
-    isActive = isActive
+    isActive = isActive,
+    actionsJson = actionsJson
 )

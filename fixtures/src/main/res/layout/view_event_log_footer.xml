@@ -1,0 +1,27 @@
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/event_log_footer"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="#222222"
+    android:padding="8dp">
+
+    <TextView
+        android:id="@+id/footer_title"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="Event Log (last 5 entries)"
+        android:textColor="#AAAAAA"
+        android:textSize="11sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:id="@+id/footer_logs"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:fontFamily="monospace"
+        android:minLines="5"
+        android:maxLines="5"
+        android:textColor="#00FF66"
+        android:textSize="11sp" />
+</LinearLayout>

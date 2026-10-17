@@ -1,0 +1,14 @@
+{
+  "id": "dialogs",
+  "launcher_label": "Dialogs",
+  "description": "Accept a dialog, copy a sheet action, and archive a menu item.",
+  "steps": [
+    {"tap": {"text": "Show dialog"}},
+    {"tap": {"text": "OK"}},
+    {"tap": {"text": "Show sheet"}},
+    {"tap": {"text": "Copy link"}},
+    {"tap": {"text": "Show menu"}},
+    {"tap": {"text": "Archive"}}
+  ],
+  "expect": "recorded"
+}

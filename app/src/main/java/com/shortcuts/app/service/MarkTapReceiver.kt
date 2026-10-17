@@ -3,6 +3,8 @@ package com.shortcuts.app.service
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import com.shortcuts.app.service.capture.RecorderCaptureMode
+import com.shortcuts.app.service.capture.RecorderCaptureModePreferences
 
 /**
  * Receives the "Mark a tap" action from the recording notification.
@@ -14,6 +16,8 @@ import android.content.Intent
  */
 class MarkTapReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        TapMarkOverlay.arm(AutomationAccessibilityService.instance)
+        if (RecorderCaptureModePreferences.mode(context) == RecorderCaptureMode.PASSIVE) {
+            TapMarkOverlay.arm(AutomationAccessibilityService.instance)
+        }
     }
 }

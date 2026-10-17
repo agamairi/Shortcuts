@@ -12,6 +12,13 @@ tags: [release, status, CI, widgets, website]
 - CI (lint + unit tests on PR/push) is in place.
 - Legacy widgets have been removed (only the current unified widget remains).
 
+## 0.8.0 (2026-10-17) — Engine v2 recording and replay
+- Verified on a Pixel 6a (Android 16); numbers in [`recovery-plan.md`](recovery-plan.md) (fixture suite, real apps, widgets).
+- Gates: unit tests, lint (0 errors), signed release build.
+- Known issues are listed under 0.8.0 in `changelog.md` (Chrome address-bar searches, Messages untested,
+  lock-screen widgets untested on device).
+- Still short of the spec's reliability gate (≥ 600 fixture runs over 30 scenarios); 12 scenarios exist.
+
 ## Pending Tasks
 Two items are explicitly still pending, not yet done:
 - **Google Play Console listing paperwork** (data safety form, content rating, store listing) — not started.

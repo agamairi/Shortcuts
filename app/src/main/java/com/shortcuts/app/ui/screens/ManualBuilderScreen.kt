@@ -53,6 +53,9 @@ import com.shortcuts.app.data.Action
 import com.shortcuts.app.data.ActionConverter
 import com.shortcuts.app.data.ActionType
 import com.shortcuts.app.data.Automation
+import com.shortcuts.app.data.ShortcutDocument
+import com.shortcuts.app.data.recordedTargetLabel
+import com.shortcuts.app.data.ShortcutSteps
 import com.shortcuts.app.util.AccessibilityStatusChecker
 import com.shortcuts.app.util.ActionDescriber
 import com.shortcuts.app.viewmodel.AutomationViewModel
@@ -95,7 +98,8 @@ data class InstalledAppInfo(
 internal data class PendingEditorRun(
     val shortcutName: String,
     val actions: List<Action>,
-    val effects: List<String>
+    val effects: List<String>,
+    val actionsJson: String? = null
 )
 
 /** The persisted builder state used to decide whether leaving would lose edits. */
@@ -118,13 +122,15 @@ internal suspend fun runEditorDraftThroughGateway(
     context: Context,
     shortcutName: String,
     actions: List<Action>,
-    externalEffectsConfirmed: Boolean = false
+    externalEffectsConfirmed: Boolean = false,
+    actionsJson: String? = null
 ) = withContext(Dispatchers.IO) {
     ShortcutRunner(context.applicationContext).runEditor(
         EditorShortcutRunRequest(
             shortcutName = shortcutName,
             actions = actions,
-            externalEffectsConfirmed = externalEffectsConfirmed
+            externalEffectsConfirmed = externalEffectsConfirmed,
+            actionsJson = actionsJson ?: ""
         )
     )
 }
@@ -240,14 +246,49 @@ object ManualBuilderUtils {
     }
 
     /** Pure persistence shape used by the manual sentence builder and its JVM tests. */
-    fun buildManualAutomation(name: String, actions: List<Action>, colorKey: String, iconKey: String = "BOLT"): Automation {
+    fun buildManualAutomation(
+        name: String,
+        actions: List<Action>,
+        colorKey: String,
+        iconKey: String = "BOLT",
+        document: ShortcutDocument? = null
+    ): Automation {
+        val json = if (document != null) {
+            ShortcutSteps.encode(document, actions)
+        } else {
+            ActionConverter().fromActionList(actions)
+        }
         return Automation(
             name = name.trim(),
-            actionsJson = ActionConverter().fromActionList(actions),
+            actionsJson = json,
             triggerType = "MANUAL",
             colorKey = colorKey,
             iconKey = iconKey
         )
+    }
+
+    fun safeEncodeWorkflow(doc: ShortcutDocument?, actions: List<Action>): Result<String?> = runCatching {
+        if (doc is ShortcutDocument.V2) {
+            ShortcutSteps.encode(doc, actions)
+        } else {
+            null
+        }
+    }
+
+    fun safeEncodeForSave(doc: ShortcutDocument?, actions: List<Action>): Result<String> = runCatching {
+        if (doc != null) {
+            ShortcutSteps.encode(doc, actions)
+        } else {
+            ActionConverter().fromActionList(actions)
+        }
+    }
+
+    fun preserveV2StepId(existing: Action, picked: Action): Action {
+        return if (existing.v2StepId != null) {
+            picked.copy(v2StepId = existing.v2StepId)
+        } else {
+            picked
+        }
     }
 
     fun getActionSummary(action: Action, appLabelLookup: (String) -> String? = { null }): String {
@@ -262,17 +303,21 @@ object ManualBuilderUtils {
                 }
             }
             ActionType.UI_AUTOMATION -> {
-                val target = action.targetText?.ifBlank { null }
-                    ?: action.targetNodeId?.ifBlank { null }
-                    ?: action.target?.ifBlank { null }
-                val isTypeMode = action.uiActionType?.trim()?.uppercase() == "TYPE_TEXT"
-                when {
-                    isTypeMode && !action.textInput.isNullOrBlank() && target != null ->
-                        "Type '${action.textInput}' into '$target'"
-                    isTypeMode && !action.textInput.isNullOrBlank() ->
-                        "Type '${action.textInput}'"
-                    target != null -> "Tap '$target'"
-                    else -> "Tap or Type on Screen"
+                if (action.targetText == "Pressed the keyboard's Search/Send key (detected)" || action.target == "Pressed the keyboard's Search/Send key (detected)") {
+                    "Pressed the keyboard's Search/Send key (detected)"
+                } else {
+                    val target = action.targetText?.ifBlank { null }
+                        ?: action.targetNodeId?.ifBlank { null }
+                        ?: action.target?.ifBlank { null }
+                    val isTypeMode = action.uiActionType?.trim()?.uppercase() == "TYPE_TEXT"
+                    when {
+                        isTypeMode && !action.textInput.isNullOrBlank() && target != null ->
+                            "Type '${action.textInput}' into '$target'"
+                        isTypeMode && !action.textInput.isNullOrBlank() ->
+                            "Type '${action.textInput}'"
+                        target != null -> "Tap '$target'"
+                        else -> "Tap or Type on Screen"
+                    }
                 }
             }
             ActionType.SYSTEM_TOGGLE -> {
@@ -342,6 +387,8 @@ fun ManualBuilderScreen(
     var selectedIcon by remember { mutableStateOf(WidgetIconKey.BOLT) }
     var preflightReport by remember { mutableStateOf<ShortcutPreflightReport?>(null) }
     var pendingEditorRun by remember { mutableStateOf<PendingEditorRun?>(null) }
+    var loadedDocument by remember { mutableStateOf<ShortcutDocument?>(null) }
+    var validationNotice by remember { mutableStateOf<String?>(null) }
     var initialDraftSnapshot by remember {
         mutableStateOf(
             ManualBuilderDraftSnapshot(
@@ -368,7 +415,10 @@ fun ManualBuilderScreen(
     // Edit mode: replace the draft with the saved shortcut's own. Keyed on the id so
     // re-entering the builder for a different shortcut reloads rather than showing the last one.
     LaunchedEffect(editingAutomationId) {
-        if (editingAutomationId == NEW_SHORTCUT_ID || viewModel == null) return@LaunchedEffect
+        if (editingAutomationId == NEW_SHORTCUT_ID || viewModel == null) {
+            loadedDocument = ShortcutDocument.Legacy(emptyList())
+            return@LaunchedEffect
+        }
         val existing = viewModel.getAutomationById(editingAutomationId) ?: return@LaunchedEffect
         shortcutName = existing.name
         existing.colorKey
@@ -377,10 +427,17 @@ fun ManualBuilderScreen(
         existing.iconKey
             ?.let { key -> WidgetIconKey.entries.firstOrNull { it.name == key } }
             ?.let { selectedIcon = it }
-        val saved = runCatching { ActionConverter().toActionList(existing.actionsJson) }
-            .getOrDefault(emptyList())
-        actions.clear()
-        actions.addAll(saved)
+        val doc = ShortcutSteps.decode(existing.actionsJson)
+        loadedDocument = doc
+        if (doc is ShortcutDocument.Unreadable) {
+            actions.clear()
+            coroutineScope.launch {
+                snackbarHostState.showSnackbar("This shortcut could not be read: ${doc.reason}")
+            }
+        } else {
+            actions.clear()
+            actions.addAll(doc.actions)
+        }
         initialDraftSnapshot = ManualBuilderDraftSnapshot(
             name = shortcutName,
             color = selectedColor,
@@ -461,7 +518,7 @@ fun ManualBuilderScreen(
                     }
                 }
                 Box(Modifier.size(44.dp).clip(androidx.compose.foundation.shape.CircleShape).background(palette.tileContent).clickable {
-                    saveManualAutomation(context, shortcutName, actions.toList(), selectedColor, selectedIcon.name, viewModel, onSaveAutomation, onNavigateBack, snackbarHostState, coroutineScope, editingAutomationId) { isSaving = it }
+                    saveManualAutomation(context, shortcutName, actions.toList(), selectedColor, selectedIcon.name, viewModel, onSaveAutomation, onNavigateBack, snackbarHostState, coroutineScope, editingAutomationId, loadedDocument, onValidationNotice = { validationNotice = it }) { isSaving = it }
                 }, contentAlignment = Alignment.Center) {
                     if (isSaving) CircularProgressIndicator(Modifier.size(20.dp), color = selectedColor) else Icon(Icons.Filled.Check, "Save shortcut", tint = selectedColor, modifier = Modifier.size(20.dp))
                 }
@@ -492,6 +549,15 @@ fun ManualBuilderScreen(
                     .padding(start = 24.dp, end = 24.dp, top = 10.dp),
                 verticalArrangement = Arrangement.spacedBy(18.dp)
             ) {
+                validationNotice?.let { message ->
+                    item {
+                        Text(
+                            message,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = palette.tileContent.copy(alpha = 0.9f)
+                        )
+                    }
+                }
                 itemsIndexed(actions) { index, action ->
                     ManualSentenceRow(
                         index = index,
@@ -583,9 +649,22 @@ fun ManualBuilderScreen(
                         .border(1.5.dp, palette.tileContent.copy(alpha = .6f), androidx.compose.foundation.shape.RoundedCornerShape(26.dp))
                         .clickable {
                             val snapshot = actions.toList()
+                            val doc = loadedDocument
                             coroutineScope.launch {
+                                val encodeResult = ManualBuilderUtils.safeEncodeWorkflow(doc, snapshot)
+                                if (encodeResult.isFailure) {
+                                    val errorMsg = encodeResult.exceptionOrNull()?.localizedMessage ?: "Invalid step edits"
+                                    validationNotice = errorMsg
+                                    return@launch
+                                }
+                                validationNotice = null
+                                val v2Json = encodeResult.getOrNull()
                                 preflightReport = withContext(Dispatchers.IO) {
-                                    ShortcutRunner(context.applicationContext).preflight(snapshot)
+                                    if (v2Json != null) {
+                                        ShortcutRunner(context.applicationContext).preflight(v2Json)
+                                    } else {
+                                        ShortcutRunner(context.applicationContext).preflight(snapshot)
+                                    }
                                 }
                             }
                         },
@@ -601,21 +680,38 @@ fun ManualBuilderScreen(
                         .clickable {
                             val snapshot = actions.toList()
                             val name = shortcutName
+                            val doc = loadedDocument
                             coroutineScope.launch {
+                                val encodeResult = ManualBuilderUtils.safeEncodeWorkflow(doc, snapshot)
+                                if (encodeResult.isFailure) {
+                                    val errorMsg = encodeResult.exceptionOrNull()?.localizedMessage ?: "Invalid step edits"
+                                    validationNotice = errorMsg
+                                    return@launch
+                                }
+                                validationNotice = null
+                                val v2Json = encodeResult.getOrNull()
                                 val report = withContext(Dispatchers.IO) {
-                                    ShortcutRunner(context.applicationContext).preflight(snapshot)
+                                    if (v2Json != null) {
+                                        ShortcutRunner(context.applicationContext).preflight(v2Json)
+                                    } else {
+                                        ShortcutRunner(context.applicationContext).preflight(snapshot)
+                                    }
                                 }
                                 if (!report.canRun) {
                                     preflightReport = report
                                     return@launch
                                 }
-                                val effects = ShortcutRunSafety.confirmationEffects(snapshot)
+                                val effects = if (v2Json != null) {
+                                    ShortcutRunSafety.confirmationEffects(v2Json)
+                                } else {
+                                    ShortcutRunSafety.confirmationEffects(snapshot)
+                                }
                                 if (effects.isEmpty()) {
                                     snackbarHostState.showSnackbar(
-                                        runEditorDraftThroughGateway(context, name, snapshot).userMessage()
+                                        runEditorDraftThroughGateway(context, name, snapshot, actionsJson = v2Json).userMessage()
                                     )
                                 } else {
-                                    pendingEditorRun = PendingEditorRun(name, snapshot, effects)
+                                    pendingEditorRun = PendingEditorRun(name, snapshot, effects, actionsJson = v2Json)
                                 }
                             }
                         },
@@ -650,7 +746,8 @@ fun ManualBuilderScreen(
                             context,
                             pending.shortcutName,
                             pending.actions,
-                            externalEffectsConfirmed = true
+                            externalEffectsConfirmed = true,
+                            actionsJson = pending.actionsJson
                         ).userMessage()
                     )
                 }
@@ -702,12 +799,17 @@ fun ManualBuilderScreen(
                             actions[index] = if (currentPicker.isSecondaryText) {
                                 action.copy(textInput = textInputState)
                             } else {
-                                when (action.actionType) {
-                                    ActionType.HTTP_REQUEST -> action.copy(url = textInputState)
-                                    ActionType.SEND_MESSAGE -> action.copy(target = textInputState)
-                                    ActionType.DIAL_NUMBER -> action.copy(target = textInputState)
-                                    ActionType.UI_AUTOMATION -> action.copy(targetText = textInputState)
-                                    else -> action
+                                if (action.v2StepId != null) {
+                                    // Recorded v2 step targets cannot be edited
+                                    action
+                                } else {
+                                    when (action.actionType) {
+                                        ActionType.HTTP_REQUEST -> action.copy(url = textInputState)
+                                        ActionType.SEND_MESSAGE -> action.copy(target = textInputState)
+                                        ActionType.DIAL_NUMBER -> action.copy(target = textInputState)
+                                        ActionType.UI_AUTOMATION -> action.copy(targetText = textInputState)
+                                        else -> action
+                                    }
                                 }
                             }
                         }
@@ -737,7 +839,12 @@ fun ManualBuilderScreen(
             }, onAppActionPicked = { pickedAction ->
                 val index = currentPicker.stepIndex
                 if (index in actions.indices) {
-                    actions[index] = pickedAction
+                    val existing = actions[index]
+                    actions[index] = if (existing.v2StepId != null) {
+                        pickedAction.copy(v2StepId = existing.v2StepId)
+                    } else {
+                        pickedAction
+                    }
                 }
                 picker = null
             })
@@ -807,6 +914,9 @@ fun Action.hasBothSelectorsForOverride(): Boolean {
                     DottedSlot(action.target?.takeIf { it.isNotBlank() } ?: "number") { onOpenPicker(ManualSlotPicker(index, ManualSlotKind.TEXT, "Phone number", action.target ?: "")) }
                 }
                 ActionType.UI_AUTOMATION -> {
+                    val isRecorded = action.v2StepId != null
+                    val isInferredIme = action.targetText == "Pressed the keyboard's Search/Send key (detected)" ||
+                        action.target == "Pressed the keyboard's Search/Send key (detected)"
                     val uiType = action.uiActionType?.trim()?.uppercase() ?: "TAP"
                     val typeLabel = when (uiType) {
                         "TYPE_TEXT" -> "Type"
@@ -814,31 +924,84 @@ fun Action.hasBothSelectorsForOverride(): Boolean {
                         "PRESS_ENTER" -> "Press Enter on"
                         else -> "Tap"
                     }
-                    DottedSlot(typeLabel) { onOpenPicker(ManualSlotPicker(index, ManualSlotKind.UI_ACTION_TYPE)) }
-                    Text(" ", fontSize = 21.sp, lineHeight = 31.5.sp, letterSpacing = (-0.2).sp, fontWeight = FontWeight.SemiBold, color = palette.tileContent)
-                    
-                    if (uiType == "TYPE_TEXT") {
-                        DottedSlot(action.textInput?.takeIf { it.isNotBlank() } ?: "text") { onOpenPicker(ManualSlotPicker(index, ManualSlotKind.TEXT, "Text to type", action.textInput ?: "", true)) }
-                        Text(" into ", fontSize = 21.sp, lineHeight = 31.5.sp, letterSpacing = (-0.2).sp, fontWeight = FontWeight.SemiBold, color = palette.tileContent)
-                    }
-                    
-                    DottedSlot(action.targetText?.takeIf { it.isNotBlank() } ?: "target") { onOpenPicker(ManualSlotPicker(index, ManualSlotKind.TEXT, "Target text", action.targetText ?: "")) }
-                    
-                    if (action.hasBothSelectorsForOverride()) {
-                        Spacer(Modifier.fillMaxWidth().height(8.dp))
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            @OptIn(ExperimentalMaterial3Api::class)
-                            FilterChip(
-                                selected = !action.preferCoordinateReplay,
-                                onClick = { onActionChange(action.copy(preferCoordinateReplay = false)) },
-                                label = { Text("Match by description") }
-                            )
-                            @OptIn(ExperimentalMaterial3Api::class)
-                            FilterChip(
-                                selected = action.preferCoordinateReplay,
-                                onClick = { onActionChange(action.copy(preferCoordinateReplay = true)) },
-                                label = { Text("Always tap this exact spot") }
-                            )
+                    if (isInferredIme) {
+                        Text(
+                            "Pressed the keyboard's Search/Send key (detected)",
+                            fontSize = 21.sp,
+                            lineHeight = 31.5.sp,
+                            letterSpacing = (-0.2).sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = palette.tileContent
+                        )
+                        RecordedLockIndicator(palette.tileContent)
+                        Spacer(Modifier.fillMaxWidth().height(4.dp))
+                        Text(
+                            "Inferred from keyboard action during recording.",
+                            fontSize = 12.sp,
+                            color = palette.tileContent.copy(alpha = 0.6f)
+                        )
+                    } else if (isRecorded) {
+                        // Action type and target element are read-only for recorded steps
+                        Text(
+                            typeLabel,
+                            fontSize = 21.sp,
+                            lineHeight = 31.5.sp,
+                            letterSpacing = (-0.2).sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = palette.tileContent
+                        )
+                        Text(" ", fontSize = 21.sp, lineHeight = 31.5.sp, letterSpacing = (-0.2).sp, fontWeight = FontWeight.SemiBold, color = palette.tileContent)
+
+                        if (uiType == "TYPE_TEXT") {
+                            // SET_TEXT textInput is editable!
+                            DottedSlot(action.textInput?.takeIf { it.isNotBlank() } ?: "text") {
+                                onOpenPicker(ManualSlotPicker(index, ManualSlotKind.TEXT, "Text to type", action.textInput ?: "", true))
+                            }
+                            Text(" into ", fontSize = 21.sp, lineHeight = 31.5.sp, letterSpacing = (-0.2).sp, fontWeight = FontWeight.SemiBold, color = palette.tileContent)
+                        }
+
+                        Text(
+                            action.recordedTargetLabel() ?: "target",
+                            fontSize = 21.sp,
+                            lineHeight = 31.5.sp,
+                            letterSpacing = (-0.2).sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = palette.tileContent
+                        )
+                        RecordedLockIndicator(palette.tileContent)
+                        Spacer(Modifier.fillMaxWidth().height(4.dp))
+                        Text(
+                            "Target element was captured during recording and cannot be edited.",
+                            fontSize = 12.sp,
+                            color = palette.tileContent.copy(alpha = 0.6f)
+                        )
+                    } else {
+                        DottedSlot(typeLabel) { onOpenPicker(ManualSlotPicker(index, ManualSlotKind.UI_ACTION_TYPE)) }
+                        Text(" ", fontSize = 21.sp, lineHeight = 31.5.sp, letterSpacing = (-0.2).sp, fontWeight = FontWeight.SemiBold, color = palette.tileContent)
+                        
+                        if (uiType == "TYPE_TEXT") {
+                            DottedSlot(action.textInput?.takeIf { it.isNotBlank() } ?: "text") { onOpenPicker(ManualSlotPicker(index, ManualSlotKind.TEXT, "Text to type", action.textInput ?: "", true)) }
+                            Text(" into ", fontSize = 21.sp, lineHeight = 31.5.sp, letterSpacing = (-0.2).sp, fontWeight = FontWeight.SemiBold, color = palette.tileContent)
+                        }
+                        
+                        DottedSlot(action.targetText?.takeIf { it.isNotBlank() } ?: "target") { onOpenPicker(ManualSlotPicker(index, ManualSlotKind.TEXT, "Target text", action.targetText ?: "")) }
+                        
+                        if (action.hasBothSelectorsForOverride()) {
+                            Spacer(Modifier.fillMaxWidth().height(8.dp))
+                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                @OptIn(ExperimentalMaterial3Api::class)
+                                FilterChip(
+                                    selected = !action.preferCoordinateReplay,
+                                    onClick = { onActionChange(action.copy(preferCoordinateReplay = false)) },
+                                    label = { Text("Match by description") }
+                                )
+                                @OptIn(ExperimentalMaterial3Api::class)
+                                FilterChip(
+                                    selected = action.preferCoordinateReplay,
+                                    onClick = { onActionChange(action.copy(preferCoordinateReplay = true)) },
+                                    label = { Text("Always tap this exact spot") }
+                                )
+                            }
                         }
                     }
                 }
@@ -859,6 +1022,27 @@ fun Action.hasBothSelectorsForOverride(): Boolean {
                 DropdownMenuItem(text = { Text("Remove") }, onClick = { menuExpanded = false; onRemove() }, enabled = totalActions > 1)
             }
         }
+    }
+}
+
+@Composable fun RecordedLockIndicator(tint: androidx.compose.ui.graphics.Color) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+        modifier = Modifier.padding(start = 6.dp)
+    ) {
+        Icon(
+            Icons.Filled.Lock,
+            contentDescription = "Recorded step target is read-only",
+            tint = tint.copy(alpha = 0.7f),
+            modifier = Modifier.size(13.dp)
+        )
+        Text(
+            "Recorded",
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Medium,
+            color = tint.copy(alpha = 0.7f)
+        )
     }
 }
 
@@ -918,6 +1102,7 @@ fun Action.hasBothSelectorsForOverride(): Boolean {
                                         intentAction = shortcut.action,
                                         url = shortcut.data,
                                         target = shortcut.shortLabel,
+                                        targetClassName = shortcut.targetClass,
                                         delayMillis = 500L
                                     )
                                 )
@@ -996,10 +1181,16 @@ private fun saveManualAutomation(
     snackbar: SnackbarHostState,
     scope: kotlinx.coroutines.CoroutineScope,
     editingAutomationId: Int = NEW_SHORTCUT_ID,
+    loadedDocument: ShortcutDocument? = null,
+    onValidationNotice: ((String?) -> Unit)? = null,
     setSaving: (Boolean) -> Unit
 ) {
     if (name.isBlank() || actions.isEmpty()) {
         scope.launch { snackbar.showSnackbar(if (name.isBlank()) "Shortcut name cannot be empty" else "Please add at least one step") }
+        return
+    }
+    if (loadedDocument is ShortcutDocument.Unreadable) {
+        scope.launch { snackbar.showSnackbar("Cannot save shortcut: existing workflow data could not be read.") }
         return
     }
     setSaving(true)
@@ -1012,7 +1203,17 @@ private fun saveManualAutomation(
                 return@launch
             }
             val colorKey = com.shortcuts.app.widget.WidgetColorKey.entries.firstOrNull { it.composeColor == color }?.name ?: "TEAL"
-            val built = ManualBuilderUtils.buildManualAutomation(name, safe.filterNotNull(), colorKey, iconKey)
+            val encodeResult = ManualBuilderUtils.safeEncodeForSave(loadedDocument, safe.filterNotNull())
+            if (encodeResult.isFailure) {
+                setSaving(false)
+                val errorMsg = encodeResult.exceptionOrNull()?.localizedMessage ?: "Invalid step edits"
+                onValidationNotice?.invoke(errorMsg)
+                snackbar.showSnackbar("Save failed: $errorMsg. Your draft has been kept.")
+                return@launch
+            }
+            onValidationNotice?.invoke(null)
+            val actionsJson = encodeResult.getOrThrow()
+            val built = ManualBuilderUtils.buildManualAutomation(name, safe.filterNotNull(), colorKey, iconKey).copy(actionsJson = actionsJson)
             // Carrying the id over turns the Room insert into a replace, so editing updates the existing
             // shortcut — and every widget already bound to that id — instead of creating a duplicate.
             val isEdit = editingAutomationId != NEW_SHORTCUT_ID

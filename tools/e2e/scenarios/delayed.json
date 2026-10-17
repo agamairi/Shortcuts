@@ -1,0 +1,11 @@
+{
+  "id": "delayed",
+  "launcher_label": "Delayed content",
+  "description": "Wait for delayed content, continue, and finish the second step.",
+  "steps": [
+    {"wait_ms": 2800},
+    {"tap": {"text": "Continue"}},
+    {"tap": {"text": "Done"}}
+  ],
+  "expect": "recorded"
+}

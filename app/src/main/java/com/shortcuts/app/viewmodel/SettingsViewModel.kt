@@ -75,13 +75,11 @@ class SettingsViewModel(
     companion object {
         fun isAccessibilityServiceEnabledFromSettingString(
             enabledServices: String?,
-            packageName: String = "com.shortcuts.app",
-            serviceClassName: String = "com.shortcuts.app.service.AutomationAccessibilityService"
+            packageName: String
         ): Boolean {
             return AccessibilityStatusChecker.isAccessibilityServiceEnabledFromSettingString(
                 enabledServices,
-                packageName,
-                serviceClassName
+                packageName
             )
         }
     }

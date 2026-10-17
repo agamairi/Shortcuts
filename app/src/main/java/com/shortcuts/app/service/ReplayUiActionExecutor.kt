@@ -21,7 +21,11 @@ internal class ReplayUiActionExecutor(
     private val sdkInt: Int = Build.VERSION.SDK_INT,
     // Resolved lazily so the framework constant is only touched on a real device.
     private val imeEnterActionId: () -> Int = {
-        AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            AccessibilityNodeInfo.AccessibilityAction.ACTION_IME_ENTER.id
+        } else {
+            AccessibilityNodeInfo.ACTION_CLICK
+        }
     }
 ) {
     fun executeLongPress(action: Action): ReplayUiActionResult {

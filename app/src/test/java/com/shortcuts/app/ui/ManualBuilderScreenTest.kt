@@ -317,4 +317,28 @@ class ManualBuilderScreenTest {
         )
         assertTrue(both.hasBothSelectorsForOverride())
     }
+
+    @Test
+    fun `preserveV2StepId preserves existing v2StepId onto picked action`() {
+        val existing = Action(actionType = ActionType.APP_INTENT, packageName = "com.old", v2StepId = "step-abc")
+        val picked = Action(actionType = ActionType.APP_INTENT, packageName = "com.new", target = "Shortcut")
+        val result = ManualBuilderUtils.preserveV2StepId(existing, picked)
+        assertEquals("step-abc", result.v2StepId)
+        assertEquals("com.new", result.packageName)
+        assertEquals("Shortcut", result.target)
+
+        val unrecorded = Action(actionType = ActionType.APP_INTENT, packageName = "com.old")
+        val resultUnrecorded = ManualBuilderUtils.preserveV2StepId(unrecorded, picked)
+        assertNull(resultUnrecorded.v2StepId)
+    }
+
+    @Test
+    fun `safeEncodeForSave falls back to ActionConverter when document is null`() {
+        val actions = listOf(Action(actionType = ActionType.SYSTEM_TOGGLE, target = "WIFI"))
+        val result = ManualBuilderUtils.safeEncodeForSave(null, actions)
+        assertTrue(result.isSuccess)
+        val json = result.getOrThrow()
+        val decoded = ActionConverter().toActionList(json)
+        assertEquals(actions, decoded)
+    }
 }

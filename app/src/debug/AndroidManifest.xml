@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application>
+        <activity
+            android:name=".debug.DebugControlActivity"
+            android:exported="true"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar" />
+
+        <service
+            android:name=".service.AutomationAccessibilityService"
+            android:label="@string/accessibility_service_label"
+            android:description="@string/accessibility_service_description" />
+    </application>
+</manifest>

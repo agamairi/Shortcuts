@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">RepeatKit Dev</string>
+    <string name="shortcut_widget_label">RepeatKit Dev</string>
+    <string name="shortcut_widget_description">RepeatKit shortcut widget for automated testing (Dev).</string>
+    <string name="accessibility_service_label">RepeatKit accessibility service (Dev)</string>
+    <string name="accessibility_service_description">RepeatKit UI automation service for debug testing (Dev).</string>
+</resources>

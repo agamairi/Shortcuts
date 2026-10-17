@@ -3,6 +3,8 @@ package com.shortcuts.app.widget
 import android.appwidget.AppWidgetManager
 import android.content.Intent
 import android.os.Bundle
+import android.util.Log
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -38,9 +40,15 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.listSaver
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -49,7 +57,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.glance.appwidget.GlanceAppWidgetManager
+import androidx.lifecycle.lifecycleScope
 import com.google.gson.Gson
+import com.shortcuts.app.R
 import com.shortcuts.app.data.AppDatabase
 import com.shortcuts.app.data.Automation
 import com.shortcuts.app.data.AutomationDao
@@ -58,9 +68,6 @@ import com.shortcuts.app.data.WidgetConfig
 import com.shortcuts.app.data.WidgetConfigDao
 import com.shortcuts.app.data.WidgetConfigSource
 import com.shortcuts.app.data.WidgetLayoutKey
-import android.util.Log
-import android.widget.Toast
-import com.shortcuts.app.R
 import com.shortcuts.app.ui.MainActivity
 import com.shortcuts.app.ui.theme.LocalShortcutsPalette
 import com.shortcuts.app.ui.theme.ShortcutsTheme
@@ -68,10 +75,6 @@ import com.shortcuts.app.ui.theme.ThemeMode
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
-import androidx.compose.runtime.produceState
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
-import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.withContext
 
 /** Configuration entry point for the one adaptive widget offered to new users. */
@@ -81,7 +84,7 @@ class ShortcutWidgetConfigActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-        setResult(RESULT_CANCELED)
+
         appWidgetId = intent?.extras?.getInt(
             AppWidgetManager.EXTRA_APPWIDGET_ID,
             AppWidgetManager.INVALID_APPWIDGET_ID
@@ -90,11 +93,21 @@ class ShortcutWidgetConfigActivity : ComponentActivity() {
                 AppWidgetManager.EXTRA_APPWIDGET_ID,
                 AppWidgetManager.INVALID_APPWIDGET_ID
             ) ?: AppWidgetManager.INVALID_APPWIDGET_ID
-        
+
+        setResult(
+            RESULT_CANCELED,
+            Intent().putExtra(AppWidgetManager.EXTRA_APPWIDGET_ID, appWidgetId)
+        )
+
         if (appWidgetId == AppWidgetManager.INVALID_APPWIDGET_ID) {
             finish()
             return
         }
+
+        val initialAutomationId = intent?.getIntExtra(
+            ShortcutWidgetPinRequest.EXTRA_AUTOMATION_ID,
+            0
+        )?.takeIf { it > 0 }
 
         val database = AppDatabase.getDatabase(this)
         val selectionStore = ShortcutWidgetSelectionStore(
@@ -104,12 +117,15 @@ class ShortcutWidgetConfigActivity : ComponentActivity() {
         val themePreferences = ThemePreferences(applicationContext)
         setContent {
             val themeMode by themePreferences.themeModeFlow.collectAsState(initial = ThemeMode.SYSTEM)
-            val shortcuts by produceState<List<Automation>?>(null, selectionStore) {
-                value = withContext(Dispatchers.IO) { selectionStore.loadShortcuts() }
+            val shortcuts by selectionStore.observeShortcuts().collectAsState(initial = null)
+            val initialConfig by produceState<WidgetConfig?>(initialValue = null, appWidgetId) {
+                value = withContext(Dispatchers.IO) { selectionStore.loadInitialConfig(appWidgetId) }
             }
             ShortcutsTheme(mode = themeMode) {
                 ShortcutWidgetConfigScreen(
                     shortcuts = shortcuts,
+                    initialConfig = initialConfig,
+                    initialAutomationId = initialAutomationId,
                     onBack = ::finish,
                     onCreateShortcut = ::openManualBuilder,
                     onPlaceWidget = { selected, layout -> saveConfig(selectionStore, selected, layout) }
@@ -165,23 +181,58 @@ class ShortcutWidgetConfigActivity : ComponentActivity() {
             Intent(this, MainActivity::class.java)
                 .putExtra(MainActivity.EXTRA_START_DESTINATION, "manual_builder")
         )
-        finish()
     }
 }
 
 @Composable
 private fun ShortcutWidgetConfigScreen(
     shortcuts: List<Automation>?,
+    initialConfig: WidgetConfig?,
+    initialAutomationId: Int?,
     onBack: () -> Unit,
     onCreateShortcut: () -> Unit,
     onPlaceWidget: (List<Automation>, WidgetLayoutKey) -> Unit
 ) {
     val palette = LocalShortcutsPalette.current
-    var selectedIds by remember(shortcuts) {
-        mutableStateOf(shortcuts.orEmpty().take(MAX_SHORTCUTS_PER_WIDGET).map { it.id }.toSet())
+
+    val initialSelection = remember(shortcuts, initialConfig, initialAutomationId) {
+        if (shortcuts != null) {
+            computeInitialSelection(initialConfig, initialAutomationId, shortcuts)
+        } else null
     }
-    val selectedShortcuts = shortcuts.orEmpty().filter { it.id in selectedIds }
-    var selectedLayout by remember { mutableStateOf(WidgetLayoutKey.AUTO) }
+
+    val idListSaver = remember {
+        listSaver<List<Int>, Int>(
+            save = { it },
+            restore = { it }
+        )
+    }
+
+    var selectedIds by rememberSaveable(
+        stateSaver = idListSaver
+    ) {
+        mutableStateOf(initialSelection?.selectedIds ?: emptyList())
+    }
+
+    var selectedLayoutName by rememberSaveable {
+        mutableStateOf(initialSelection?.layout?.name ?: WidgetLayoutKey.AUTO.name)
+    }
+    val selectedLayout = WidgetLayoutKey.fromKeyOrAuto(selectedLayoutName)
+
+    var hasInitializedSelection by rememberSaveable { mutableStateOf(false) }
+
+    LaunchedEffect(initialSelection) {
+        if (!hasInitializedSelection && initialSelection != null) {
+            selectedIds = initialSelection.selectedIds
+            selectedLayoutName = initialSelection.layout.name
+            hasInitializedSelection = true
+        }
+    }
+
+    val shortcutsById = remember(shortcuts) { shortcuts.orEmpty().associateBy { it.id } }
+    val selectedShortcuts = remember(selectedIds, shortcutsById) {
+        selectedIds.mapNotNull { shortcutsById[it] }
+    }
 
     Column(
         Modifier
@@ -229,16 +280,16 @@ private fun ShortcutWidgetConfigScreen(
                         WidgetPreviewTopRow(
                             shortcuts = selectedShortcuts,
                             selectedLayout = selectedLayout,
-                            onSelectLayout = { selectedLayout = it }
+                            onSelectLayout = { selectedLayoutName = it.name }
                         )
                         ScrollingListPreview(
                             shortcuts = selectedShortcuts,
                             selectedLayout = selectedLayout,
-                            onSelectLayout = { selectedLayout = it }
+                            onSelectLayout = { selectedLayoutName = it.name }
                         )
                         LayoutModeRow(
                             selectedLayout = selectedLayout,
-                            onSelectLayout = { selectedLayout = it }
+                            onSelectLayout = { selectedLayoutName = it.name }
                         )
                     }
                     ShortcutSelectionRow(
@@ -246,8 +297,19 @@ private fun ShortcutWidgetConfigScreen(
                         selectedIds = selectedIds,
                         onToggle = { shortcut ->
                             selectedIds = when {
-                                shortcut.id in selectedIds -> selectedIds - shortcut.id
-                                selectedIds.size < MAX_SHORTCUTS_PER_WIDGET -> selectedIds + shortcut.id
+                                selectedLayout == WidgetLayoutKey.SINGLE -> {
+                                    if (selectedIds == listOf(shortcut.id)) {
+                                        emptyList()
+                                    } else {
+                                        listOf(shortcut.id)
+                                    }
+                                }
+                                shortcut.id in selectedIds -> {
+                                    selectedIds - shortcut.id
+                                }
+                                selectedIds.size < MAX_SHORTCUTS_PER_WIDGET -> {
+                                    selectedIds + shortcut.id
+                                }
                                 else -> selectedIds
                             }
                         }
@@ -384,7 +446,7 @@ private fun PreviewListRow(shortcut: Automation) {
 @Composable
 private fun ShortcutSelectionRow(
     shortcuts: List<Automation>,
-    selectedIds: Set<Int>,
+    selectedIds: List<Int>,
     onToggle: (Automation) -> Unit
 ) {
     val palette = LocalShortcutsPalette.current
@@ -507,8 +569,41 @@ private const val MAX_SHORTCUTS_PER_WIDGET = 6
 private fun Automation.tileColor(): androidx.compose.ui.graphics.Color = resolveWidgetColor(colorKey)
 
 private fun Automation.stepLabel(): String {
-    val count = runCatching { com.shortcuts.app.data.ActionConverter().toActionList(actionsJson).size }.getOrDefault(0)
+    val count = com.shortcuts.app.data.ShortcutSteps.stepCount(actionsJson)
     return if (count == 1) "1 step" else "$count steps"
+}
+
+data class InitialConfigSelection(
+    val selectedIds: List<Int>,
+    val layout: WidgetLayoutKey
+)
+
+fun computeInitialSelection(
+    existingConfig: WidgetConfig?,
+    intentAutomationId: Int?,
+    availableShortcuts: List<Automation>
+): InitialConfigSelection {
+    val availableIds = availableShortcuts.map { it.id }.toSet()
+    if (existingConfig != null) {
+        val existingIds = WidgetConfigParser.automationIds(existingConfig.automationIdsJson)
+            .filter { it in availableIds }
+        if (existingIds.isNotEmpty()) {
+            return InitialConfigSelection(
+                selectedIds = existingIds,
+                layout = WidgetLayoutKey.fromKeyOrAuto(existingConfig.layoutKey)
+            )
+        }
+    }
+    if (intentAutomationId != null && intentAutomationId in availableIds) {
+        return InitialConfigSelection(
+            selectedIds = listOf(intentAutomationId),
+            layout = WidgetLayoutKey.AUTO
+        )
+    }
+    return InitialConfigSelection(
+        selectedIds = emptyList(),
+        layout = WidgetLayoutKey.AUTO
+    )
 }
 
 /** Coordinates the real shortcut query and unified widget binding without involving Android UI. */
@@ -518,6 +613,12 @@ internal class ShortcutWidgetSelectionStore(
     private val gson: Gson = Gson()
 ) {
     suspend fun loadShortcuts(): List<Automation> = automationDao.getAllAutomations().first()
+
+    suspend fun loadInitialConfig(widgetId: Int): WidgetConfig? =
+        widgetConfigDao.getConfig(widgetId, WidgetConfigSource.UNIFIED.name)
+
+    fun observeShortcuts(): kotlinx.coroutines.flow.Flow<List<Automation>> =
+        automationDao.getAllAutomations()
 
     suspend fun saveSelection(
         widgetId: Int,

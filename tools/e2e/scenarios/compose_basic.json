@@ -1,0 +1,36 @@
+{
+  "id": "compose_basic",
+  "launcher_label": "Compose basic",
+  "description": "Exercise semantic, descriptive, unlabeled, toggle, and long-press Compose controls.",
+  "steps": [
+    {
+      "tap": {
+        "text": "Save"
+      }
+    },
+    {
+      "tap": {
+        "desc": "Settings gear"
+      }
+    },
+    {
+      "tap": {
+        "unlabeled": true,
+        "below": {
+          "desc": "Settings gear"
+        }
+      }
+    },
+    {
+      "tap": {
+        "text": "Wi-Fi"
+      }
+    },
+    {
+      "long_press": {
+        "text": "Hold me"
+      }
+    }
+  ],
+  "expect": "recorded"
+}
