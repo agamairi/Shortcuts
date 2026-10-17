@@ -310,6 +310,39 @@ class RecorderSessionOwnerTest {
     }
 
     @Test
+    fun `an app that pops up on its own after Home does not steal the launch step`() {
+        val recorder = RecorderSessionOwner()
+        recorder.start()
+
+        recorder.processEvent(appChangeEvent(launcherPackage), myPackage, launcherPackage)
+        // An overlay app (the owner's "Dynamic Island") opens its own activity when Home shows.
+        recorder.processEvent(appChangeEvent("com.pryshedko.mtisland"), myPackage, launcherPackage)
+        recorder.processEvent(appChangeEvent("com.duolingo"), myPackage, launcherPackage)
+        recorder.processEvent(clickEvent().copy(packageName = "com.duolingo", sourceText = "Start"), myPackage, launcherPackage)
+
+        val actions = recorder.recordedActions.value
+        assertEquals(2, actions.size)
+        assertEquals(ActionType.APP_INTENT, actions.first().actionType)
+        assertEquals("com.duolingo", actions.first().packageName)
+        assertEquals("Start", actions.last().targetText)
+    }
+
+    @Test
+    fun `switching apps after interacting keeps the original launch step`() {
+        val recorder = RecorderSessionOwner()
+        recorder.start()
+
+        recorder.processEvent(appChangeEvent(launcherPackage), myPackage, launcherPackage)
+        recorder.processEvent(appChangeEvent("com.duolingo"), myPackage, launcherPackage)
+        recorder.processEvent(clickEvent().copy(packageName = "com.duolingo", sourceText = "Share"), myPackage, launcherPackage)
+        recorder.processEvent(appChangeEvent("com.google.android.apps.messaging"), myPackage, launcherPackage)
+
+        val actions = recorder.recordedActions.value
+        assertEquals("com.duolingo", actions.first().packageName)
+        assertEquals(2, actions.size)
+    }
+
+    @Test
     fun `repeated window changes within an app launched from home do not create an extra app intent`() {
         val recorder = RecorderSessionOwner()
         recorder.start()

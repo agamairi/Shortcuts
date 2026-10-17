@@ -18,6 +18,11 @@ import android.view.inputmethod.InputMethodManager
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import com.shortcuts.app.data.Action
+import com.shortcuts.app.service.capture.CaptureSuppressionGate
+import com.shortcuts.app.service.capture.PassiveCaptureEvent
+import com.shortcuts.app.service.capture.RecorderCaptureMode
+import com.shortcuts.app.service.capture.RecorderCaptureModePreferences
+import com.shortcuts.app.service.capture.TouchCaptureOverlay
 import com.shortcuts.app.util.AccessibilityStatusChecker
 import kotlinx.coroutines.flow.StateFlow
 import kotlin.collections.ArrayDeque
@@ -99,6 +104,8 @@ object AutomationRecorder {
     private var usesPersistentStore = false
     private var disconnectMonitor: AccessibilityServiceDisconnectMonitor? = null
     private var launcherPackage: String? = null
+    @Volatile private var recordingCaptureMode = RecorderCaptureMode.PASSIVE
+    @Volatile private var captureSuppressionGate = CaptureSuppressionGate(overlayMode = false)
 
     val isRecording: StateFlow<Boolean> = sessionOwner.isRecording
     val recordedActions = sessionOwner.recordedActions
@@ -110,15 +117,24 @@ object AutomationRecorder {
     private val silentTapSuggestionTracker = SilentTapSuggestionTracker()
     private val mainHandler = Handler(Looper.getMainLooper())
 
+    init {
+        sessionOwner.onTextCommitListener = { event ->
+            com.shortcuts.app.automation.android.capture.V2CaptureBridge.onTextCommit(event)
+        }
+    }
+
     fun restoreSession(context: Context) {
         configureStore(context)
+        cacheCaptureMode(context)
         sessionOwner.restore()
+        com.shortcuts.app.automation.android.capture.V2CaptureBridge.restore(context)
         if (isRecording.value) {
             silentTapSuggestionTracker.onRecordingStarted(
                 startedAtMillis = android.os.SystemClock.uptimeMillis(),
                 initialWindowPackage = context.packageName
             )
             RecordingHudOverlay.show(AutomationAccessibilityService.instance, recordedActions.value.size)
+            TouchCaptureOverlay.show(AutomationAccessibilityService.instance, isOverlayCaptureMode())
         } else {
             silentTapSuggestionTracker.onRecordingStopped()
             RecordingHudOverlay.hide()
@@ -131,6 +147,9 @@ object AutomationRecorder {
         cancelPendingTextFinalizer()
         sessionOwner.replaceStore(InMemoryRecorderSessionStore())
         sessionOwner.setRecordingForTest(isRecording)
+        com.shortcuts.app.automation.android.capture.V2CaptureBridge.clear()
+        recordingCaptureMode = RecorderCaptureMode.PASSIVE
+        captureSuppressionGate = CaptureSuppressionGate(overlayMode = false)
         resetSilentTapSuggestionTracking(isRecording)
     }
 
@@ -140,12 +159,15 @@ object AutomationRecorder {
         cancelPendingScrollFinalizer()
         cancelPendingTextFinalizer()
         Log.d(TAG, "Starting recording")
+        cacheCaptureMode(context)
         sessionOwner.start()
+        com.shortcuts.app.automation.android.capture.V2CaptureBridge.start(context)
         resetSilentTapSuggestionTracking(
             isRecording = true,
             initialWindowPackage = context.packageName
         )
         RecordingHudOverlay.show(AutomationAccessibilityService.instance, recordedActions.value.size)
+        TouchCaptureOverlay.show(AutomationAccessibilityService.instance, isOverlayCaptureMode())
         RecorderSessionService.start(context)
     }
 
@@ -159,8 +181,10 @@ object AutomationRecorder {
         // Fix #2: Dismiss any active TapMarkOverlay so it doesn't stay up blocking input
         // after recording stops (the overlay would otherwise wait for a tap or its 20s timeout).
         TapMarkOverlay.disarm()
+        TouchCaptureOverlay.hide()
         Log.d(TAG, "Stopping recording")
         sessionOwner.stop()
+        com.shortcuts.app.automation.android.capture.V2CaptureBridge.stop()
         RecordingHudOverlay.hide()
         silentTapSuggestionTracker.onRecordingStopped()
         RecorderSessionService.stop(context, reason)
@@ -187,6 +211,7 @@ object AutomationRecorder {
                 if (isRecording.value) {
                     Log.w(TAG, "Accessibility service remained disabled; stopping recording")
                     TapMarkOverlay.disarm()
+                    TouchCaptureOverlay.hide()
                     cancelPendingTextFinalizer()
                     sessionOwner.stop()
                     RecordingHudOverlay.hide()
@@ -206,6 +231,7 @@ object AutomationRecorder {
         disconnectMonitor?.onServiceConnected()
         if (isRecording.value) {
             RecordingHudOverlay.show(AutomationAccessibilityService.instance, recordedActions.value.size)
+            TouchCaptureOverlay.show(AutomationAccessibilityService.instance, isOverlayCaptureMode())
         }
     }
 
@@ -214,8 +240,10 @@ object AutomationRecorder {
         cancelPendingScrollFinalizer()
         cancelPendingTextFinalizer()
         TapMarkOverlay.disarm()
+        TouchCaptureOverlay.hide()
         RecordingHudOverlay.hide()
         sessionOwner.clear()
+        com.shortcuts.app.automation.android.capture.V2CaptureBridge.clear()
         silentTapSuggestionTracker.onRecordingStopped()
     }
 
@@ -228,9 +256,14 @@ object AutomationRecorder {
 
         configureStore(context)
         val eventType = classifyAccessibilityEventType(event.eventType) ?: return
-
         val packageName = event.packageName?.toString() ?: ""
         val transientPackages = resolveTransientPackages(context)
+        if (!captureSuppressionGate.shouldProcess(
+                event = eventType.toPassiveCaptureEvent(),
+                eventUptimeMs = event.eventTime,
+                fromActiveIme = eventType == RecorderEventType.CLICK && packageName in transientPackages
+            )
+        ) return
 
         // Most apps send TYPE_VIEW_TEXT_CHANGED. Some heavy autocomplete surfaces (notably
         // Chrome's omnibox) do not, but do send focus/scroll/content callbacks while their live
@@ -249,7 +282,8 @@ object AutomationRecorder {
         }
 
         if (eventType == RecorderEventType.CLICK && packageName in transientPackages) {
-            if (isImeSubmitEvent(event)) {
+            val imeSubmitLabel = resolveImeSubmitLabel(event)
+            if (imeSubmitLabel != null) {
                 cancelPendingTextFinalizer()
                 sessionOwner.processEvent(
                     emptyRecorderEvent(RecorderEventType.PRESS_ENTER, packageName, event.eventTime),
@@ -257,9 +291,20 @@ object AutomationRecorder {
                     resolveLauncherPackage(context),
                     transientPackages
                 )
+                com.shortcuts.app.automation.android.capture.V2CaptureBridge.onImeAction(
+                    label = imeSubmitLabel,
+                    uptimeMs = event.eventTime
+                )
                 updateRecordingHud()
             }
             // Never inspect ordinary keyboard keys or turn them into taps.
+            return
+        }
+
+        if (eventType == RecorderEventType.APP_CHANGE && !isFromApplicationWindow(event, context)) {
+            // Floating windows from other apps (e.g. a "Dynamic Island" overlay, chat heads,
+            // system dialogs drawn over apps) emit window-state events too. They are not the app
+            // the user switched to, and treating them as one recorded a bogus "open app" step.
             return
         }
 
@@ -278,6 +323,11 @@ object AutomationRecorder {
                 context.packageName,
                 resolveLauncherPackage(context),
                 transientPackages
+            )
+            com.shortcuts.app.automation.android.capture.V2CaptureBridge.onAppSwitch(
+                toPackage = packageName,
+                className = event.className,
+                uptimeMs = event.eventTime
             )
             updateRecordingHud()
             if (isRecording.value && silentTapSuggestionTracker.shouldSuggestForWindowStateChange(
@@ -404,6 +454,21 @@ object AutomationRecorder {
         }
     }
 
+    /**
+     * True when the event's window is an ordinary application window, or when the window can't
+     * be identified (keep today's behaviour rather than dropping a real app switch).
+     */
+    private fun isFromApplicationWindow(event: AccessibilityEvent, context: Context): Boolean {
+        val service = context as? AutomationAccessibilityService
+            ?: AutomationAccessibilityService.instance
+            ?: return true
+        val windowId = event.windowId
+        if (windowId < 0) return true
+        val window = runCatching { service.windows.orEmpty().firstOrNull { it.id == windowId } }.getOrNull()
+            ?: return true
+        return window.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION
+    }
+
     internal fun classifyAccessibilityEventType(eventType: Int): RecorderEventType? = when (eventType) {
         AccessibilityEvent.TYPE_VIEW_CLICKED -> RecorderEventType.CLICK
         AccessibilityEvent.TYPE_VIEW_LONG_CLICKED -> RecorderEventType.LONG_PRESS
@@ -416,11 +481,25 @@ object AutomationRecorder {
         else -> null
     }
 
+    private fun RecorderEventType.toPassiveCaptureEvent(): PassiveCaptureEvent = when (this) {
+        RecorderEventType.CLICK -> PassiveCaptureEvent.CLICK
+        RecorderEventType.LONG_PRESS -> PassiveCaptureEvent.LONG_CLICK
+        RecorderEventType.SCROLL -> PassiveCaptureEvent.SCROLL
+        RecorderEventType.TEXT_CHANGE -> PassiveCaptureEvent.TEXT
+        RecorderEventType.FOCUS -> PassiveCaptureEvent.FOCUS
+        RecorderEventType.PRESS_ENTER -> PassiveCaptureEvent.IME_SUBMIT
+        RecorderEventType.APP_CHANGE, RecorderEventType.CONTENT_CHANGE, RecorderEventType.SELECTION_CHANGE -> PassiveCaptureEvent.WINDOW
+    }
+
     /** Records a physical Enter key without consuming it, so the foreground app still receives it. */
     fun onKeyEvent(event: KeyEvent, context: Context, activePackageName: String?): Boolean {
         if (!isRecording.value || activePackageName == context.packageName ||
-            event.action != KeyEvent.ACTION_UP || !isEnterKey(event.keyCode)
+            event.action != KeyEvent.ACTION_UP
         ) {
+            return false
+        }
+        com.shortcuts.app.automation.android.capture.V2CaptureBridge.onKeyEvent(event)
+        if (!isEnterKey(event.keyCode)) {
             return false
         }
         cancelPendingTextFinalizer()
@@ -434,6 +513,10 @@ object AutomationRecorder {
             resolveLauncherPackage(context),
             resolveTransientPackages(context)
         )
+        com.shortcuts.app.automation.android.capture.V2CaptureBridge.onImeAction(
+            label = null,
+            uptimeMs = event.eventTime
+        )
         updateRecordingHud()
         return false
     }
@@ -446,6 +529,26 @@ object AutomationRecorder {
     ) {
         sessionOwner.processEvent(event, myPackageName, launcherPackage, transientPackages)
     }
+
+    /** The overlay uses this rather than appending an Action so owner-level app/text rules remain intact. */
+    fun recordCapturedGesture(event: RecorderEvent) {
+        val service = AutomationAccessibilityService.instance ?: return
+        sessionOwner.processEvent(event, service.packageName, resolveLauncherPackage(service), resolveTransientPackages(service))
+        updateRecordingHud()
+        when (event.eventType) {
+            RecorderEventType.CLICK, RecorderEventType.LONG_PRESS -> {
+                silentTapSuggestionTracker.recordCapturedClick(event.occurredAtMillis)
+                cancelPendingTextFinalizer()
+            }
+            RecorderEventType.SCROLL -> scheduleScrollFinalizer()
+            else -> Unit
+        }
+    }
+
+    /** Relay lifecycle callbacks use uptime to align with [AccessibilityEvent.eventTime]. */
+    fun onCaptureRelayStarted(uptimeMs: Long) = captureSuppressionGate.onRelayStarted(uptimeMs)
+
+    fun onCaptureRelayFinished(uptimeMs: Long) = captureSuppressionGate.onRelayFinished(uptimeMs)
 
     /**
      * Appends a manually-marked tap [Action] to the active recording.
@@ -473,6 +576,13 @@ object AutomationRecorder {
             silentTapSuggestionTracker.onRecordingStopped()
         }
     }
+
+    private fun cacheCaptureMode(context: Context) {
+        recordingCaptureMode = RecorderCaptureModePreferences.mode(context)
+        captureSuppressionGate = CaptureSuppressionGate(recordingCaptureMode == RecorderCaptureMode.OVERLAY)
+    }
+
+    private fun isOverlayCaptureMode(): Boolean = recordingCaptureMode == RecorderCaptureMode.OVERLAY
 
     private fun updateRecordingHud() {
         if (isRecording.value) RecordingHudOverlay.update(recordedActions.value.size)
@@ -516,36 +626,32 @@ object AutomationRecorder {
     }
 
     /**
-     * `resolveActivity(homeIntent, MATCH_DEFAULT_ONLY)` (the old, sole strategy here) can return
-     * the platform's generic "android" resolver-stub package instead of the real launcher when
-     * Home resolution is ambiguous to it — confirmed on a real device (Pixel 6a), where it
-     * silently broke every downstream comparison that depends on the launcher's real package
-     * name. `queryIntentActivities` with the same `MATCH_DEFAULT_ONLY` flag only returns
-     * activities that actually declare a `CATEGORY_HOME` + `CATEGORY_DEFAULT` intent filter — the
-     * synthetic "android" resolver stub is not itself such an activity, so it does not appear
-     * here even in the ambiguous case. (`RoleManager.getRoleHolders` would be the most
-     * authoritative source, but it is a privileged/system API not present in the public SDK — a
-     * normal app cannot call it, even though `adb shell dumpsys role` can.)
+     * The user's DEFAULT home app is the launcher. `resolveActivity(home, MATCH_DEFAULT_ONLY)`
+     * answers exactly that when a default is set, which is the normal case. Only when no default
+     * exists does it return the platform's "android" chooser stub; then fall back to the first
+     * installed home app. Taking the first `queryIntentActivities` result unconditionally was
+     * wrong on phones with several launchers installed (the owner's Pixel has four): it could pick
+     * a launcher the user never uses, so opening an app from the real home screen was never
+     * recorded as an app-launch step. Requires the HOME `<queries>` entry in the manifest.
      */
     private fun resolveLauncherPackageViaResolveActivity(context: Context): String? {
         val homeIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
         val packageManager = context.applicationContext.packageManager
+        val default = runCatching {
+            packageManager.resolveActivity(homeIntent, PackageManager.MATCH_DEFAULT_ONLY)
+                ?.activityInfo
+                ?.packageName
+        }.getOrNull()
+        if (default != null && default != "android" && default != context.packageName) return default
+
         val candidates = try {
             packageManager.queryIntentActivities(homeIntent, PackageManager.MATCH_DEFAULT_ONLY)
         } catch (_: Exception) {
             emptyList()
         }
-        val fromQuery = candidates
+        return candidates
             .mapNotNull { it.activityInfo?.packageName }
-            .firstOrNull { it != "android" && it != context.packageName }
-        if (fromQuery != null) return fromQuery
-
-        // Fall back to resolveActivity only if the query came back empty — still guard against
-        // the known-bad synthetic "android" result rather than caching it as if it were real.
-        return packageManager.resolveActivity(homeIntent, PackageManager.MATCH_DEFAULT_ONLY)
-            ?.activityInfo
-            ?.packageName
-            ?.takeUnless { it == "android" }
+            .firstOrNull { it != "android" && it != context.packageName && it != "com.android.settings" }
     }
 
     /** The active IME is resolved dynamically because keyboard package names vary by device. */
@@ -710,7 +816,7 @@ object AutomationRecorder {
     internal fun isEnterKey(keyCode: Int): Boolean =
         keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
 
-    private fun isImeSubmitEvent(event: AccessibilityEvent): Boolean {
+    private fun resolveImeSubmitLabel(event: AccessibilityEvent): String? {
         val source = event.source
         val labels = event.text.map { it.toString() } + listOfNotNull(
             event.contentDescription?.toString(),
@@ -718,10 +824,13 @@ object AutomationRecorder {
             source?.contentDescription?.toString()
         )
         source?.recycle()
-        return labels.any { label ->
+        return labels.firstOrNull { label ->
             label.trim().lowercase() in setOf("enter", "go", "search", "send", "done", "next")
         }
     }
+
+    private fun isImeSubmitEvent(event: AccessibilityEvent): Boolean =
+        resolveImeSubmitLabel(event) != null
 
     private const val SCROLL_QUIET_PERIOD_MS = 250L
     private const val TEXT_QUIET_PERIOD_MS = 400L

@@ -14,9 +14,13 @@ import androidx.annotation.VisibleForTesting
 import androidx.core.os.bundleOf
 import com.shortcuts.app.data.Action
 import com.shortcuts.app.data.ActionType
+import com.shortcuts.app.service.capture.TouchCaptureOverlay
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
+import com.shortcuts.app.automation.android.AccessibilitySnapshotAdapter
+import com.shortcuts.app.automation.android.EngineV2
+import com.shortcuts.app.automation.android.replay.AndroidUiEventHub
 import java.util.Collections
 import java.util.IdentityHashMap
 import kotlin.math.abs
@@ -149,6 +153,7 @@ open class AutomationAccessibilityService : AccessibilityService() {
         configuredInfo.flags = AccessibilityServiceConfiguration.requiredFlags(configuredInfo.flags)
         serviceInfo = configuredInfo
         instance = this
+        EngineV2.snapshotSource = AccessibilitySnapshotAdapter(this)
         AutomationRecorder.onAccessibilityServiceConnected()
         Log.d(TAG, "AutomationAccessibilityService connected with flags=${configuredInfo.flags}")
     }
@@ -158,7 +163,10 @@ open class AutomationAccessibilityService : AccessibilityService() {
         super.onDestroy()
         if (wasConnectedInstance) {
             RecordingHudOverlay.hide()
+            TouchCaptureOverlay.hide()
             instance = null
+            EngineV2.snapshotSource = null
+            AndroidUiEventHub.onDisconnected()
             AutomationRecorder.stopForAccessibilityDisconnect(this)
         }
         Log.d(TAG, "AutomationAccessibilityService destroyed")
@@ -166,6 +174,10 @@ open class AutomationAccessibilityService : AccessibilityService() {
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event != null) {
+            if (event.eventType == AccessibilityEvent.TYPE_WINDOWS_CHANGED || event.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
+                TouchCaptureOverlay.onWindowsChanged(this)
+            }
+            AndroidUiEventHub.onAccessibilityEvent(event)
             AutomationRecorder.onAccessibilityEvent(event, this)
             lastEventTimeMs = System.currentTimeMillis()
         }

@@ -7,12 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **Shortcut safety and preflight for Engine v2.** `ShortcutRunner` and `ShortcutRunSafety` now inspect version 2 workflows via `WorkflowCodec`. Screen steps requiring accessibility are verified prior to admission, and irreversible screen steps properly request user confirmation.
+- **Recording now catches every tap.** While recording, RepeatKit briefly holds each touch, notes exactly what you tapped, and passes it on to the app — so taps in apps built with Compose, Flutter or web views are no longer silently lost. Scrolling lists move once you lift your finger.
+
 ### Added
+- **Engine v2 replay integration and Android adapters.** Replays version 2 workflows with strict window selection, postcondition verification, and direct gesture/semantic dispatch through the accessibility subsystem. Unreleased v2 workflows branch to the new replay runtime while legacy shortcuts continue running through the existing execution engine. Includes deterministic app launch flags that reset target apps to their root screen, eliminating stale back stack resumes. Debug builds capture sanitized execution trace logs to `filesDir/debug/last_trace.jsonl`.
+- **Engine v2 recording bridge.** Recording now simultaneously compiles resilient Engine v2 workflows alongside standard recordings. Each tap, long-press, swipe, text edit, keyboard submission, app switch, and navigation action captures structural UI selectors and screen fingerprints before execution. When Engine v2 is enabled, newly recorded shortcuts save in the richer v2 format while retaining fallback to standard recordings if steps are modified.
+- **Side-by-side debug automation control.** The debug APK now installs as `RepeatKit Dev` with
+  package ID `com.shortcuts.app.dev`, and an adb-only control activity can record, save, list,
+  delete, dump, and run shortcuts while writing machine-readable receipts under private debug
+  files. This control surface is excluded from release builds.
 - **Live recording feedback without blocking the app underneath.** A small recording HUD now shows the current captured-step count while taps, scrolling, and keyboard input continue to go directly to the foreground app.
 - **App shortcuts discovery.** Picking an app in the builder now also offers its long-press shortcuts, so you can start Chrome straight into a new incognito tab.
 - **Recorder documentation update.** Updated `okf-docs/recorder.md` to detail `TapMarkOverlay` and `MarkTapReceiver` and document the Mark-a-tap overlay fallback mechanism alongside the passive accessibility event capture path.
 
 ### Fixed
+- **Accessibility detection now follows the installed package.** The dev build no longer checks
+  the release package name when deciding whether its own accessibility service is enabled.
+- **Capture-and-relay recording now stays out of RepeatKit and system screens, while preserving fast follow-up taps and keyboard actions.** The recorder uses the installed app's actual package (including the Dev build), only filters semantic callbacks around its own relays, and keeps normal long presses from timing out early.
 - **App-launch recording collapse is no longer silently disabled on some devices.** The mechanism that detects the launcher package could permanently fail silently on some devices, disabling the "open app" step collapse entirely with no retry. It now retries until successful, and logs a warning if it ever fails.
 - **Recorded shortcuts now reflect what was actually done.** Typing was recorded as one bogus step per character, cursor-selection noise looked like extra edits, Enter and long-press were lost, and a launcher “Home” tap could survive beside the real app launch. The recorder now saves one final full-text step per field-editing session, records explicit Enter and long-press steps, ignores selection-only events, and removes the full launcher-tap burst when it resolves to opening an app.
 - **Replay now tells you exactly when and where it could not continue.** Recorded long presses and Enter submissions are replayed alongside taps, typing, and scrolling; unsupported recorded screen actions now report a clear error instead of being ignored. When a replay stops or only partly completes, RepeatKit shows a non-blocking bottom pill with the failed step and reason—even when launched from a home-screen widget—while keeping a notification fallback if Accessibility Service is unavailable.

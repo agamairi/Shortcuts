@@ -31,6 +31,8 @@ import org.junit.Test
 
 class SettingsViewModelTest {
 
+    private val packageName = "com.shortcuts.app"
+
     @Test
     fun `theme mode is exposed and updated through the view model`() = runTest(StandardTestDispatcher()) {
         // Deliberately no real DataStore here: spinning one up inside the ViewModel test leaked
@@ -90,21 +92,23 @@ class SettingsViewModelTest {
 
     @Test
     fun `isAccessibilityServiceEnabledFromSettingString with null or empty returns false`() {
-        assertFalse(SettingsViewModel.isAccessibilityServiceEnabledFromSettingString(null))
-        assertFalse(SettingsViewModel.isAccessibilityServiceEnabledFromSettingString(""))
-        assertFalse(SettingsViewModel.isAccessibilityServiceEnabledFromSettingString("   "))
+        assertFalse(SettingsViewModel.isAccessibilityServiceEnabledFromSettingString(null, packageName))
+        assertFalse(SettingsViewModel.isAccessibilityServiceEnabledFromSettingString("", packageName))
+        assertFalse(SettingsViewModel.isAccessibilityServiceEnabledFromSettingString("   ", packageName))
     }
 
     @Test
     fun `isAccessibilityServiceEnabledFromSettingString with target service returns true`() {
         assertTrue(
             SettingsViewModel.isAccessibilityServiceEnabledFromSettingString(
-                "com.shortcuts.app/.service.AutomationAccessibilityService"
+                "com.shortcuts.app/.service.AutomationAccessibilityService",
+                packageName
             )
         )
         assertTrue(
             SettingsViewModel.isAccessibilityServiceEnabledFromSettingString(
-                "com.shortcuts.app/com.shortcuts.app.service.AutomationAccessibilityService"
+                "com.shortcuts.app/com.shortcuts.app.service.AutomationAccessibilityService",
+                packageName
             )
         )
     }
@@ -113,7 +117,8 @@ class SettingsViewModelTest {
     fun `isAccessibilityServiceEnabledFromSettingString with other service returns false`() {
         assertFalse(
             SettingsViewModel.isAccessibilityServiceEnabledFromSettingString(
-                "com.other.app/.OtherAccessibilityService"
+                "com.other.app/.OtherAccessibilityService",
+                packageName
             )
         )
     }
@@ -122,17 +127,40 @@ class SettingsViewModelTest {
     fun `isAccessibilityServiceEnabledFromSettingString with multiple services containing target returns true`() {
         val settingString = "com.other.app/.OtherService:com.shortcuts.app/.service.AutomationAccessibilityService"
         assertTrue(
-            SettingsViewModel.isAccessibilityServiceEnabledFromSettingString(settingString)
+            SettingsViewModel.isAccessibilityServiceEnabledFromSettingString(settingString, packageName)
         )
     }
 
     @Test
     fun `isAccessibilityServiceEnabledFromSettingString with malformed string returns false`() {
         assertFalse(
-            SettingsViewModel.isAccessibilityServiceEnabledFromSettingString("malformed_service_string_without_slash")
+            SettingsViewModel.isAccessibilityServiceEnabledFromSettingString(
+                "malformed_service_string_without_slash",
+                packageName
+            )
         )
         assertFalse(
-            SettingsViewModel.isAccessibilityServiceEnabledFromSettingString("com.shortcuts.app.service.AutomationAccessibilityService")
+            SettingsViewModel.isAccessibilityServiceEnabledFromSettingString(
+                "com.shortcuts.app.service.AutomationAccessibilityService",
+                packageName
+            )
+        )
+    }
+
+    @Test
+    fun `isAccessibilityServiceEnabledFromSettingString distinguishes the dev build from the normal install`() {
+        val devOnly = "com.shortcuts.app.dev/com.shortcuts.app.service.AutomationAccessibilityService"
+        assertTrue(
+            SettingsViewModel.isAccessibilityServiceEnabledFromSettingString(devOnly, "com.shortcuts.app.dev")
+        )
+        assertFalse(
+            SettingsViewModel.isAccessibilityServiceEnabledFromSettingString(devOnly, "com.shortcuts.app")
+        )
+        assertFalse(
+            SettingsViewModel.isAccessibilityServiceEnabledFromSettingString(
+                "com.shortcuts.app/com.shortcuts.app.service.AutomationAccessibilityService",
+                "com.shortcuts.app.dev"
+            )
         )
     }
 }

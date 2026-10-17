@@ -102,7 +102,8 @@ class AccessibilityServiceDisconnectMonitorTest {
             monitor.onServiceDestroyed(
                 isAccessibilityEnabled = {
                     AccessibilityStatusChecker.isAccessibilityServiceEnabledFromSettingString(
-                        enabledServices
+                        enabledServices,
+                        MY_PACKAGE
                     )
                 },
                 onDisconnectConfirmed = {

@@ -17,8 +17,8 @@ The shortcut recorder captures user actions across other Android apps using the 
 - **`RecorderSessionService`**: Foreground-lifetime owner for an active process-level session. It lets recording continue while the UI is backgrounded and posts/count-updates the recording notification. It only posts the normal finished notification for an explicit user finish; disconnect and discard stops retain or discard data without falsely claiming a shortcut was recorded.
 - **`RecorderSessionStorePreferences`**: Synchronously persists the captured actions to private SharedPreferences so that the session can be restored on app or service restart.
 - **`RecorderStopReceiver`**: A broadcast receiver triggered from the notification's "Stop" action, which stops the recording session and cleans up resources.
-- **`MarkTapReceiver`**: A broadcast receiver triggered from the notification's "Mark a tap" action, which arms `TapMarkOverlay` via `AutomationAccessibilityService.instance`.
-- **`TapMarkOverlay`**: Manages a full-screen, semi-transparent `TYPE_ACCESSIBILITY_OVERLAY` window attached via `AutomationAccessibilityService`'s `WindowManager`. When armed, tapping anywhere on the overlay captures exact screen coordinates (`rawX`/`rawY`), queries the underlying accessibility node tree for target metadata, appends a manual tap action to the active recording session, and auto-dismisses immediately.
+- **`TouchCaptureOverlay`**: The default transparent `TYPE_ACCESSIBILITY_OVERLAY` recorder. It buffers one completed touch, snapshots the app node below it, records a `RecorderEvent` through the same owner path as passive events, then steps aside and relays the finished gesture with `dispatchGesture`.
+- **`MarkTapReceiver` / `TapMarkOverlay`**: The manual one-tap helper retained for the explicit passive fallback mode only. It is intentionally a no-op while overlay capture is active.
 - **`RecordingHudOverlay`**: Shows a small live recording/step-count indicator. Its accessibility overlay window is `FLAG_NOT_TOUCHABLE` and `FLAG_NOT_FOCUSABLE`, so it cannot intercept taps, swipes, or keyboard focus from the foreground app.
 - **`RecorderScreen`**: The Jetpack Compose UI that manages the recorder workflow. It handles disclosure consent, accessibility enablement, and displays the recorded steps for review. It observes `AccessibilityStatusChecker` on `ON_RESUME`.
 - **`RecorderSessionController`**: UI helper that checks whether the accessibility service is active before invoking a recorder start callback; it is a class, not the recorder interface.
@@ -32,7 +32,7 @@ The id change is required for existing installs: once Android has created a noti
 Implementation: `app/src/main/java/com/shortcuts/app/service/RecorderSessionService.kt:97-175`.
 
 ## Action Capture & Multi-Selector Fallback
-The recorder is deliberately hybrid but non-intercepting. Normal capture remains semantic and passive through Android accessibility events. `TapMarkOverlay` is the explicit, one-tap fallback for apps that publish no semantic click. `RecordingHudOverlay` is display-only and never catches or relays input; a global catch-and-`dispatchGesture` overlay cannot follow a finger in real time and would break scrolling and the soft keyboard.
+The recorder is hybrid. Its default `OVERLAY` mode actively captures completed single-finger gestures and relays them after release; passive accessibility remains responsible for text, focus, keyboard submit, keys, and application/window changes. This records controls rendered by Compose, Flutter, React Native, WebView, and custom canvases even where no `TYPE_VIEW_CLICKED` is sent. `PASSIVE` is a stored fallback mode for troubleshooting and retains the previous semantic-event plus Mark-a-tap behavior.
 
 `AutomationRecorder` translates raw accessibility callbacks into Android-free `RecorderEvent` values. Click, long-click, text-change, focus, scroll, window-state, and window-content events are subscribed. Text-selection changes are recognized as cursor/focus noise and return before node text is inspected or a recorded action is created. `TYPE_WINDOW_STATE_CHANGED` remains an `APP_CHANGE` carrying the foreground package and event time. The default launcher and active IME package are resolved at the Android boundary and passed into `RecorderSessionOwner`.
 
@@ -55,20 +55,15 @@ The last two are fallbacks for soft keyboards that do not expose their action ke
 
 `TYPE_VIEW_LONG_CLICKED` becomes one `UI_AUTOMATION` / `LONG_PRESS` action with the same selectors as a tap. The shared click debounce prevents a follow-up click callback for the same gesture from creating a second step.
 
-### Missing-tap suggestion
+### Capture-and-relay overlay
 
-Some Compose-rendered apps transition between screens without emitting `TYPE_VIEW_CLICKED`. While a recording is active, `SilentTapSuggestionTracker` watches window-state changes for this pattern and shows a dismissible Toast suggesting **Mark a tap** when no click was captured in the preceding two seconds. It waits three seconds after recording starts, ignores transitions to or from RepeatKit itself, and uses a 12-second cooldown so normal window churn cannot spam the user. This is deliberately only a low-key heuristic: system dialogs and automatic navigation can still qualify.
+`TouchCaptureOverlay` is added through the live accessibility service's `WindowManager` while a recording is active in `OVERLAY` mode. It never covers the status bar or 3-button navigation bar. When an IME is visible its lower edge is moved to the IME window's top, so all keyboard interaction stays native. It becomes non-touchable for the notification shade, RepeatKit itself, and permission/package-install dialogs.
 
-### Mark-a-Tap Overlay Fallback
+On `ACTION_DOWN`, it snapshots the top eligible accessibility window and reverse-walks its tree to the deepest visible node under the user's actual coordinate. It selects a nearby actionable ancestor when that ancestor is not a near-full-window container, deriving selectors from that node and retaining the touch point itself as coordinate fallback. On release, it classifies the samples as a tap, long press, swipe, or cancelled multi-touch; taps become `CLICK`, holds become `LONG_PRESS`, and swipes become `SCROLL` with vector-derived deltas. These events enter `RecorderSessionOwner.processEvent`, preserving launcher-collapse, app-switch, text flush, review, save, and replay behavior.
 
-Certain UI frameworks (such as Jetpack Compose in Google Messages) do not emit `TYPE_VIEW_CLICKED` accessibility events when elements are tapped, causing passive event recording to capture nothing.
+Before relay, the overlay sets `FLAG_NOT_TOUCHABLE`, waits one Choreographer frame plus 20 ms (with a 35 ms watchdog), then injects the recorded path. Taps use 50 ms, long presses use 600–1500 ms, and swipes use an 80–700 ms bounded duration with at most twelve timing-ordered points. A 40 ms post-relay settle recomputes the safe region before touchability returns. The overlay draws a tap ripple or short fading swipe trail so delayed, post-release scrolling is intentional rather than surprising. While this mode is active, passive click/long-click/scroll callbacks are disabled to prevent relay duplicates; text, focus, IME submit, keys, and window changes remain enabled.
 
-To overcome this limitation, the recorder provides an active fallback mechanism alongside the passive accessibility-event pipeline:
-1. The user taps **Mark a tap** in the persistent recording notification (or via the missing-tap suggestion prompt).
-2. `MarkTapReceiver` receives the broadcast intent and calls `TapMarkOverlay.arm(AutomationAccessibilityService.instance)`.
-3. A full-screen, semi-transparent `TYPE_ACCESSIBILITY_OVERLAY` is presented on screen.
-4. When the user taps target UI through the overlay, `TapMarkOverlay` captures the tap coordinates (`rawX`/`rawY`), best-effort queries the accessibility tree at that coordinate for node metadata (`text`, `contentDescription`, `viewId`, `className`), appends a manual tap step via `AutomationRecorder.appendManualTap`, and tearlessly removes itself.
-5. If no tap occurs within 20 seconds (or if recording is stopped via `TapMarkOverlay.disarm()`), `TapMarkOverlay` auto-dismisses.
+The notification intentionally omits **Mark a tap** in `OVERLAY` mode. In `PASSIVE` mode it returns, and `TapMarkOverlay` remains available as the manual fallback.
 
 ### App-switch classification
 
@@ -103,4 +98,4 @@ Once a recording session is stopped, the user reviews the captured steps in the 
 ## Limitations / Known Bugs
 - The recording notification is not re-posted when the app restarts with a session already active, so the Stop action is lost until recording is stopped from inside the app.
 - Android revokes this app's accessibility service on force-stop, and ADB cannot re-grant it once the app is flagged under restricted settings; it must be granted from Settings.
-- Capturing raw screen touches as a fallback for missing semantic tap events is currently not possible without significantly degrading user experience. The Android `TouchInteractionController` API (API 33+) requires enabling `FLAG_REQUEST_TOUCH_EXPLORATION_MODE`, which forces the entire device into TalkBack-style "explore-by-touch" mode (requiring double-taps to activate elements), breaking normal single-tap interaction.
+- Capture-and-relay intentionally cannot move a list under the user's physical finger: Android cancels injected gestures that overlap an active physical touch. A swipe therefore starts immediately after lift, and its velocity, IME bounds, shade handling, and relay step-aside timing need on-device validation on each target Android build.

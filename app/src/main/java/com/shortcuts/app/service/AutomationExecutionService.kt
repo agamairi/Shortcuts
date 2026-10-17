@@ -14,6 +14,7 @@ import android.widget.Toast
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.shortcuts.app.R
+import com.shortcuts.app.automation.android.replay.EngineV2RunRuntime
 import com.shortcuts.app.data.ActionConverter
 import com.shortcuts.app.data.AppDatabase
 import com.shortcuts.app.ui.MainActivity
@@ -58,13 +59,23 @@ class AutomationExecutionService : Service() {
         serviceScope.launch {
             try {
                 if (!editorActionsJson.isNullOrBlank()) {
-                    val result = ActionExecutorService(
-                        context = this@AutomationExecutionService,
-                        cancellation = lease.cancellation
-                    ).executeActions(
-                        ActionConverter().toActionList(editorActionsJson),
-                        editorShortcutName?.trim().takeUnless { it.isNullOrBlank() } ?: "Shortcut"
+                    val name = editorShortcutName?.trim().takeUnless { it.isNullOrBlank() } ?: "Shortcut"
+                    val v2Result = EngineV2RunRuntime(this@AutomationExecutionService).tryRun(
+                        editorActionsJson,
+                        name,
+                        lease.cancellation
                     )
+                    val result = if (v2Result != null) {
+                        v2Result
+                    } else {
+                        ActionExecutorService(
+                            context = this@AutomationExecutionService,
+                            cancellation = lease.cancellation
+                        ).executeActions(
+                            ActionConverter().toActionList(editorActionsJson),
+                            name
+                        )
+                    }
                     publishResult(result)
                 } else {
                     val automation = AppDatabase.getDatabase(this@AutomationExecutionService)
@@ -74,12 +85,21 @@ class AutomationExecutionService : Service() {
                         automation == null -> publishFailure("Shortcut", "This shortcut no longer exists.")
                         !automation.isActive -> publishFailure(automation.name, "This shortcut is deactivated.")
                         else -> {
-                            val actions = ActionConverter().toActionList(automation.actionsJson)
-                            val result = ActionExecutorService(
-                                context = this@AutomationExecutionService,
-                                cancellation = lease.cancellation
-                            ).executeActions(actions, automation.name)
-                            publishResult(result)
+                            val v2Result = EngineV2RunRuntime(this@AutomationExecutionService).tryRun(
+                                automation.actionsJson,
+                                automation.name,
+                                lease.cancellation
+                            )
+                            val result = if (v2Result != null) {
+                                v2Result
+                            } else {
+                                val actions = ActionConverter().toActionList(automation.actionsJson)
+                                ActionExecutorService(
+                                    context = this@AutomationExecutionService,
+                                    cancellation = lease.cancellation
+                                ).executeActions(actions, automation.name)
+                            }
+                            publishResult(result, automationId)
                         }
                     }
                 }
@@ -105,7 +125,8 @@ class AutomationExecutionService : Service() {
         super.onDestroy()
     }
 
-    private fun publishResult(result: RunResult) {
+    private fun publishResult(result: RunResult, automationId: Int = NO_AUTOMATION_ID) {
+        RunResultBus.tryEmit(RunResultEvent(automationId, currentRunId, result))
         if (result.allSucceeded) {
             announce(result.userSummary())
             return

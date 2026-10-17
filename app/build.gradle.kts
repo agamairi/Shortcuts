@@ -37,6 +37,10 @@ android {
     }
 
     buildTypes {
+        debug {
+            applicationIdSuffix = ".dev"
+            versionNameSuffix = "-dev"
+        }
         release {
             // Supply RELEASE_STORE_FILE, RELEASE_STORE_PASSWORD, RELEASE_KEY_ALIAS and
             // RELEASE_KEY_PASSWORD in an untracked gradle.properties/CI secret. Until then,

@@ -50,6 +50,8 @@ class RecorderSessionOwner(
     private var lastSeenForegroundPackage: String? = null
     private var lastAppBeforeLauncherPackage: String? = null
     private val pendingLauncherClicks = mutableListOf<Action>()
+    /** True once the user has done anything since the most recent recorded app launch. */
+    private var interactedSinceLaunch = true
     private var lastClickTarget: String? = null
     private var lastClickAtMillis: Long = Long.MIN_VALUE
     private var pendingText: PendingText? = null
@@ -63,6 +65,8 @@ class RecorderSessionOwner(
 
     private val _recordedActions = MutableStateFlow<List<Action>>(emptyList())
     val recordedActions: StateFlow<List<Action>> = _recordedActions.asStateFlow()
+
+    var onTextCommitListener: ((RecorderEvent) -> Unit)? = null
 
     init {
         restore()
@@ -293,6 +297,7 @@ class RecorderSessionOwner(
         val returnedToSameApp = wasOnLauncher && newPackageName == lastAppBeforeLauncherPackage
         val launchedFromHome = !returnedToSameApp && (wasOnLauncher || hasPendingLauncherClicks)
             
+        val lastAction = _recordedActions.value.lastOrNull()
         if (launchedFromHome) {
             discardPendingLauncherClicksLocked()
             appendActionLocked(
@@ -302,6 +307,15 @@ class RecorderSessionOwner(
                     delayMillis = 500L
                 )
             )
+            interactedSinceLaunch = false
+        } else if (!interactedSinceLaunch && !returnedToSameApp &&
+            lastAction?.actionType == ActionType.APP_INTENT && lastAction.packageName != newPackageName
+        ) {
+            // Another app replaced the one just launched before the user did anything in it
+            // (e.g. an overlay app that opens its own activity when Home is shown). The launch
+            // step belongs to the app the user actually went on to use.
+            _recordedActions.value = _recordedActions.value.dropLast(1) + lastAction.copy(packageName = newPackageName)
+            persistLocked()
         } else if (returnedToSameApp && discardPendingLauncherClicksLocked()) {
             // Returning to the same app is not a replayable shortcut step.
             persistLocked()
@@ -312,6 +326,7 @@ class RecorderSessionOwner(
     }
 
     private fun appendActionLocked(action: Action) {
+        if (action.actionType != ActionType.APP_INTENT) interactedSinceLaunch = true
         val currentActions = _recordedActions.value
         _recordedActions.value = if (
             action.uiActionType == "TYPE_TEXT" &&
@@ -340,6 +355,7 @@ class RecorderSessionOwner(
     }
 
     private fun resetForegroundTrackingLocked() {
+        interactedSinceLaunch = true
         lastSeenForegroundPackage = null
         lastAppBeforeLauncherPackage = null
         pendingLauncherClicks.clear()
@@ -486,6 +502,7 @@ class RecorderSessionOwner(
         pendingText = null
         appendActionLocked(createTypeAction(text.event))
         lastCommittedText = text
+        onTextCommitListener?.invoke(text.event)
     }
 
     private fun clearTextCommitCandidateLocked() {

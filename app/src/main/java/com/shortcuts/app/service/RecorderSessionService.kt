@@ -13,6 +13,8 @@ import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import com.shortcuts.app.util.NotificationThrottler
 import com.shortcuts.app.util.RecorderNotificationPresenter
+import com.shortcuts.app.service.capture.RecorderCaptureMode
+import com.shortcuts.app.service.capture.RecorderCaptureModePreferences
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -141,7 +143,8 @@ object RecorderSessionNotifier {
             .setContentText(RecorderNotificationPresenter.formatContentText(count))
             .setOngoing(true)
             .setContentIntent(contentIntent)
-            .addAction(
+        if (RecorderCaptureModePreferences.mode(context) == RecorderCaptureMode.PASSIVE) {
+            builder.addAction(
                 android.app.Notification.Action.Builder(
                     android.graphics.drawable.Icon.createWithResource(context, android.R.drawable.ic_menu_myplaces),
                     "Mark a tap",
@@ -153,7 +156,8 @@ object RecorderSessionNotifier {
                     )
                 ).build()
             )
-            .addAction(
+        }
+        builder.addAction(
                 android.app.Notification.Action.Builder(
                     android.graphics.drawable.Icon.createWithResource(context, android.R.drawable.ic_media_pause),
                     "Stop",

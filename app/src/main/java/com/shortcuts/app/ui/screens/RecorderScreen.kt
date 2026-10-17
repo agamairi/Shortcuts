@@ -281,12 +281,20 @@ fun RecorderScreen(
                                             snackbarHostState.showSnackbar("The web token couldn't be secured. Your shortcut was not saved.")
                                             return@launch
                                         }
+                                        val v07Actions = safe.filterNotNull()
+                                        val actionsJson = com.shortcuts.app.automation.android.capture.selectSaveActionsJson(
+                                            engineV2Enabled = com.shortcuts.app.automation.android.EngineV2.enabled,
+                                            v2WorkflowJson = com.shortcuts.app.automation.android.capture.V2CaptureBridge.lastWorkflowJson,
+                                            originalActions = recordedActionsFlow,
+                                            currentActions = editableActions.toList(),
+                                            v07ActionsJson = { com.shortcuts.app.data.ActionConverter().fromActionList(v07Actions) }
+                                        )
                                         val automation = ManualBuilderUtils.buildManualAutomation(
                                             shortcutName,
-                                            safe.filterNotNull(),
+                                            v07Actions,
                                             selectedColor.name,
                                             selectedIcon.name
-                                        )
+                                        ).copy(actionsJson = actionsJson)
                                         val saveResult = viewModel?.insert(automation) ?: Result.success(Unit)
 
                                         if (saveResult.isSuccess) {
