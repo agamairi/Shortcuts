@@ -1,5 +1,6 @@
 package com.shortcuts.app.service
 
+import android.annotation.SuppressLint
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -7,11 +8,13 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.pm.ServiceInfo
 import android.os.Build
 import android.os.IBinder
 import android.os.Looper
 import android.widget.Toast
 import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import com.shortcuts.app.R
 import com.shortcuts.app.automation.android.replay.EngineV2RunRuntime
@@ -33,12 +36,23 @@ class AutomationExecutionService : Service() {
     @Volatile private var currentRunId: String? = null
     @Volatile private var latestStartId: Int = -1
 
+    @SuppressLint("ForegroundServiceType")
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         latestStartId = startId
         if (intent?.action == ACTION_STOP) {
             val runId = intent.getStringExtra(EXTRA_RUN_ID).orEmpty()
             if (ShortcutRunCoordinator.cancel(runId)) {
-                startForeground(FOREGROUND_NOTIFICATION_ID, stoppingNotification())
+                val foregroundServiceType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+                } else {
+                    0
+                }
+                ServiceCompat.startForeground(
+                    this,
+                    FOREGROUND_NOTIFICATION_ID,
+                    stoppingNotification(),
+                    foregroundServiceType
+                )
             } else {
                 stopSelf(startId)
             }
@@ -58,7 +72,17 @@ class AutomationExecutionService : Service() {
         }
 
         currentRunId = runId
-        startForeground(FOREGROUND_NOTIFICATION_ID, foregroundNotification(runId))
+        val foregroundServiceType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+        } else {
+            0
+        }
+        ServiceCompat.startForeground(
+            this,
+            FOREGROUND_NOTIFICATION_ID,
+            foregroundNotification(runId),
+            foregroundServiceType
+        )
         val runJob = serviceScope.launch {
             try {
                 if (!editorActionsJson.isNullOrBlank()) {
