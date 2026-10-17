@@ -1,7 +1,7 @@
 package com.shortcuts.app.util
 
-import com.shortcuts.app.data.ActionConverter
 import com.shortcuts.app.data.Automation
+import com.shortcuts.app.data.ShortcutSteps
 
 enum class SortMode {
     NONE,
@@ -10,8 +10,6 @@ enum class SortMode {
 }
 
 object AutomationSorter {
-    private val actionConverter = ActionConverter()
-
     fun sortAutomations(
         automations: List<Automation>,
         sortMode: SortMode,
@@ -27,7 +25,7 @@ object AutomationSorter {
             }
             SortMode.ACTION_COUNT -> {
                 val comparator = compareBy<Automation> { automation ->
-                    runCatching { actionConverter.toActionList(automation.actionsJson).size }.getOrDefault(0)
+                    ShortcutSteps.stepCount(automation.actionsJson)
                 }
                 if (ascending) automations.sortedWith(comparator) else automations.sortedWith(comparator.reversed())
             }

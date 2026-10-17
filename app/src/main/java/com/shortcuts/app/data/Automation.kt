@@ -53,7 +53,9 @@ data class Action(
     val delayMillis: Long? = null,
     /** When true, replay skips node-selector lookup and goes straight to the recorded coordinate
      *  (still geometry-guarded by coordinateReplayPlan). Default false: match by description, as today. */
-    val preferCoordinateReplay: Boolean = false
+    val preferCoordinateReplay: Boolean = false,
+    /** Identity of the Engine v2 step a projected Action stands for. */
+    val v2StepId: String? = null
 )
 
 enum class ActionType {

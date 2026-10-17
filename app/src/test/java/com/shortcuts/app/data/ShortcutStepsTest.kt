@@ -1,0 +1,561 @@
+package com.shortcuts.app.data
+
+import com.shortcuts.app.automation.model.CapturedGesture
+import com.shortcuts.app.automation.model.CapturedPoint
+import com.shortcuts.app.automation.model.GestureKind
+import com.shortcuts.app.automation.model.ImeActionKind
+import com.shortcuts.app.automation.model.IntPoint
+import com.shortcuts.app.automation.model.LaunchAppStep
+import com.shortcuts.app.automation.model.LaunchPolicy
+import com.shortcuts.app.automation.model.LaunchTarget
+import com.shortcuts.app.automation.model.LegacyActionStep
+import com.shortcuts.app.automation.model.LocatorKind
+import com.shortcuts.app.automation.model.LocatorStability
+import com.shortcuts.app.automation.model.LocatorStrategy
+import com.shortcuts.app.automation.model.NormalizedPoint
+import com.shortcuts.app.automation.model.NormalizedRect
+import com.shortcuts.app.automation.model.RecordedDevice
+import com.shortcuts.app.automation.model.RevealDirection
+import com.shortcuts.app.automation.model.RevealPolicy
+import com.shortcuts.app.automation.model.StepSafety
+import com.shortcuts.app.automation.model.TimedPoint
+import com.shortcuts.app.automation.model.UiOperation
+import com.shortcuts.app.automation.model.UiStep
+import com.shortcuts.app.automation.model.VerificationSpec
+import com.shortcuts.app.automation.model.WaitStep
+import com.shortcuts.app.automation.model.WindowSelector
+import com.shortcuts.app.automation.model.WindowType
+import com.shortcuts.app.automation.model.WorkflowCodec
+import com.shortcuts.app.automation.model.WorkflowV2
+import com.shortcuts.app.ui.screens.ManualBuilderUtils
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
+import org.junit.Test
+
+class ShortcutStepsTest {
+
+    private val codec = WorkflowCodec()
+
+    private fun sampleDevice() = RecordedDevice(
+        manufacturer = "Google",
+        model = "Pixel 8",
+        sdkInt = 34,
+        displayWidthPx = 1080,
+        displayHeightPx = 2400,
+        densityDpi = 420,
+        rotation = 0
+    )
+
+    private fun sampleWindow(pkg: String = "com.example.app") = WindowSelector(
+        packageName = pkg,
+        observedActivityClass = "$pkg.MainActivity",
+        windowType = WindowType.APPLICATION,
+        titleToken = null,
+        boundsOnDisplay = NormalizedRect(0f, 0f, 1f, 1f),
+        displayId = 0,
+        fingerprint = null
+    )
+
+    private fun sampleElement(
+        text: String? = "Submit",
+        desc: String? = "Submit Button",
+        resId: String? = "com.example.app:id/submit_btn",
+        className: String? = "android.widget.Button"
+    ): com.shortcuts.app.automation.model.ElementSelector {
+        var rank = 0
+        val strategies = buildList {
+            resId?.let { add(LocatorStrategy(rank++, LocatorKind.RESOURCE_ID_EXACT, it, LocatorStability.STABLE)) }
+            text?.let { add(LocatorStrategy(rank++, LocatorKind.TEXT_EXACT, it, LocatorStability.VOLATILE)) }
+            desc?.let { add(LocatorStrategy(rank++, LocatorKind.CONTENT_DESCRIPTION_EXACT, it, LocatorStability.LIKELY_STABLE)) }
+        }
+        return com.shortcuts.app.automation.model.ElementSelector(
+            strategies = strategies,
+            expectedClass = className,
+            expectedRole = null,
+            ancestorChain = emptyList(),
+            siblingIndex = null,
+            rowContext = null,
+            boundsInWindow = NormalizedRect(0.1f, 0.2f, 0.9f, 0.3f),
+            rawPoint = CapturedPoint(
+                displayPx = IntPoint(540, 600),
+                pointInWindow = NormalizedPoint(0.5f, 0.25f),
+                pointInNode = null,
+                displayWidthPx = 1080,
+                displayHeightPx = 2400,
+                rotation = 0,
+                densityDpi = 420
+            ),
+            requiredActions = emptySet()
+        )
+    }
+
+    // 1. Projection of every step type
+    @Test
+    fun `project LaunchAppStep with Launcher, Component, and DeepLink targets`() {
+        val stepLauncher = LaunchAppStep(
+            id = "launch-launcher",
+            target = LaunchTarget.Launcher("com.example.launcher"),
+            policy = LaunchPolicy.RESET_TO_ROOT,
+            expectedWindow = sampleWindow("com.example.launcher")
+        )
+        val stepComponent = LaunchAppStep(
+            id = "launch-component",
+            target = LaunchTarget.Component("com.example.component", "com.example.component.Main"),
+            policy = LaunchPolicy.RESET_TO_ROOT,
+            expectedWindow = sampleWindow("com.example.component")
+        )
+        val stepDeepLink = LaunchAppStep(
+            id = "launch-deeplink",
+            target = LaunchTarget.DeepLink("com.example.deeplink", "myapp://home"),
+            policy = LaunchPolicy.DEEP_LINK,
+            expectedWindow = sampleWindow("com.example.deeplink")
+        )
+
+        val workflow = WorkflowV2(
+            workflowId = "wf-launch",
+            recordedDevice = sampleDevice(),
+            steps = listOf(stepLauncher, stepComponent, stepDeepLink)
+        )
+        val doc = ShortcutSteps.decode(codec.encode(workflow)) as ShortcutDocument.V2
+        assertEquals(3, doc.actions.size)
+
+        val a1 = doc.actions[0]
+        assertEquals(ActionType.APP_INTENT, a1.actionType)
+        assertEquals("com.example.launcher", a1.packageName)
+        assertEquals("com.example.launcher", a1.targetPackageName)
+        assertEquals("launch-launcher", a1.v2StepId)
+
+        val a2 = doc.actions[1]
+        assertEquals(ActionType.APP_INTENT, a2.actionType)
+        assertEquals("com.example.component", a2.packageName)
+        assertEquals("launch-component", a2.v2StepId)
+
+        val a3 = doc.actions[2]
+        assertEquals(ActionType.APP_INTENT, a3.actionType)
+        assertEquals("com.example.deeplink", a3.packageName)
+        assertEquals("launch-deeplink", a3.v2StepId)
+    }
+
+    @Test
+    fun `project UiStep TAP and LONG_PRESS carries semantic selectors, bounds, coordinates, and null delayMillis`() {
+        val tapStep = UiStep(
+            id = "ui-tap",
+            operation = UiOperation.TAP,
+            expectedWindow = sampleWindow("com.example.app"),
+            element = sampleElement(text = "Save", desc = "Save button", resId = "com.example.app:id/save", className = "android.widget.Button"),
+            gesture = null,
+            verification = VerificationSpec(emptyList()),
+            safety = StepSafety.REVERSIBLE,
+            capturedDelayFromPreviousMs = 2500L // Next step's delay must NOT be projected
+        )
+        val longPressStep = UiStep(
+            id = "ui-long-press",
+            operation = UiOperation.LONG_PRESS,
+            expectedWindow = sampleWindow("com.example.app"),
+            element = sampleElement(text = "Item", desc = null, resId = null, className = "android.widget.TextView"),
+            gesture = null,
+            verification = VerificationSpec(emptyList())
+        )
+
+        val workflow = WorkflowV2(
+            workflowId = "wf-ui-tap",
+            recordedDevice = sampleDevice(),
+            steps = listOf(tapStep, longPressStep)
+        )
+        val doc = ShortcutSteps.decode(codec.encode(workflow)) as ShortcutDocument.V2
+        assertEquals(2, doc.actions.size)
+
+        val tapAction = doc.actions[0]
+        assertEquals(ActionType.UI_AUTOMATION, tapAction.actionType)
+        assertEquals("TAP", tapAction.uiActionType)
+        assertEquals("Save", tapAction.targetText)
+        assertEquals("Save button", tapAction.targetContentDescription)
+        assertEquals("com.example.app:id/save", tapAction.targetNodeId)
+        assertEquals("Save", tapAction.target)
+        assertEquals("android.widget.Button", tapAction.targetClassName)
+        assertEquals("com.example.app", tapAction.targetPackageName)
+        assertEquals(540, tapAction.screenX)
+        assertEquals(600, tapAction.screenY)
+        assertEquals("ui-tap", tapAction.v2StepId)
+        assertNull(tapAction.delayMillis) // UI step delayMillis remains null
+
+        val lpAction = doc.actions[1]
+        assertEquals(ActionType.UI_AUTOMATION, lpAction.actionType)
+        assertEquals("LONG_PRESS", lpAction.uiActionType)
+        assertEquals("Item", lpAction.targetText)
+        assertEquals("ui-long-press", lpAction.v2StepId)
+        assertNull(lpAction.delayMillis)
+    }
+
+    @Test
+    fun `project UiStep SET_TEXT, IME_ACTION, GLOBAL_ACTION`() {
+        val setTextStep = UiStep(
+            id = "ui-set-text",
+            operation = UiOperation.SET_TEXT("Secret message"),
+            expectedWindow = sampleWindow("com.example.app"),
+            element = sampleElement(text = "", desc = "Search box", resId = "com.example.app:id/search", className = "android.widget.EditText"),
+            gesture = null,
+            verification = VerificationSpec(emptyList())
+        )
+        val imeStep = UiStep(
+            id = "ui-ime",
+            operation = UiOperation.IME_ACTION(ImeActionKind.DONE),
+            expectedWindow = sampleWindow("com.example.app"),
+            element = null,
+            gesture = null,
+            verification = VerificationSpec(emptyList())
+        )
+        val globalStep = UiStep(
+            id = "ui-global",
+            operation = UiOperation.GLOBAL_ACTION("GLOBAL_ACTION_BACK"),
+            expectedWindow = sampleWindow("com.example.app"),
+            element = null,
+            gesture = null,
+            verification = VerificationSpec(emptyList())
+        )
+
+        val workflow = WorkflowV2(
+            workflowId = "wf-ui-ops",
+            recordedDevice = sampleDevice(),
+            steps = listOf(setTextStep, imeStep, globalStep)
+        )
+        val doc = ShortcutSteps.decode(codec.encode(workflow)) as ShortcutDocument.V2
+        assertEquals(3, doc.actions.size)
+
+        val textAction = doc.actions[0]
+        assertEquals(ActionType.UI_AUTOMATION, textAction.actionType)
+        assertEquals("TYPE_TEXT", textAction.uiActionType)
+        assertEquals("Secret message", textAction.textInput)
+        assertEquals("ui-set-text", textAction.v2StepId)
+
+        val imeAction = doc.actions[1]
+        assertEquals(ActionType.UI_AUTOMATION, imeAction.actionType)
+        assertEquals("PRESS_ENTER", imeAction.uiActionType)
+        assertEquals("ui-ime", imeAction.v2StepId)
+
+        val globalAction = doc.actions[2]
+        assertEquals(ActionType.UI_AUTOMATION, globalAction.actionType)
+        assertEquals("GLOBAL_ACTION", globalAction.uiActionType)
+        assertEquals("GLOBAL_ACTION_BACK", globalAction.globalAction)
+        assertEquals("ui-global", globalAction.v2StepId)
+    }
+
+    @Test
+    fun `project UiStep SWIPE computes scrollDirection from gesture vector and fallback to reveal`() {
+        // Vertical swipe up: dy < 0
+        val swipeUpGesture = CapturedGesture(
+            kind = GestureKind.SWIPE,
+            durationMs = 300,
+            points = listOf(
+                TimedPoint(IntPoint(500, 1500), 0, NormalizedPoint(0.5f, 0.75f)),
+                TimedPoint(IntPoint(500, 500), 300, NormalizedPoint(0.5f, 0.25f))
+            )
+        )
+        val swipeUpStep = UiStep(
+            id = "swipe-up",
+            operation = UiOperation.SWIPE,
+            expectedWindow = sampleWindow("com.example.app"),
+            element = null,
+            gesture = swipeUpGesture,
+            verification = VerificationSpec(emptyList())
+        )
+
+        // Horizontal swipe right: dx > 0
+        val swipeRightGesture = CapturedGesture(
+            kind = GestureKind.SWIPE,
+            durationMs = 200,
+            points = listOf(
+                TimedPoint(IntPoint(200, 800), 0, NormalizedPoint(0.2f, 0.4f)),
+                TimedPoint(IntPoint(800, 800), 200, NormalizedPoint(0.8f, 0.4f))
+            )
+        )
+        val swipeRightStep = UiStep(
+            id = "swipe-right",
+            operation = UiOperation.SWIPE,
+            expectedWindow = sampleWindow("com.example.app"),
+            element = null,
+            gesture = swipeRightGesture,
+            verification = VerificationSpec(emptyList())
+        )
+
+        // Swipe with no gesture points falls back to reveal direction
+        val swipeRevealStep = UiStep(
+            id = "swipe-reveal",
+            operation = UiOperation.SWIPE,
+            expectedWindow = sampleWindow("com.example.app"),
+            element = null,
+            gesture = null,
+            reveal = RevealPolicy(direction = RevealDirection.FORWARD),
+            verification = VerificationSpec(emptyList())
+        )
+
+        val workflow = WorkflowV2(
+            workflowId = "wf-swipes",
+            recordedDevice = sampleDevice(),
+            steps = listOf(swipeUpStep, swipeRightStep, swipeRevealStep)
+        )
+        val doc = ShortcutSteps.decode(codec.encode(workflow)) as ShortcutDocument.V2
+        assertEquals(3, doc.actions.size)
+
+        assertEquals("SCROLL", doc.actions[0].uiActionType)
+        assertEquals("UP", doc.actions[0].scrollDirection)
+
+        assertEquals("SCROLL", doc.actions[1].uiActionType)
+        assertEquals("RIGHT", doc.actions[1].scrollDirection)
+
+        assertEquals("SCROLL", doc.actions[2].uiActionType)
+        assertEquals("FORWARD", doc.actions[2].scrollDirection)
+    }
+
+    @Test
+    fun `project WaitStep and LegacyActionStep`() {
+        val waitStep = WaitStep(id = "wait-1", durationMs = 1500L)
+        val legacyWrapped = Action(
+            actionType = ActionType.HTTP_REQUEST,
+            url = "https://example.com/api",
+            method = "POST"
+        )
+        val legacyStep = LegacyActionStep(id = "legacy-1", action = legacyWrapped)
+
+        val workflow = WorkflowV2(
+            workflowId = "wf-wait-legacy",
+            recordedDevice = sampleDevice(),
+            steps = listOf(waitStep, legacyStep)
+        )
+        val doc = ShortcutSteps.decode(codec.encode(workflow)) as ShortcutDocument.V2
+        assertEquals(2, doc.actions.size)
+
+        val waitAction = doc.actions[0]
+        assertEquals(ActionType.WAIT, waitAction.actionType)
+        assertEquals(1500L, waitAction.delayMillis)
+        assertEquals("wait-1", waitAction.v2StepId)
+
+        val legacyAction = doc.actions[1]
+        assertEquals(ActionType.HTTP_REQUEST, legacyAction.actionType)
+        assertEquals("https://example.com/api", legacyAction.url)
+        assertEquals("POST", legacyAction.method)
+        assertEquals("legacy-1", legacyAction.v2StepId)
+    }
+
+    // 2. Encode round-trip with no edits is byte-identical to original JSON
+    @Test
+    fun `encode round-trip with no edits is byte-identical to the original JSON`() {
+        val workflow = WorkflowV2(
+            workflowId = "wf-byte-identical",
+            recordedDevice = sampleDevice(),
+            steps = listOf(
+                LaunchAppStep(
+                    id = "step-launch",
+                    target = LaunchTarget.Launcher("com.example.app"),
+                    policy = LaunchPolicy.RESET_TO_ROOT,
+                    expectedWindow = sampleWindow("com.example.app")
+                ),
+                UiStep(
+                    id = "step-tap",
+                    operation = UiOperation.TAP,
+                    expectedWindow = sampleWindow("com.example.app"),
+                    element = sampleElement(text = "Login"),
+                    gesture = null,
+                    verification = VerificationSpec(emptyList())
+                ),
+                WaitStep(id = "step-wait", durationMs = 800L)
+            )
+        )
+        val originalJson = codec.encode(workflow)
+        val doc = ShortcutSteps.decode(originalJson)
+        assertTrue(doc is ShortcutDocument.V2)
+
+        val encodedJson = ShortcutSteps.encode(doc, doc.actions)
+        assertEquals(originalJson, encodedJson)
+    }
+
+    // 3. Delete, reorder, add legacy action, and delay edits produce expected WorkflowV2
+    @Test
+    fun `delete step removes corresponding v2 step from workflow`() {
+        val s1 = LaunchAppStep(id = "s1", target = LaunchTarget.Launcher("app1"), policy = LaunchPolicy.RESET_TO_ROOT, expectedWindow = sampleWindow("app1"))
+        val s2 = WaitStep(id = "s2", durationMs = 1000L)
+        val s3 = LaunchAppStep(id = "s3", target = LaunchTarget.Launcher("app3"), policy = LaunchPolicy.RESET_TO_ROOT, expectedWindow = sampleWindow("app3"))
+
+        val workflow = WorkflowV2(workflowId = "wf-delete", recordedDevice = sampleDevice(), steps = listOf(s1, s2, s3))
+        val originalJson = codec.encode(workflow)
+        val doc = ShortcutSteps.decode(originalJson) as ShortcutDocument.V2
+
+        // User deletes step 2 (WaitStep)
+        val editedActions = listOf(doc.actions[0], doc.actions[2])
+        val encodedJson = ShortcutSteps.encode(doc, editedActions)
+
+        val decodedResult = codec.decode(encodedJson) as com.shortcuts.app.automation.model.DecodeResult.Success
+        val newSteps = decodedResult.workflow.steps
+        assertEquals(2, newSteps.size)
+        assertEquals("s1", newSteps[0].id)
+        assertEquals("s3", newSteps[1].id)
+    }
+
+    @Test
+    fun `reorder steps preserves original step instances in new order`() {
+        val s1 = LaunchAppStep(id = "s1", target = LaunchTarget.Launcher("app1"), policy = LaunchPolicy.RESET_TO_ROOT, expectedWindow = sampleWindow("app1"))
+        val s2 = UiStep(id = "s2", operation = UiOperation.TAP, expectedWindow = sampleWindow("app1"), element = sampleElement(text = "Button"), gesture = null, verification = VerificationSpec(emptyList()))
+        val s3 = WaitStep(id = "s3", durationMs = 500L)
+
+        val workflow = WorkflowV2(workflowId = "wf-reorder", recordedDevice = sampleDevice(), steps = listOf(s1, s2, s3))
+        val originalJson = codec.encode(workflow)
+        val doc = ShortcutSteps.decode(originalJson) as ShortcutDocument.V2
+
+        // Reorder: s3, s1, s2
+        val editedActions = listOf(doc.actions[2], doc.actions[0], doc.actions[1])
+        val encodedJson = ShortcutSteps.encode(doc, editedActions)
+
+        val decodedResult = codec.decode(encodedJson) as com.shortcuts.app.automation.model.DecodeResult.Success
+        val newSteps = decodedResult.workflow.steps
+        assertEquals(3, newSteps.size)
+        assertEquals("s3", newSteps[0].id)
+        assertTrue(newSteps[0] is WaitStep)
+        assertEquals("s1", newSteps[1].id)
+        assertTrue(newSteps[1] is LaunchAppStep)
+        assertEquals("s2", newSteps[2].id)
+        assertTrue(newSteps[2] is UiStep)
+        assertEquals("Button", (newSteps[2] as UiStep).element?.strategies?.firstOrNull { it.kind == LocatorKind.TEXT_EXACT }?.value)
+    }
+
+    @Test
+    fun `adding legacy action in editor wraps it as LegacyActionStep`() {
+        val s1 = LaunchAppStep(id = "s1", target = LaunchTarget.Launcher("app1"), policy = LaunchPolicy.RESET_TO_ROOT, expectedWindow = sampleWindow("app1"))
+        val workflow = WorkflowV2(workflowId = "wf-add", recordedDevice = sampleDevice(), steps = listOf(s1))
+        val doc = ShortcutSteps.decode(codec.encode(workflow)) as ShortcutDocument.V2
+
+        val newToggleAction = Action(
+            actionType = ActionType.SYSTEM_TOGGLE,
+            target = "flashlight",
+            state = "on"
+        )
+        val editedActions = listOf(doc.actions[0], newToggleAction)
+        val encodedJson = ShortcutSteps.encode(doc, editedActions)
+
+        val decodedResult = codec.decode(encodedJson) as com.shortcuts.app.automation.model.DecodeResult.Success
+        val newSteps = decodedResult.workflow.steps
+        assertEquals(2, newSteps.size)
+        assertEquals("s1", newSteps[0].id)
+        assertTrue(newSteps[1] is LegacyActionStep)
+        val legacyStep = newSteps[1] as LegacyActionStep
+        assertEquals(ActionType.SYSTEM_TOGGLE, legacyStep.action.actionType)
+        assertEquals("flashlight", legacyStep.action.target)
+        assertEquals("on", legacyStep.action.state)
+        assertTrue(legacyStep.id.isNotBlank())
+    }
+
+    @Test
+    fun `editing delay on UI step inserts a WaitStep after it and editing WaitStep updates duration`() {
+        val s1 = UiStep(id = "s1", operation = UiOperation.TAP, expectedWindow = sampleWindow("app1"), element = sampleElement(text = "Go"), gesture = null, verification = VerificationSpec(emptyList()))
+        val s2 = WaitStep(id = "s2", durationMs = 200L)
+        val workflow = WorkflowV2(workflowId = "wf-delay", recordedDevice = sampleDevice(), steps = listOf(s1, s2))
+        val doc = ShortcutSteps.decode(codec.encode(workflow)) as ShortcutDocument.V2
+
+        // User sets delayMillis on the UI action and changes delayMillis on the WaitStep
+        val editedS1Action = doc.actions[0].copy(delayMillis = 750L)
+        val editedS2Action = doc.actions[1].copy(delayMillis = 1200L)
+        val encodedJson = ShortcutSteps.encode(doc, listOf(editedS1Action, editedS2Action))
+
+        val decodedResult = codec.decode(encodedJson) as com.shortcuts.app.automation.model.DecodeResult.Success
+        val newSteps = decodedResult.workflow.steps
+        // Expected: s1 (UiStep), then inserted WaitStep(750ms), then s2 (WaitStep with updated 1200ms)
+        assertEquals(3, newSteps.size)
+        assertEquals("s1", newSteps[0].id)
+        assertTrue(newSteps[0] is UiStep)
+
+        assertTrue(newSteps[1] is WaitStep)
+        assertEquals(750L, (newSteps[1] as WaitStep).durationMs)
+
+        assertEquals("s2", newSteps[2].id)
+        assertTrue(newSteps[2] is WaitStep)
+        assertEquals(1200L, (newSteps[2] as WaitStep).durationMs)
+    }
+
+    // 4. Legacy JSON paths are byte-identical to today
+    @Test
+    fun `legacy JSON decoding and encoding is byte-identical to ActionConverter`() {
+        val actions = listOf(
+            Action(actionType = ActionType.SYSTEM_TOGGLE, target = "WIFI", state = "ON"),
+            Action(actionType = ActionType.APP_INTENT, packageName = "com.spotify.music"),
+            Action(actionType = ActionType.WAIT, delayMillis = 1000L)
+        )
+        val legacyJson = ActionConverter().fromActionList(actions)
+
+        val doc = ShortcutSteps.decode(legacyJson)
+        assertTrue(doc is ShortcutDocument.Legacy)
+        assertEquals(actions, doc.actions)
+
+        val reEncoded = ShortcutSteps.encode(doc, doc.actions)
+        assertEquals(legacyJson, reEncoded)
+
+        // With edits:
+        val edited = listOf(actions[0], actions[2])
+        val expectedEditedJson = ActionConverter().fromActionList(edited)
+        val actualEditedJson = ShortcutSteps.encode(doc, edited)
+        assertEquals(expectedEditedJson, actualEditedJson)
+    }
+
+    // 5. stepCount for both formats
+    @Test
+    fun `stepCount helper accurately counts legacy, v2, empty, and invalid inputs`() {
+        val legacyJson = ActionConverter().fromActionList(
+            listOf(
+                Action(actionType = ActionType.SYSTEM_TOGGLE),
+                Action(actionType = ActionType.APP_INTENT)
+            )
+        )
+        assertEquals(2, ShortcutSteps.stepCount(legacyJson))
+
+        val v2Workflow = WorkflowV2(
+            workflowId = "wf-count",
+            recordedDevice = sampleDevice(),
+            steps = listOf(
+                LaunchAppStep(id = "1", target = LaunchTarget.Launcher("app"), policy = LaunchPolicy.RESET_TO_ROOT, expectedWindow = sampleWindow("app")),
+                WaitStep(id = "2", durationMs = 100L),
+                WaitStep(id = "3", durationMs = 200L)
+            )
+        )
+        val v2Json = codec.encode(v2Workflow)
+        assertEquals(3, ShortcutSteps.stepCount(v2Json))
+
+        assertEquals(0, ShortcutSteps.stepCount(null))
+        assertEquals(0, ShortcutSteps.stepCount(""))
+        assertEquals(0, ShortcutSteps.stepCount("   "))
+        assertEquals(0, ShortcutSteps.stepCount("[]"))
+        assertEquals(0, ShortcutSteps.stepCount("{ corrupt json"))
+        assertEquals(0, ShortcutSteps.stepCount("{\"unknownField\": true}"))
+    }
+
+    // 6. Refusing to save over unreadable JSON
+    @Test
+    fun `unreadable JSON decodes to Unreadable and refuses to encode or save`() {
+        val corruptJson = "{ not valid json at all"
+        val doc = ShortcutSteps.decode(corruptJson)
+        assertTrue(doc is ShortcutDocument.Unreadable)
+        val unreadableDoc = doc as ShortcutDocument.Unreadable
+        assertTrue(unreadableDoc.reason.isNotBlank())
+        assertEquals(0, unreadableDoc.actions.size)
+        assertEquals(0, ShortcutSteps.stepCount(corruptJson))
+
+        try {
+            ShortcutSteps.encode(unreadableDoc, emptyList())
+            fail("Expected IllegalArgumentException when attempting to encode unreadable document")
+        } catch (expected: IllegalArgumentException) {
+            assertTrue(expected.message?.contains("Cannot encode unreadable shortcut document") == true)
+        }
+
+        try {
+            ManualBuilderUtils.buildManualAutomation(
+                name = "Corrupt test",
+                actions = emptyList(),
+                colorKey = "TEAL",
+                document = unreadableDoc
+            )
+            fail("Expected IllegalArgumentException when building automation with unreadable document")
+        } catch (expected: IllegalArgumentException) {
+            assertTrue(expected.message?.contains("Cannot encode unreadable shortcut document") == true)
+        }
+    }
+}
