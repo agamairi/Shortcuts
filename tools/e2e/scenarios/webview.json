@@ -1,0 +1,10 @@
+{
+  "id": "webview",
+  "launcher_label": "Web view",
+  "description": "Accept the web content and advance to the next page.",
+  "steps": [
+    {"tap": {"text": "Accept"}},
+    {"tap": {"text": "Next"}}
+  ],
+  "expect": "recorded"
+}

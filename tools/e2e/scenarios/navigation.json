@@ -1,0 +1,14 @@
+{
+  "id": "navigation",
+  "launcher_label": "Navigation",
+  "description": "Navigate to Profile and Edit, change Name, save, and go back.",
+  "steps": [
+    {"tap": {"text": "Profile"}},
+    {"tap": {"text": "Edit"}},
+    {"tap": {"text": "Name"}},
+    {"type": "Agam"},
+    {"tap": {"text": "Save"}},
+    {"key": "BACK"}
+  ],
+  "expect": "recorded"
+}

@@ -8,6 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **On-device record/replay E2E harness.** Added a standard-library Python CLI that checks device readiness, preserves existing accessibility services, records and replays the fixture scenarios, compares FixtureEvent streams, reports recording-quality problems separately, and writes per-run evidence plus pass-rate summaries.
 - **Live recording feedback without blocking the app underneath.** A small recording HUD now shows the current captured-step count while taps, scrolling, and keyboard input continue to go directly to the foreground app.
 - **App shortcuts discovery.** Picking an app in the builder now also offers its long-press shortcuts, so you can start Chrome straight into a new incognito tab.
 - **Recorder documentation update.** Updated `okf-docs/recorder.md` to detail `TapMarkOverlay` and `MarkTapReceiver` and document the Mark-a-tap overlay fallback mechanism alongside the passive accessibility event capture path.

@@ -1,0 +1,10 @@
+{
+  "id": "views_list",
+  "launcher_label": "Views list",
+  "description": "Scroll a Views list to Item 45 and open that row.",
+  "steps": [
+    {"scroll_until": {"text": "Item 45"}},
+    {"tap": {"text": "Open", "row_of": "Item 45"}}
+  ],
+  "expect": "recorded"
+}
