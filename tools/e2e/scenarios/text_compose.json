@@ -1,19 +1,8 @@
 {
   "id": "text_compose",
   "launcher_label": "Text input compose",
-  "description": "Submit Search and send a message using Compose text fields.",
+  "description": "Send a message, then submit a search (the search opens a results screen) using Compose text fields.",
   "steps": [
-    {
-      "tap": {
-        "text": "Search"
-      }
-    },
-    {
-      "type": "rk test"
-    },
-    {
-      "key": "ENTER"
-    },
     {
       "tap": {
         "text": "Message"
@@ -26,6 +15,20 @@
       "tap": {
         "text": "Send"
       }
+    },
+    {
+      "tap": {
+        "text": "Search"
+      }
+    },
+    {
+      "type": "rk test"
+    },
+    {
+      "key": "ENTER"
+    },
+    {
+      "wait_ms": 1200
     }
   ],
   "expect": "recorded"

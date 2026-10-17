@@ -33,6 +33,8 @@ LOGCAT_TAGS = [
     "RepeatKitDebug:I",
     "AutomationAccService:I",
     "AutomationRecorder:I",
+    "V2Capture:D",
+    "TouchCapture:D",
     "AndroidRuntime:E",
     "*:S",
 ]
