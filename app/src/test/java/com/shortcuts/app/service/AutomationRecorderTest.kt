@@ -108,6 +108,16 @@ class AutomationRecorderTest {
     }
 
     @Test
+    fun `window-list changes are observed as screen effects`() {
+        assertEquals(
+            RecorderEventType.CONTENT_CHANGE,
+            AutomationRecorder.classifyAccessibilityEventType(
+                android.view.accessibility.AccessibilityEvent.TYPE_WINDOWS_CHANGED
+            )
+        )
+    }
+
+    @Test
     fun `consecutive text-change events on the SAME field collapse into ONE TYPE action carrying the final text`() {
         val event1 = RecorderEvent(
             eventType = RecorderEventType.TEXT_CHANGE,

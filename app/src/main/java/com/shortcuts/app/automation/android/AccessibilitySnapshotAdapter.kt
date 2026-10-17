@@ -47,7 +47,7 @@ class AccessibilitySnapshotAdapter(
     }
 
     override fun snapshot(): WindowSetSnapshot? = synchronized(snapshotLock) {
-        val windows = runCatching { service.windows }.getOrNull() ?: return null
+        val windows = readWindowsWithRetry() ?: return null
         val uptimeMs = SystemClock.uptimeMillis()
 
         val displayMetrics = service.resources.displayMetrics
@@ -66,31 +66,32 @@ class AccessibilitySnapshotAdapter(
         val windowSnapshots = mutableListOf<WindowSnapshot>()
 
         for (window in sortedWindows) {
-            val root = runCatching { window.root }.getOrNull() ?: continue
-            val nodesInWindow = mutableMapOf<Int, NodeSnapshot>()
+            val totalNodesBeforeWindow = totalNodes
+            val perWindowPaths = mutableMapOf<Int, NodeLocator>()
+            val built = runCatching {
+                val root = window.root ?: return@runCatching null
+                try {
+                    val nodesInWindow = mutableMapOf<Int, NodeSnapshot>()
+                    val windowRect = Rect()
+                    window.getBoundsInScreen(windowRect)
+                    val windowBounds = IntRect(windowRect.left, windowRect.top, windowRect.right, windowRect.bottom)
+                    val windowType = mapWindowType(window.type)
+                    val windowPackageName = root.packageName?.toString().orEmpty()
 
-            val windowRect = Rect()
-            window.getBoundsInScreen(windowRect)
-            val windowBounds = IntRect(windowRect.left, windowRect.top, windowRect.right, windowRect.bottom)
-            val windowType = mapWindowType(window.type)
-            val windowPackageName = root.packageName?.toString().orEmpty()
+                    val rootId = walkNode(
+                        info = root,
+                        parentId = null,
+                        path = emptyList(),
+                        depth = 0,
+                        windowId = window.id,
+                        windowPackageName = windowPackageName,
+                        nodes = nodesInWindow,
+                        nodePathMap = perWindowPaths,
+                        idGenerator = { nextNodeId++ },
+                        totalNodeCounter = { totalNodes++ },
+                        canAddMore = { totalNodes < MAX_NODES }
+                    ) ?: return@runCatching null
 
-            val rootId = walkNode(
-                info = root,
-                parentId = null,
-                path = emptyList(),
-                depth = 0,
-                windowId = window.id,
-                windowPackageName = windowPackageName,
-                nodes = nodesInWindow,
-                nodePathMap = snapshotNodePaths,
-                idGenerator = { nextNodeId++ },
-                totalNodeCounter = { totalNodes++ },
-                canAddMore = { totalNodes < MAX_NODES }
-            )
-
-            if (rootId != null) {
-                windowSnapshots.add(
                     WindowSnapshot(
                         windowId = window.id,
                         type = windowType,
@@ -103,7 +104,16 @@ class AccessibilitySnapshotAdapter(
                         rootId = rootId,
                         nodes = nodesInWindow
                     )
-                )
+                } catch (error: Throwable) {
+                    root.safeRecycle()
+                    throw error
+                }
+            }.getOrNull()
+            if (built != null) {
+                snapshotNodePaths.putAll(perWindowPaths)
+                windowSnapshots.add(built)
+            } else {
+                totalNodes = totalNodesBeforeWindow
             }
         }
 
@@ -119,6 +129,18 @@ class AccessibilitySnapshotAdapter(
         latestState = SnapshotState(generation, windowSet, snapshotNodePaths.toMap())
         _lastSnapshot = windowSet
         windowSet
+    }
+
+    /** Android can briefly publish no window list while a new application window is attaching. */
+    private fun readWindowsWithRetry(): List<AccessibilityWindowInfo>? {
+        repeat(WINDOW_READ_ATTEMPTS) { attempt ->
+            val windows = runCatching { service.windows }.getOrNull()
+            if (!windows.isNullOrEmpty()) return windows
+            if (attempt + 1 < WINDOW_READ_ATTEMPTS) {
+                runCatching { Thread.sleep(WINDOW_READ_RETRY_MS) }
+            }
+        }
+        return null
     }
 
     private fun walkNode(
@@ -139,72 +161,75 @@ class AccessibilitySnapshotAdapter(
             return null
         }
         totalNodeCounter()
-        val nodeId = idGenerator()
-        nodePathMap[nodeId] = NodeLocator(windowId, path)
+        return try {
+            val nodeId = idGenerator()
+            nodePathMap[nodeId] = NodeLocator(windowId, path)
 
-        val nodeRect = Rect()
-        info.getBoundsInScreen(nodeRect)
-        val boundsInScreen = IntRect(nodeRect.left, nodeRect.top, nodeRect.right, nodeRect.bottom)
+            val nodeRect = Rect()
+            info.getBoundsInScreen(nodeRect)
+            val boundsInScreen = IntRect(nodeRect.left, nodeRect.top, nodeRect.right, nodeRect.bottom)
 
-        val actionIds = info.actionList.map { it.id }
-        val actions = mapActionIdsToNodeActions(actionIds)
+            val actionIds = info.actionList.map { it.id }
+            val actions = mapActionIdsToNodeActions(actionIds)
 
-        val childCount = info.childCount
-        val childIds = mutableListOf<Int>()
-        for (i in 0 until childCount) {
-            if (!canAddMore()) break
-            val child = runCatching { info.getChild(i) }.getOrNull() ?: continue
-            val childId = walkNode(
-                info = child,
-                parentId = nodeId,
-                path = path + i,
-                depth = depth + 1,
-                windowId = windowId,
-                windowPackageName = windowPackageName,
-                nodes = nodes,
-                nodePathMap = nodePathMap,
-                idGenerator = idGenerator,
-                totalNodeCounter = totalNodeCounter,
-                canAddMore = canAddMore
-            )
-            if (childId != null) {
-                childIds.add(childId)
+            val childCount = info.childCount
+            val childIds = mutableListOf<Int>()
+            for (i in 0 until childCount) {
+                if (!canAddMore()) break
+                val child = runCatching { info.getChild(i) }.getOrNull() ?: continue
+                val childId = walkNode(
+                    info = child,
+                    parentId = nodeId,
+                    path = path + i,
+                    depth = depth + 1,
+                    windowId = windowId,
+                    windowPackageName = windowPackageName,
+                    nodes = nodes,
+                    nodePathMap = nodePathMap,
+                    idGenerator = idGenerator,
+                    totalNodeCounter = totalNodeCounter,
+                    canAddMore = canAddMore
+                )
+                if (childId != null) {
+                    childIds.add(childId)
+                }
             }
-        }
 
-        val snapshot = NodeSnapshot(
-            nodeId = nodeId,
-            parentId = parentId,
-            childIds = childIds,
-            className = info.className?.toString() ?: "",
-            resourceId = info.viewIdResourceName,
-            text = info.text?.toString(),
-            contentDescription = info.contentDescription?.toString(),
-            hintText = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) info.hintText?.toString() else null,
-            stateDescription = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) info.stateDescription?.toString() else null,
-            boundsInScreen = boundsInScreen,
-            visibleToUser = info.isVisibleToUser,
-            enabled = info.isEnabled,
-            clickable = info.isClickable,
-            longClickable = info.isLongClickable,
-            checkable = info.isCheckable,
-            checked = info.isChecked,
-            editable = info.isEditable,
-            focusable = info.isFocusable,
-            focused = info.isFocused,
-            scrollable = info.isScrollable,
-            selected = info.isSelected,
-            password = info.isPassword,
-            actions = actions,
-            collectionRow = info.collectionItemInfo?.rowIndex,
-            collectionColumn = info.collectionItemInfo?.columnIndex,
-            drawingOrder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) info.drawingOrder else 0,
-            windowId = windowId,
-            packageName = info.packageName?.toString() ?: windowPackageName
-        )
-        nodes[nodeId] = snapshot
-        info.safeRecycle()
-        return nodeId
+            val snapshot = NodeSnapshot(
+                nodeId = nodeId,
+                parentId = parentId,
+                childIds = childIds,
+                className = info.className?.toString() ?: "",
+                resourceId = info.viewIdResourceName,
+                text = info.text?.toString(),
+                contentDescription = info.contentDescription?.toString(),
+                hintText = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) info.hintText?.toString() else null,
+                stateDescription = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) info.stateDescription?.toString() else null,
+                boundsInScreen = boundsInScreen,
+                visibleToUser = info.isVisibleToUser,
+                enabled = info.isEnabled,
+                clickable = info.isClickable,
+                longClickable = info.isLongClickable,
+                checkable = info.isCheckable,
+                checked = info.isChecked,
+                editable = info.isEditable,
+                focusable = info.isFocusable,
+                focused = info.isFocused,
+                scrollable = info.isScrollable,
+                selected = info.isSelected,
+                password = info.isPassword,
+                actions = actions,
+                collectionRow = info.collectionItemInfo?.rowIndex,
+                collectionColumn = info.collectionItemInfo?.columnIndex,
+                drawingOrder = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) info.drawingOrder else 0,
+                windowId = windowId,
+                packageName = info.packageName?.toString() ?: windowPackageName
+            )
+            nodes[nodeId] = snapshot
+            nodeId
+        } finally {
+            info.safeRecycle()
+        }
     }
 
     /** Returns a node only when [generation] is still the newest published snapshot. */
@@ -235,6 +260,8 @@ class AccessibilitySnapshotAdapter(
     companion object {
         const val MAX_NODES = 3000
         const val MAX_DEPTH = 60
+        private const val WINDOW_READ_ATTEMPTS = 3
+        private const val WINDOW_READ_RETRY_MS = 25L
 
         fun mapWindowType(type: Int): WindowType = when (type) {
             AccessibilityWindowInfo.TYPE_APPLICATION -> WindowType.APPLICATION

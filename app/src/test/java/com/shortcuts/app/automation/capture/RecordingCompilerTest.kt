@@ -81,6 +81,78 @@ class RecordingCompilerTest {
     }
 
     @Test
+    fun `launch snapshot with no app window still compiles the declared target`() {
+        val home = snapshot(screen(LAUNCHER, "Settings"), 1_000)
+        val compiler = compiler()
+        compiler.start(CaptureScreenContext("workflow", home))
+        compiler.accept(CapturedAppSwitch(LAUNCHER, APP, "SettingsActivity", home, 1_300))
+
+        val launch = compiler.finish().steps.single() as LaunchAppStep
+
+        assertEquals(APP, launch.expectedWindow.packageName)
+        assertEquals(APP, (launch.target as com.shortcuts.app.automation.model.LaunchTarget.Launcher).packageName)
+    }
+
+    @Test
+    fun `first same-package window state still drafts the required launch`() {
+        val app = snapshot(screen(APP, "About phone"), 1_000)
+        val compiler = compiler()
+        compiler.start(CaptureScreenContext("workflow", app))
+        compiler.accept(CapturedAppSwitch(APP, APP, "com.android.settings.SubSettings", app, 1_100))
+
+        val launch = compiler.finish().steps.single() as LaunchAppStep
+
+        assertEquals(APP, launch.expectedWindow.packageName)
+    }
+
+    @Test
+    fun `settings launch missed at transition is recovered before its swipe and tap`() {
+        val settingsPackage = "com.android.settings"
+        val home = snapshot(screen(LAUNCHER, "Settings"), 1_000)
+        val stillHome = snapshot(screen(LAUNCHER, "Settings"), 1_300)
+        val settingsList = snapshot(screen(settingsPackage, "About phone", nodeId = 2), 2_000)
+        val about = snapshot(screen(settingsPackage, "Device details", nodeId = 3), 3_000)
+        val compiler = compiler()
+        compiler.start(CaptureScreenContext("settings-about", home))
+        compiler.accept(
+            CapturedAppSwitch(
+                LAUNCHER,
+                settingsPackage,
+                "com.android.settings.homepage.SettingsHomepageActivity",
+                stillHome,
+                1_300
+            )
+        )
+        compiler.accept(
+            interaction(
+                settingsList,
+                kind = GestureKind.SWIPE,
+                down = 2_000,
+                up = 2_360,
+                start = IntPoint(500, 1_500),
+                end = IntPoint(500, 500)
+            )
+        )
+        compiler.accept(interaction(settingsList, down = 3_000, up = 3_050))
+        compiler.accept(
+            CapturedAppSwitch(
+                settingsPackage,
+                settingsPackage,
+                "com.android.settings.SubSettings",
+                about,
+                3_400
+            )
+        )
+        compiler.updateScreen(about)
+
+        val steps = compiler.finish().steps
+
+        assertTrue(steps.first() is LaunchAppStep)
+        assertEquals(settingsPackage, (steps.first() as LaunchAppStep).expectedWindow.packageName)
+        assertTrue(steps.drop(1).filterIsInstance<UiStep>().isNotEmpty())
+    }
+
+    @Test
     fun `launcher gestures are omitted and following app switch is reset launch`() {
         val home = snapshot(screen(LAUNCHER, "Settings"), 1_000)
         val settings = snapshot(screen(APP, "Network & internet"), 1_300)

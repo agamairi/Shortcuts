@@ -322,6 +322,201 @@ class V2CaptureBridgeTest {
     }
 
     @Test
+    fun testImeWindowStateDoesNotSwitchForegroundOrStealTextAttribution() {
+        val field = NodeSnapshot(
+            nodeId = 15,
+            parentId = null,
+            childIds = emptyList(),
+            className = "android.widget.EditText",
+            resourceId = "com.example.app:id/search",
+            text = "repeatkit android",
+            contentDescription = null,
+            hintText = "Search",
+            stateDescription = null,
+            boundsInScreen = r(50, 50, 600, 150),
+            visibleToUser = true,
+            enabled = true,
+            clickable = true,
+            longClickable = false,
+            checkable = false,
+            checked = false,
+            editable = true,
+            focusable = true,
+            focused = true,
+            scrollable = false,
+            selected = false,
+            password = false,
+            actions = setOf(NodeAction.SET_TEXT, NodeAction.IME_ENTER),
+            collectionRow = null,
+            collectionColumn = null,
+            drawingOrder = 1,
+            windowId = 1,
+            packageName = "com.example.app"
+        )
+        val app = WindowSnapshot(
+            windowId = 1,
+            type = WindowType.APPLICATION,
+            layer = 1,
+            isActive = true,
+            isFocused = true,
+            title = "Search",
+            packageName = "com.example.app",
+            boundsInScreen = r(0, 0, 1080, 1800),
+            rootId = field.nodeId,
+            nodes = mapOf(field.nodeId to field)
+        )
+        val ime = app.copy(
+            windowId = 2,
+            type = WindowType.INPUT_METHOD,
+            layer = 2,
+            isActive = false,
+            isFocused = false,
+            title = null,
+            packageName = "com.example.ime",
+            boundsInScreen = r(0, 1800, 1080, 2400),
+            rootId = Int.MIN_VALUE,
+            nodes = emptyMap()
+        )
+        val keyboardSnapshot = snapshot(app, 1_000L).copy(windows = listOf(ime, app))
+        EngineV2.snapshotSource = WindowSnapshotSource { keyboardSnapshot }
+        V2CaptureBridge.setImePackageNamesForTest(setOf("com.enabled.ime"))
+
+        val switches = mutableListOf<com.shortcuts.app.automation.capture.CapturedAppSwitch>()
+        val commits = mutableListOf<com.shortcuts.app.automation.capture.CapturedTextCommit>()
+        val mockCompiler = mockk<RecordingCompiler>(relaxed = true)
+        every { mockCompiler.accept(any<com.shortcuts.app.automation.capture.CapturedAppSwitch>()) } answers {
+            switches.add(firstArg())
+        }
+        every { mockCompiler.accept(any<com.shortcuts.app.automation.capture.CapturedTextCommit>()) } answers {
+            commits.add(firstArg())
+        }
+        V2CaptureBridge.setCompilerForTest(mockCompiler)
+
+        V2CaptureBridge.onAppSwitch("com.example.app", "com.example.app.SearchActivity", 1_000L)
+        V2CaptureBridge.onTextCommit(
+            RecorderEvent(
+                eventType = RecorderEventType.TEXT_CHANGE,
+                packageName = "com.example.app",
+                sourceText = null,
+                sourceContentDescription = null,
+                sourceViewId = field.resourceId,
+                enteredText = "repeatkit android",
+                sourceClassName = field.className,
+                sourceIsEditable = true,
+                occurredAtMillis = 1_200L,
+                windowId = app.windowId
+            )
+        )
+        V2CaptureBridge.onAppSwitch("com.example.ime", null, 1_300L)
+        V2CaptureBridge.onAppSwitch("com.enabled.ime", null, 1_350L)
+        V2CaptureBridge.onAppSwitch("com.example.app", "com.example.app.SearchActivity", 1_400L)
+        V2CaptureBridge.awaitCaptureIdleForTest()
+
+        assertEquals(2, switches.size)
+        assertEquals("com.example.app", switches[1].fromPackageName)
+        assertTrue(switches.none { it.toPackageName.endsWith(".ime") })
+        assertEquals(1, commits.size)
+        assertEquals("com.example.app", commits.single().windowSnapshot.packageName)
+    }
+
+    @Test
+    fun testChromeStyleLiveTextSurvivesReplacementAndInfersSubmitByEffect() {
+        val typedWindow = window("com.example.app") {
+            node("android.widget.FrameLayout", id = 1) {
+                node(
+                    className = "android.widget.EditText",
+                    id = 10,
+                    resourceId = "com.example.app:id/url_bar",
+                    text = "repeatkit android",
+                    hintText = "Search or type URL",
+                    bounds = r(20, 40, 1000, 160),
+                    focused = true,
+                    editable = true,
+                    actions = setOf(NodeAction.SET_TEXT, NodeAction.IME_ENTER)
+                )
+            }
+        }
+        val keyboard = typedWindow.copy(
+            windowId = 9,
+            type = WindowType.INPUT_METHOD,
+            layer = 5,
+            isActive = false,
+            isFocused = false,
+            packageName = "com.example.ime",
+            rootId = Int.MIN_VALUE,
+            nodes = emptyMap()
+        )
+        val typed = snapshot(typedWindow, 1_000L).copy(windows = listOf(keyboard, typedWindow))
+        val resultsWindow = window("com.example.app") {
+            node("android.widget.FrameLayout", id = 1) {
+                node(
+                    className = "android.widget.EditText",
+                    id = 20,
+                    resourceId = "com.example.app:id/url_bar",
+                    text = "https://www.google.com/search?q=repeatkit",
+                    hintText = "Search or type URL",
+                    bounds = r(20, 40, 1000, 160),
+                    focused = false,
+                    editable = true,
+                    actions = setOf(NodeAction.SET_TEXT, NodeAction.IME_ENTER)
+                )
+                node(
+                    className = "android.webkit.WebView",
+                    id = 21,
+                    resourceId = "com.example.app:id/results",
+                    bounds = r(0, 180, 1080, 2400)
+                )
+            }
+        }
+        val results = snapshot(resultsWindow, 1_500L)
+        var current = typed
+        EngineV2.snapshotSource = WindowSnapshotSource { current }
+
+        val commits = mutableListOf<com.shortcuts.app.automation.capture.CapturedTextCommit>()
+        val imeActions = mutableListOf<com.shortcuts.app.automation.capture.CapturedImeAction>()
+        val mockCompiler = mockk<RecordingCompiler>(relaxed = true)
+        every { mockCompiler.accept(any<com.shortcuts.app.automation.capture.CapturedTextCommit>()) } answers {
+            commits.add(firstArg())
+        }
+        every { mockCompiler.accept(any<com.shortcuts.app.automation.capture.CapturedImeAction>()) } answers {
+            imeActions.add(firstArg())
+        }
+        V2CaptureBridge.setCompilerForTest(mockCompiler)
+
+        val textEvent = RecorderEvent(
+            eventType = RecorderEventType.TEXT_CHANGE,
+            packageName = "com.example.app",
+            sourceText = "repeatkit android",
+            sourceContentDescription = null,
+            sourceViewId = "com.example.app:id/url_bar",
+            enteredText = "repeatkit android",
+            sourceClassName = "android.widget.EditText",
+            sourceIsEditable = true,
+            occurredAtMillis = 1_000L,
+            windowId = typedWindow.windowId
+        )
+        V2CaptureBridge.onTextChanged(textEvent)
+        V2CaptureBridge.awaitCaptureIdleForTest()
+        current = results
+        val replacedEvent = textEvent.copy(
+            enteredText = "https://www.google.com/search?q=repeatkit",
+            occurredAtMillis = 1_100L
+        )
+        V2CaptureBridge.onTextChanged(replacedEvent)
+        V2CaptureBridge.onTextCommit(
+            replacedEvent
+        )
+        V2CaptureBridge.onScreenChanged(1_500L)
+        V2CaptureBridge.awaitCaptureIdleForTest()
+
+        assertEquals("repeatkit android", commits.single().finalText)
+        assertEquals("com.example.app", commits.single().windowSnapshot.packageName)
+        assertEquals(1, imeActions.size)
+        assertTrue(imeActions.single().inferred)
+        assertEquals(ImeActionKind.SEARCH, imeActions.single().kind)
+    }
+
+    @Test
     fun testInferredImeActionOnResultsActivitySwitch() {
         val searchField = NodeSnapshot(
             nodeId = 15,

@@ -290,6 +290,7 @@ object AutomationRecorder {
         if (eventType == RecorderEventType.SELECTION_CHANGE) {
             // Cursor movement and focus initialization are not edits. In particular, Gboard can
             // emit this once per keystroke, which used to duplicate every typed character.
+            com.shortcuts.app.automation.android.capture.V2CaptureBridge.onScreenChanged(event.eventTime)
             return
         }
 
@@ -310,6 +311,19 @@ object AutomationRecorder {
                 updateRecordingHud()
             }
             // Never inspect ordinary keyboard keys or turn them into taps.
+            return
+        }
+
+        if (eventType == RecorderEventType.APP_CHANGE &&
+            (packageName in transientPackages || isFromInputMethodWindow(event, context))
+        ) {
+            // Input-method windows are not foreground applications. Flush the app field while
+            // its typed value is still buffered, then let v2 inspect the resulting screen effect
+            // without changing app attribution to the keyboard package.
+            cancelPendingTextFinalizer()
+            sessionOwner.flushPendingText()
+            com.shortcuts.app.automation.android.capture.V2CaptureBridge.onScreenChanged(event.eventTime)
+            updateRecordingHud()
             return
         }
 
@@ -360,6 +374,7 @@ object AutomationRecorder {
                 resolveLauncherPackage(context),
                 transientPackages
             )
+            com.shortcuts.app.automation.android.capture.V2CaptureBridge.onScreenChanged(event.eventTime)
             updateRecordingHud()
             return
         }
@@ -462,6 +477,8 @@ object AutomationRecorder {
         if (eventType == RecorderEventType.TEXT_CHANGE) {
             scheduleTextFinalizer()
             com.shortcuts.app.automation.android.capture.V2CaptureBridge.onTextChanged(recorderEvent)
+        } else if (eventType == RecorderEventType.FOCUS) {
+            com.shortcuts.app.automation.android.capture.V2CaptureBridge.onScreenChanged(event.eventTime)
         } else if (eventType == RecorderEventType.CLICK || eventType == RecorderEventType.LONG_PRESS) {
             cancelPendingTextFinalizer()
         }
@@ -482,6 +499,17 @@ object AutomationRecorder {
         return window.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION
     }
 
+    private fun isFromInputMethodWindow(event: AccessibilityEvent, context: Context): Boolean {
+        val service = context as? AutomationAccessibilityService
+            ?: AutomationAccessibilityService.instance
+            ?: return false
+        val windowId = event.windowId
+        if (windowId < 0) return false
+        val window = runCatching { service.windows.orEmpty().firstOrNull { it.id == windowId } }.getOrNull()
+            ?: return false
+        return window.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_INPUT_METHOD
+    }
+
     internal fun classifyAccessibilityEventType(eventType: Int): RecorderEventType? = when (eventType) {
         AccessibilityEvent.TYPE_VIEW_CLICKED -> RecorderEventType.CLICK
         AccessibilityEvent.TYPE_VIEW_LONG_CLICKED -> RecorderEventType.LONG_PRESS
@@ -490,6 +518,7 @@ object AutomationRecorder {
         AccessibilityEvent.TYPE_VIEW_FOCUSED -> RecorderEventType.FOCUS
         AccessibilityEvent.TYPE_VIEW_SCROLLED -> RecorderEventType.SCROLL
         AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> RecorderEventType.APP_CHANGE
+        AccessibilityEvent.TYPE_WINDOWS_CHANGED -> RecorderEventType.CONTENT_CHANGE
         AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> RecorderEventType.CONTENT_CHANGE
         else -> null
     }
@@ -669,7 +698,30 @@ object AutomationRecorder {
 
     /** The active IME is resolved dynamically because keyboard package names vary by device. */
     private fun resolveTransientPackages(context: Context): Set<String> {
-        return setOfNotNull(resolveCurrentInputMethodPackage(context))
+        val enabledImePackages = runCatching {
+            context.getSystemService(InputMethodManager::class.java)
+                ?.enabledInputMethodList
+                ?.mapNotNull { it.packageName }
+                .orEmpty()
+        }.getOrDefault(emptyList())
+        val service = context as? AutomationAccessibilityService
+            ?: AutomationAccessibilityService.instance
+        val inputWindowPackages = runCatching {
+            buildSet {
+                service?.windows.orEmpty()
+                    .filter { it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_INPUT_METHOD }
+                    .forEach { window ->
+                        val root = runCatching { window.root }.getOrNull() ?: return@forEach
+                        try {
+                            root.packageName?.toString()?.let { add(it) }
+                        } finally {
+                            root.recycle()
+                        }
+                    }
+            }
+        }.getOrDefault(emptySet())
+        return enabledImePackages.toSet() + inputWindowPackages +
+            setOfNotNull(resolveCurrentInputMethodPackage(context))
     }
 
     private fun resolveCurrentInputMethodPackage(context: Context): String? {
@@ -762,32 +814,56 @@ object AutomationRecorder {
         val service = context as? AutomationAccessibilityService
             ?: AutomationAccessibilityService.instance
             ?: return false
-        val root = service.getRootNode() ?: return false
-        var focusedNode: AccessibilityNodeInfo? = null
-        return try {
-            focusedNode = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: return false
-            if (!isEditableNode(focusedNode) || isSensitiveTextNode(focusedNode)) return false
-
-            val liveEvent = RecorderEvent(
-                eventType = RecorderEventType.TEXT_CHANGE,
-                packageName = focusedNode.packageName?.toString() ?: tracked.packageName,
-                sourceText = readableEditableText(focusedNode),
-                sourceContentDescription = focusedNode.contentDescription?.toString()
-                    ?: tracked.sourceContentDescription,
-                sourceViewId = focusedNode.viewIdResourceName ?: tracked.sourceViewId,
-                enteredText = readableEditableText(focusedNode),
-                sourceClassName = focusedNode.className?.toString() ?: tracked.sourceClassName,
-                sourceIsEditable = true,
-                occurredAtMillis = occurredAtMillis,
-                windowId = focusedNode.windowId.takeIf { it >= 0 } ?: tracked.windowId
-            )
-            sessionOwner.processLiveFocusedTextSnapshot(liveEvent)
-        } catch (_: Exception) {
-            false
-        } finally {
-            focusedNode?.recycle()
-            if (focusedNode !== root) root.recycle()
+        val roots = runCatching {
+            buildList {
+                service.windows.orEmpty()
+                    .filter { it.type == android.view.accessibility.AccessibilityWindowInfo.TYPE_APPLICATION }
+                    .sortedByDescending { it.id == tracked.windowId }
+                    .forEach { window ->
+                        val root = runCatching { window.root }.getOrNull() ?: return@forEach
+                        if (runCatching { root.packageName?.toString() == tracked.packageName }.getOrDefault(false)) {
+                            add(root)
+                        } else {
+                            root.recycle()
+                        }
+                    }
+            }
+        }.getOrDefault(emptyList()).ifEmpty {
+            listOfNotNull(service.getRootNode())
         }
+        for ((index, root) in roots.withIndex()) {
+            var focusedNode: AccessibilityNodeInfo? = null
+            try {
+                focusedNode = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT) ?: continue
+                if (!isEditableNode(focusedNode) || isSensitiveTextNode(focusedNode)) continue
+
+                val liveText = readableEditableText(focusedNode)
+                val liveEvent = RecorderEvent(
+                    eventType = RecorderEventType.TEXT_CHANGE,
+                    packageName = focusedNode.packageName?.toString() ?: tracked.packageName,
+                    sourceText = liveText,
+                    sourceContentDescription = focusedNode.contentDescription?.toString()
+                        ?: tracked.sourceContentDescription,
+                    sourceViewId = focusedNode.viewIdResourceName ?: tracked.sourceViewId,
+                    enteredText = liveText,
+                    sourceClassName = focusedNode.className?.toString() ?: tracked.sourceClassName,
+                    sourceIsEditable = true,
+                    occurredAtMillis = occurredAtMillis,
+                    windowId = focusedNode.windowId.takeIf { it >= 0 } ?: tracked.windowId
+                )
+                if (sessionOwner.processLiveFocusedTextSnapshot(liveEvent)) {
+                    com.shortcuts.app.automation.android.capture.V2CaptureBridge.onTextChanged(liveEvent)
+                    roots.drop(index + 1).forEach { it.recycle() }
+                    return true
+                }
+            } catch (_: Exception) {
+                // A stale app window must not prevent trying the next application window.
+            } finally {
+                if (focusedNode !== root) focusedNode?.recycle()
+                root.recycle()
+            }
+        }
+        return false
     }
 
     private fun isEditableNode(node: AccessibilityNodeInfo): Boolean {

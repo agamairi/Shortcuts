@@ -2,6 +2,7 @@ package com.shortcuts.app.automation.android.capture
 
 import com.shortcuts.app.automation.capture.screen
 import com.shortcuts.app.automation.capture.snapshot
+import com.shortcuts.app.automation.capture.fakeFingerprinter
 import com.shortcuts.app.automation.core.tree.IntRect
 import com.shortcuts.app.automation.core.tree.NodeSnapshot
 import com.shortcuts.app.automation.core.tree.WindowSnapshot
@@ -524,6 +525,99 @@ class ImeSubmitInferenceTest {
         // Then field is cleared
         val result = inference.onFieldTextChanged(field.copy(text = null, focused = true), "", 1_400L, window)
         assertNull("Tap inside field bounds (clear icon) must cancel submit inference", result)
+    }
+
+    @Test
+    fun testFocusLossWithSubstantialScreenChangeInfersSameActivitySearch() {
+        inference = ImeSubmitInference(screenFingerprinter = fakeFingerprinter)
+        val field = createFieldNode(text = "lofi beats")
+            .copy(actions = setOf(NodeAction.SET_TEXT, NodeAction.IME_ENTER))
+        val before = createWindow(nodes = mapOf(field.nodeId to field))
+        val keyboard = createWindow(windowId = 9, nodes = emptyMap(), packageName = "example.ime")
+            .copy(type = WindowType.INPUT_METHOD)
+        val beforeSet = snapshot(before, 1_000L).copy(windows = listOf(before, keyboard))
+        val commit = createCapturedTextCommit(field, "lofi beats", before, 1_000L)!!
+        inference.onTextCommit(commit, "com.example.app.SearchActivity", beforeSet)
+
+        val resultNode = field.copy(
+            nodeId = 11,
+            resourceId = "com.example.app:id/result_list",
+            className = "androidx.recyclerview.widget.RecyclerView",
+            text = null,
+            editable = false,
+            focused = false,
+            actions = emptySet()
+        )
+        val after = createWindow(nodes = mapOf(resultNode.nodeId to resultNode))
+        val inferred = inference.onScreenEffect(
+            snapshot(after, 1_600L),
+            uptimeMs = 1_600L,
+            activityClass = "com.example.app.SearchActivity"
+        )
+
+        assertNotNull(inferred)
+        assertEquals("focus_loss_with_screen_change", inferred?.reason)
+        assertEquals(ImeActionKind.SEARCH, inferred?.action?.kind)
+    }
+
+    @Test
+    fun testKeyboardDismissalWithoutScreenChangeDoesNotInferEffectSubmit() {
+        inference = ImeSubmitInference(screenFingerprinter = fakeFingerprinter)
+        val field = createFieldNode(text = "repeatkit")
+            .copy(actions = setOf(NodeAction.SET_TEXT, NodeAction.IME_ENTER))
+        val before = createWindow(nodes = mapOf(field.nodeId to field))
+        val keyboard = createWindow(windowId = 9, nodes = emptyMap(), packageName = "example.ime")
+            .copy(type = WindowType.INPUT_METHOD)
+        val commit = createCapturedTextCommit(field, "repeatkit", before, 1_000L)!!
+        inference.onTextCommit(
+            commit,
+            "com.example.app.SearchActivity",
+            snapshot(before, 1_000L).copy(windows = listOf(before, keyboard))
+        )
+
+        val sameScreen = before.copy(nodes = mapOf(field.nodeId to field.copy(focused = false)))
+        assertNull(inference.onScreenEffect(snapshot(sameScreen, 1_400L), 1_400L))
+    }
+
+    @Test
+    fun testSuggestionUpdateWhileFieldFocusedDoesNotInferEffectSubmit() {
+        inference = ImeSubmitInference(screenFingerprinter = fakeFingerprinter)
+        val field = createFieldNode(text = "rep")
+            .copy(actions = setOf(NodeAction.SET_TEXT, NodeAction.IME_ENTER))
+        val before = createWindow(nodes = mapOf(field.nodeId to field))
+        val keyboard = createWindow(windowId = 9, nodes = emptyMap(), packageName = "example.ime")
+            .copy(type = WindowType.INPUT_METHOD)
+        val initial = snapshot(before, 1_000L).copy(windows = listOf(before, keyboard))
+        inference.onTextCommit(createCapturedTextCommit(field, "rep", before, 1_000L)!!, null, initial)
+
+        val suggestion = field.copy(
+            nodeId = 12,
+            resourceId = "com.example.app:id/suggestion",
+            className = "android.widget.TextView",
+            text = "repeatkit",
+            editable = false,
+            focused = false,
+            actions = emptySet()
+        )
+        val updated = before.copy(nodes = mapOf(field.nodeId to field, suggestion.nodeId to suggestion))
+        val updatedSet = snapshot(updated, 1_300L).copy(windows = listOf(updated, keyboard))
+
+        assertNull(inference.onScreenEffect(updatedSet, 1_300L))
+        assertNotNull(inference.candidate)
+    }
+
+    @Test
+    fun testInterveningTapSuppressesEffectSubmit() {
+        inference = ImeSubmitInference(screenFingerprinter = fakeFingerprinter)
+        val field = createFieldNode(text = "repeatkit")
+            .copy(actions = setOf(NodeAction.SET_TEXT, NodeAction.IME_ENTER))
+        val before = createWindow(nodes = mapOf(field.nodeId to field))
+        val commit = createCapturedTextCommit(field, "repeatkit", before, 1_000L)!!
+        inference.onTextCommit(commit, "com.example.app.SearchActivity", snapshot(before, 1_000L))
+        inference.onOverlayInteraction(x = 900, y = 900, uptimeMs = 1_100L)
+
+        val after = createWindow(nodes = mapOf(99 to field.copy(nodeId = 99, editable = false, focused = false)))
+        assertNull(inference.onScreenEffect(snapshot(after, 1_300L), 1_300L))
     }
 
     @Test
